@@ -39,8 +39,9 @@ func main() {
 
 	printBanner(cfg)
 
-	// Build the management domain registry so both servers share the same state
-	registry := management.NewDomainRegistry(cfg)
+	// Build the management domain registry so both servers share the same state.
+	// Runtime domain changes are persisted to ai-domains.json and restored on restart.
+	registry := management.NewDomainRegistry(cfg, "ai-domains.json")
 
 	// Start management API in background.
 	// Fatal is intentional: the proxy should not run without its control plane.
@@ -52,9 +53,9 @@ func main() {
 	}()
 
 	// Start proxy server
-	proxyServer := proxy.New(cfg)
+	proxyServer := proxy.New(cfg, registry)
 
-	addr := fmt.Sprintf(":%d", cfg.ProxyPort)
+	addr := fmt.Sprintf("%s:%d", cfg.BindAddress, cfg.ProxyPort)
 	log.Printf("[PROXY] Listening on %s", addr)
 
 	srv := &http.Server{

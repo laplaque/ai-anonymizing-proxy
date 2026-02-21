@@ -8,6 +8,7 @@
   "logLevel": "info",
   "caCertFile": "ca-cert.pem",
   "caKeyFile": "ca-key.pem",
+  "bindAddress": "127.0.0.1",
   "aiApiDomains": [
     "api.anthropic.com",
     "api.openai.com",

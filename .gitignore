@@ -34,6 +34,9 @@ logs/
 # Serena
 .serena/
 
+# Runtime state
+ai-domains.json
+
 # Environment overrides (may contain secrets)
 .env
 .env.local

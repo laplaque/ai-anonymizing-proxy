@@ -25,6 +25,7 @@ import (
 
 	"ai-anonymizing-proxy/internal/anonymizer"
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/mitm"
 )
 
@@ -32,7 +33,7 @@ import (
 type Server struct {
 	cfg         *config.Config
 	anon        *anonymizer.Anonymizer
-	aiDomains   map[string]bool
+	aiDomains   *management.DomainRegistry
 	authDomains map[string]bool
 	authPaths   map[string]bool
 	transport   *http.Transport
@@ -40,11 +41,11 @@ type Server struct {
 }
 
 // New creates and configures a new proxy server.
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 	s := &Server{
 		cfg:         cfg,
 		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence),
-		aiDomains:   toSet(cfg.AIAPIDomains),
+		aiDomains:   domains,
 		authDomains: toSet(cfg.AuthDomains),
 		authPaths:   toSet(cfg.AuthPaths),
 	}
@@ -99,7 +100,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// MITM intercept for AI API domains when CA is available
-	if s.ca != nil && s.aiDomains[domain] && !s.isAuthRequest(domain, "") {
+	if s.ca != nil && s.aiDomains.Has(domain) && !s.isAuthRequest(domain, "") {
 		s.handleMITMTunnel(w, r, host, domain)
 		return
 	}
@@ -216,7 +217,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isAuth := s.isAuthRequest(domain, r.URL.Path)
-	isAI := s.aiDomains[domain]
+	isAI := s.aiDomains.Has(domain)
 
 	tag := "[PASS]"
 	if isAuth {
