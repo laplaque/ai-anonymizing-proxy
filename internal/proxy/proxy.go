@@ -29,6 +29,59 @@ import (
 	"ai-anonymizing-proxy/internal/mitm"
 )
 
+// privateNetworks lists CIDR ranges that must never be reachable via CONNECT
+// or plain-HTTP forwarding (SSRF protection).
+var privateNetworks []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+	} {
+		_, network, _ := net.ParseCIDR(cidr)
+		privateNetworks = append(privateNetworks, network)
+	}
+}
+
+// isPrivateHost resolves the hostname and returns true if any of its IPs
+// fall within a private/loopback/link-local range.
+func isPrivateHost(host string) bool {
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+	// Fast-path: try parsing as literal IP first
+	if ip := net.ParseIP(hostname); ip != nil {
+		return isPrivateIP(ip)
+	}
+	// Resolve DNS
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return false // resolution failed; let the dial fail naturally
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPrivateIP(ip net.IP) bool {
+	for _, n := range privateNetworks {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // Server is the HTTP proxy server.
 type Server struct {
 	cfg         *config.Config
@@ -156,7 +209,8 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		removeHopByHop(req.Header)
 		resp, err := s.transport.RoundTrip(req)
 		if err != nil {
-			http.Error(rw, fmt.Sprintf("upstream error: %v", err), http.StatusBadGateway)
+			log.Printf("[MITM] Upstream error for %s: %v", host, err)
+			http.Error(rw, "bad gateway", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -175,9 +229,16 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, _ *http.Request, host string) {
 	log.Printf("[TUNNEL] CONNECT %s", host)
 
+	if isPrivateHost(host) {
+		log.Printf("[TUNNEL] Blocked CONNECT to private address: %s", host)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	destConn, err := net.DialTimeout("tcp", host, 20*time.Second)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("cannot connect to %s: %v", host, err), http.StatusBadGateway)
+		log.Printf("[TUNNEL] Connection failed for %s: %v", host, err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer destConn.Close() //nolint:errcheck // best-effort close
@@ -248,13 +309,20 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		r.URL.Host = r.Host
 	}
 
+	if isPrivateHost(r.URL.Host) {
+		log.Printf("[HTTP] Blocked request to private address: %s", r.URL.Host)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Strip hop-by-hop headers
 	r.RequestURI = ""
 	removeHopByHop(r.Header)
 
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+		log.Printf("[HTTP] Upstream error for %s: %v", r.URL.Host, err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -265,12 +333,14 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 }
 
+const maxRequestBody = 50 << 20 // 50 MB
+
 func (s *Server) anonymizeRequestBody(r *http.Request) error {
 	if r.Body == nil || r.ContentLength == 0 {
 		return nil
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
 	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
 	if err != nil {
 		return err

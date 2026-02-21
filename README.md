@@ -20,7 +20,7 @@ Management API (:8081) ──► status, add/remove domains at runtime
 | Request type                   | Behavior                                                                   |
 |--------------------------------|----------------------------------------------------------------------------|
 | HTTPS CONNECT to AI API domain | MITM TLS intercept — body anonymized, then forwarded (requires trusted CA) |
-| HTTPS CONNECT to other domains | TCP tunnel, no inspection                                                  |
+| HTTPS CONNECT to other domains | TCP tunnel, no inspection (private IPs blocked)                            |
 | HTTP to AI API domain          | Body anonymized, then forwarded                                            |
 | HTTP to auth domain/path       | Passed through unchanged                                                   |
 | Everything else                | Passed through unchanged                                                   |
@@ -28,7 +28,7 @@ Management API (:8081) ──► status, add/remove domains at runtime
 **PII detection runs in two stages:**
 
 1. **Regex pass** — fast, deterministic patterns for emails, phone numbers, SSNs, credit cards, IP addresses, API keys, street addresses, ZIP codes
-2. **Ollama AI pass** — context-aware detection for names, job titles, medical info, salaries, company names (results cached by content hash)
+2. **Ollama AI pass** (async best-effort) — context-aware detection for names, job titles, medical info, salaries, company names. On cache miss the regex-only result is returned immediately while Ollama runs in the background; on the next identical request the cached AI detections are applied.
 
 Detected PII is replaced with deterministic anonymized tokens (e.g., `user<hash>@example.com`), so the same input always produces the same output.
 
@@ -518,6 +518,12 @@ Get-Content C:\ai-proxy\logs\proxy.err.log -Wait
 nssm status ai-proxy
 ```
 
+## Security
+
+- **SSRF protection.** CONNECT tunnels and plain-HTTP forwarding block destinations that resolve to private/loopback/link-local IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, ::1, fc00::/7, fe80::/10).
+- **Request body limits.** Anonymization reads at most 50 MB per request body. Ollama response reads are capped at 10 MB.
+- **Error sanitization.** Upstream errors are logged server-side but never exposed to clients (all proxy error responses return generic messages).
+
 ## Limitations
 
 - **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the proxy's CA certificate. Without it, clients will see TLS certificate errors.
@@ -552,7 +558,7 @@ make check         # lint + test + security + vulncheck
 GitHub Actions runs automatically on push/PR to `main` with four parallel jobs:
 
 1. **Lint** — golangci-lint (govet, staticcheck, errcheck, gosec, revive, noctx, bodyclose, etc.)
-2. **Test** — `go test -race`
+2. **Test** — `go test -race` with coverage reporting
 3. **Security** — gosec + govulncheck
 4. **Build** — compiles binary, uploads artifact (depends on all three passing)
 
@@ -564,11 +570,15 @@ ai-proxy/
 ├── internal/
 │   ├── anonymizer/anonymizer.go   # PII detection (regex + Ollama)
 │   ├── config/config.go           # Configuration loading
-│   ├── management/management.go   # Runtime management API
+│   ├── management/
+│   │   ├── management.go          # Runtime management API
+│   │   └── management_test.go     # Management API tests
 │   ├── mitm/
 │   │   ├── cert.go                # CA loading, auto-generation, cert cache
 │   │   └── mitm.go                # MITM TLS handler (HTTP/1.1 + H2)
-│   └── proxy/proxy.go             # Core HTTP proxy
+│   └── proxy/
+│       ├── proxy.go               # Core HTTP proxy
+│       └── proxy_test.go          # Proxy unit tests (SSRF, etc.)
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .golangci.yml                  # Linter configuration
 ├── proxy-config.json              # Default configuration
