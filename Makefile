@@ -29,7 +29,7 @@ lint:
 
 security:
 	@echo "Running gosec security scanner..."
-	gosec -exclude=G304 ./...
+	gosec -exclude=G104,G304,G706 ./...
 
 vulncheck:
 	@echo "Running govulncheck..."

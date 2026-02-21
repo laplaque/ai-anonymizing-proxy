@@ -10,7 +10,7 @@ package anonymizer
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- MD5 used for deterministic PII tokens, not cryptographic security
 	"encoding/json"
 	"fmt"
 	"io"
@@ -164,7 +164,7 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 
 // replacement generates a deterministic anonymised token for a detected value.
 func (a *Anonymizer) replacement(piiType PIIType, original string) string {
-	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8]
+	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8] // #nosec G401 -- deterministic token, not crypto
 	switch piiType {
 	case PIIEmail:
 		return fmt.Sprintf("user%s@example.com", h)
@@ -231,7 +231,7 @@ func (a *Anonymizer) applyAIDetections(text, requestID string) string {
 
 func (a *Anonymizer) queryOllama(text string) ([]ollamaDetection, error) {
 	// Check cache
-	cacheKey := fmt.Sprintf("%x", md5.Sum([]byte(text)))
+	cacheKey := fmt.Sprintf("%x", md5.Sum([]byte(text))) // #nosec G401 -- cache key, not crypto
 	a.cacheMu.RLock()
 	if cached, ok := a.cache[cacheKey]; ok {
 		a.cacheMu.RUnlock()
@@ -266,7 +266,7 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL from trusted config, not user input
 	if err != nil {
 		return nil, err
 	}

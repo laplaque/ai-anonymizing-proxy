@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -26,7 +27,8 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 	// The server reads requests from the decrypted TLS connection and dispatches
 	// them to the handler.
 	srv := &http.Server{
-		Handler: handler,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Configure HTTP/2 support on the server
