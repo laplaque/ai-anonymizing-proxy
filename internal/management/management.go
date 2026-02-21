@@ -13,6 +13,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -28,18 +31,43 @@ type Server struct {
 
 // DomainRegistry holds the mutable set of AI API domains.
 // It is shared between the proxy and management server.
+// Changes are persisted to disk via atomic file writes so they
+// survive proxy restarts.
 type DomainRegistry struct {
-	mu      sync.RWMutex
-	domains map[string]bool
+	mu          sync.RWMutex
+	domains     map[string]bool
+	persistPath string // empty = no persistence
 }
 
-// NewDomainRegistry creates a registry from the configured list.
-func NewDomainRegistry(cfg *config.Config) *DomainRegistry {
-	m := make(map[string]bool, len(cfg.AIAPIDomains))
-	for _, d := range cfg.AIAPIDomains {
-		m[d] = true
+// NewDomainRegistry creates a registry seeded from the config defaults.
+// If persistPath is non-empty and the file exists, its contents take
+// precedence over config defaults (it represents runtime overrides).
+func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
+	r := &DomainRegistry{
+		domains:     make(map[string]bool, len(cfg.AIAPIDomains)),
+		persistPath: persistPath,
 	}
-	return &DomainRegistry{domains: m}
+
+	// Try to load persisted domains first
+	if persistPath != "" {
+		domains, err := r.loadFromDisk()
+		switch {
+		case err == nil:
+			for _, d := range domains {
+				r.domains[d] = true
+			}
+			log.Printf("[DOMAINS] Loaded %d domains from %s", len(domains), persistPath)
+			return r
+		case !os.IsNotExist(err):
+			log.Printf("[DOMAINS] Warning: failed to load %s: %v (using config defaults)", persistPath, err)
+		}
+	}
+
+	// Fall back to config defaults
+	for _, d := range cfg.AIAPIDomains {
+		r.domains[d] = true
+	}
+	return r
 }
 
 // Has returns true if the domain is registered as an AI API domain.
@@ -49,21 +77,25 @@ func (r *DomainRegistry) Has(domain string) bool {
 	return r.domains[domain]
 }
 
-// Add adds a domain to the registry.
+// Add adds a domain to the registry and persists to disk.
 func (r *DomainRegistry) Add(domain string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.domains[domain] = true
+	snapshot := r.snapshotLocked()
+	r.mu.Unlock()
+	r.persist(snapshot)
 }
 
-// Remove removes a domain from the registry.
+// Remove removes a domain from the registry and persists to disk.
 func (r *DomainRegistry) Remove(domain string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	delete(r.domains, domain)
+	snapshot := r.snapshotLocked()
+	r.mu.Unlock()
+	r.persist(snapshot)
 }
 
-// All returns a slice of all registered domains.
+// All returns a sorted slice of all registered domains.
 func (r *DomainRegistry) All() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -71,7 +103,72 @@ func (r *DomainRegistry) All() []string {
 	for d := range r.domains {
 		out = append(out, d)
 	}
+	sort.Strings(out)
 	return out
+}
+
+// loadFromDisk reads the persisted domain list from disk.
+func (r *DomainRegistry) loadFromDisk() ([]string, error) {
+	data, err := os.ReadFile(r.persistPath)
+	if err != nil {
+		return nil, err
+	}
+	var domains []string
+	if err := json.Unmarshal(data, &domains); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", r.persistPath, err)
+	}
+	return domains, nil
+}
+
+// snapshotLocked returns a sorted copy of the current domain set.
+// Caller must hold r.mu.
+func (r *DomainRegistry) snapshotLocked() []string {
+	out := make([]string, 0, len(r.domains))
+	for d := range r.domains {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// persist writes the given domain snapshot to disk atomically.
+// It does NOT hold r.mu, so it won't block Has/All calls.
+func (r *DomainRegistry) persist(domains []string) {
+	if r.persistPath == "" {
+		return
+	}
+
+	data, err := json.MarshalIndent(domains, "", "  ")
+	if err != nil {
+		log.Printf("[DOMAINS] Marshal error: %v", err)
+		return
+	}
+
+	// Atomic write: temp file → rename
+	dir := filepath.Dir(r.persistPath)
+	tmp, err := os.CreateTemp(dir, ".ai-domains-*.tmp")
+	if err != nil {
+		log.Printf("[DOMAINS] Persist error (create temp): %v", err)
+		return
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()        //nolint:errcheck // best-effort cleanup
+		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		log.Printf("[DOMAINS] Persist error (write): %v", err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		log.Printf("[DOMAINS] Persist error (close): %v", err)
+		return
+	}
+	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
+		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		log.Printf("[DOMAINS] Persist error (rename): %v", err)
+		return
+	}
 }
 
 // New creates a management server.
@@ -162,7 +259,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // ListenAndServe starts the management HTTP server.
 func (s *Server) ListenAndServe() error {
-	addr := fmt.Sprintf(":%d", s.cfg.ManagementPort)
+	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort)
 	log.Printf("[MANAGEMENT] Listening on %s", addr)
 	srv := &http.Server{
 		Addr:              addr,

@@ -21,8 +21,9 @@ type Config struct {
 	AIConfidence   float64 `json:"aiConfidenceThreshold"`
 	LogLevel       string  `json:"logLevel"`
 
-	CACertFile string `json:"caCertFile"`
-	CAKeyFile  string `json:"caKeyFile"`
+	CACertFile  string `json:"caCertFile"`
+	CAKeyFile   string `json:"caKeyFile"`
+	BindAddress string `json:"bindAddress"`
 
 	AIAPIDomains []string `json:"aiApiDomains"`
 	AuthDomains  []string `json:"authDomains"`
@@ -48,6 +49,7 @@ func defaults() *Config {
 		LogLevel:       "info",
 		CACertFile:     "ca-cert.pem",
 		CAKeyFile:      "ca-key.pem",
+		BindAddress:    "127.0.0.1",
 		AIAPIDomains: []string{
 			"api.anthropic.com",
 			"api.openai.com",
@@ -118,5 +120,8 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv("CA_KEY_FILE"); v != "" {
 		cfg.CAKeyFile = v
+	}
+	if v := os.Getenv("BIND_ADDRESS"); v != "" {
+		cfg.BindAddress = v
 	}
 }
