@@ -86,6 +86,7 @@ Place this file in the working directory where the proxy runs:
   "proxyPort": 8080,
   "managementPort": 8081,
   "bindAddress": "127.0.0.1",
+  "managementToken": "",
   "ollamaEndpoint": "http://localhost:11434",
   "ollamaModel": "qwen2.5:3b",
   "useAIDetection": true,
@@ -125,6 +126,7 @@ Place this file in the working directory where the proxy runs:
 | `PROXY_PORT`                 | `8080`                   | Proxy listener port                                      |
 | `MANAGEMENT_PORT`            | `8081`                   | Management API port                                      |
 | `BIND_ADDRESS`               | `127.0.0.1`              | Proxy bind address (`0.0.0.0` for all interfaces)        |
+| `MANAGEMENT_TOKEN`           | —                        | Bearer token for management API (empty = no auth)        |
 | `OLLAMA_ENDPOINT`            | `http://localhost:11434` | Ollama server URL                                        |
 | `OLLAMA_MODEL`               | `qwen2.5:3b`             | Ollama model for PII detection                           |
 | `USE_AI_DETECTION`           | `true`                   | Set `false` to disable Ollama (regex only)               |
@@ -447,12 +449,14 @@ os.environ["HTTPS_PROXY"] = "http://localhost:8080"
 
 ## Management API
 
-The management API runs on port 8081 (configurable).
+The management API runs on port 8081 (configurable) and binds to `127.0.0.1` only.
+
+If `MANAGEMENT_TOKEN` is set, all requests require a `Authorization: Bearer <token>` header. Domain names are validated against RFC 1123 hostname rules.
 
 ### Check status
 
 ```bash
-curl http://localhost:8081/status
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/status
 ```
 
 ```json
@@ -473,6 +477,7 @@ curl http://localhost:8081/status
 
 ```bash
 curl -X POST http://localhost:8081/domains/add \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"domain":"api.newai.example.com"}'
 ```
@@ -481,6 +486,7 @@ curl -X POST http://localhost:8081/domains/add \
 
 ```bash
 curl -X POST http://localhost:8081/domains/remove \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"domain":"api.newai.example.com"}'
 ```
@@ -514,7 +520,7 @@ nssm status ai-proxy
 
 - **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the proxy's CA certificate. Without it, clients will see TLS certificate errors.
 - **Ollama cache is unbounded.** The in-memory AI detection cache grows without limit. Restart the proxy to clear it.
-- **Management API has no authentication.** The management API binds to `127.0.0.1` only, but anyone with local access can add or remove domains.
+- **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token auth. Without it, anyone with local access can add or remove domains.
 
 ## Development
 
