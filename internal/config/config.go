@@ -39,7 +39,7 @@ func defaults() *Config {
 		ProxyPort:      8080,
 		ManagementPort: 8081,
 		OllamaEndpoint: "http://localhost:11434",
-		OllamaModel:    "deepseek-coder:14b",
+		OllamaModel:    "qwen2.5:3b",
 		UseAIDetection: true,
 		AIConfidence:   0.7,
 		LogLevel:       "info",

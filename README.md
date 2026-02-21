@@ -83,7 +83,7 @@ Place this file in the working directory where the proxy runs:
   "proxyPort": 8080,
   "managementPort": 8081,
   "ollamaEndpoint": "http://localhost:11434",
-  "ollamaModel": "deepseek-coder:14b",
+  "ollamaModel": "qwen2.5:3b",
   "useAIDetection": true,
   "aiConfidenceThreshold": 0.7,
   "logLevel": "info",
@@ -119,7 +119,7 @@ Place this file in the working directory where the proxy runs:
 | `PROXY_PORT` | `8080` | Proxy listener port |
 | `MANAGEMENT_PORT` | `8081` | Management API port |
 | `OLLAMA_ENDPOINT` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `deepseek-coder:14b` | Ollama model for PII detection |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Ollama model for PII detection |
 | `USE_AI_DETECTION` | `true` | Set `false` to disable Ollama (regex only) |
 | `AI_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence for AI detections (0.0–1.0) |
 | `LOG_LEVEL` | `info` | Log verbosity |
@@ -366,7 +366,7 @@ curl http://localhost:8081/status
   "aiApiDomains": ["api.openai.com", "api.anthropic.com", "..."],
   "ollama": {
     "endpoint": "http://localhost:11434",
-    "model": "deepseek-coder:14b",
+    "model": "qwen2.5:3b",
     "enabled": true
   }
 }

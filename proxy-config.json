@@ -2,7 +2,7 @@
   "proxyPort": 8080,
   "managementPort": 8081,
   "ollamaEndpoint": "http://localhost:11434",
-  "ollamaModel": "deepseek-coder:14b",
+  "ollamaModel": "qwen2.5:3b",
   "useAIDetection": true,
   "aiConfidenceThreshold": 0.7,
   "logLevel": "info",
