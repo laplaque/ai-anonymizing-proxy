@@ -50,12 +50,16 @@ func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
 
 	// Try to load persisted domains first
 	if persistPath != "" {
-		if domains, err := r.loadFromDisk(); err == nil {
+		domains, err := r.loadFromDisk()
+		switch {
+		case err == nil:
 			for _, d := range domains {
 				r.domains[d] = true
 			}
 			log.Printf("[DOMAINS] Loaded %d domains from %s", len(domains), persistPath)
 			return r
+		case !os.IsNotExist(err):
+			log.Printf("[DOMAINS] Warning: failed to load %s: %v (using config defaults)", persistPath, err)
 		}
 	}
 
@@ -76,17 +80,19 @@ func (r *DomainRegistry) Has(domain string) bool {
 // Add adds a domain to the registry and persists to disk.
 func (r *DomainRegistry) Add(domain string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.domains[domain] = true
-	r.persistLocked()
+	snapshot := r.snapshotLocked()
+	r.mu.Unlock()
+	r.persist(snapshot)
 }
 
 // Remove removes a domain from the registry and persists to disk.
 func (r *DomainRegistry) Remove(domain string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	delete(r.domains, domain)
-	r.persistLocked()
+	snapshot := r.snapshotLocked()
+	r.mu.Unlock()
+	r.persist(snapshot)
 }
 
 // All returns a sorted slice of all registered domains.
@@ -114,17 +120,23 @@ func (r *DomainRegistry) loadFromDisk() ([]string, error) {
 	return domains, nil
 }
 
-// persistLocked writes the current domain set to disk atomically.
-// Caller must hold r.mu (read or write lock).
-func (r *DomainRegistry) persistLocked() {
+// snapshotLocked returns a sorted copy of the current domain set.
+// Caller must hold r.mu.
+func (r *DomainRegistry) snapshotLocked() []string {
+	out := make([]string, 0, len(r.domains))
+	for d := range r.domains {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// persist writes the given domain snapshot to disk atomically.
+// It does NOT hold r.mu, so it won't block Has/All calls.
+func (r *DomainRegistry) persist(domains []string) {
 	if r.persistPath == "" {
 		return
 	}
-	domains := make([]string, 0, len(r.domains))
-	for d := range r.domains {
-		domains = append(domains, d)
-	}
-	sort.Strings(domains)
 
 	data, err := json.MarshalIndent(domains, "", "  ")
 	if err != nil {
