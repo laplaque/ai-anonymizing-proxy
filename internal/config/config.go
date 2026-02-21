@@ -21,9 +21,10 @@ type Config struct {
 	AIConfidence   float64 `json:"aiConfidenceThreshold"`
 	LogLevel       string  `json:"logLevel"`
 
-	CACertFile  string `json:"caCertFile"`
-	CAKeyFile   string `json:"caKeyFile"`
-	BindAddress string `json:"bindAddress"`
+	CACertFile      string `json:"caCertFile"`
+	CAKeyFile       string `json:"caKeyFile"`
+	BindAddress     string `json:"bindAddress"`
+	ManagementToken string `json:"managementToken"`
 
 	AIAPIDomains []string `json:"aiApiDomains"`
 	AuthDomains  []string `json:"authDomains"`
@@ -123,5 +124,8 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv("BIND_ADDRESS"); v != "" {
 		cfg.BindAddress = v
+	}
+	if v := os.Getenv("MANAGEMENT_TOKEN"); v != "" {
+		cfg.ManagementToken = v
 	}
 }

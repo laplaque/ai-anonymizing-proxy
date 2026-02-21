@@ -9,6 +9,7 @@
   "caCertFile": "ca-cert.pem",
   "caKeyFile": "ca-key.pem",
   "bindAddress": "127.0.0.1",
+  "managementToken": "",
   "aiApiDomains": [
     "api.anthropic.com",
     "api.openai.com",
