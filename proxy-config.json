@@ -1,0 +1,31 @@
+{
+  "proxyPort": 8080,
+  "managementPort": 8081,
+  "ollamaEndpoint": "http://localhost:11434",
+  "ollamaModel": "deepseek-coder:14b",
+  "useAIDetection": true,
+  "aiConfidenceThreshold": 0.7,
+  "logLevel": "info",
+  "aiApiDomains": [
+    "api.anthropic.com",
+    "api.openai.com",
+    "api.cohere.ai",
+    "generativelanguage.googleapis.com",
+    "api.mistral.ai",
+    "api.together.xyz",
+    "api.perplexity.ai",
+    "api.replicate.com",
+    "api.huggingface.co"
+  ],
+  "authDomains": [
+    "accounts.google.com",
+    "login.microsoftonline.com",
+    "auth0.com",
+    "okta.com"
+  ],
+  "authPaths": [
+    "/auth", "/login", "/signin", "/signup", "/register",
+    "/token", "/oauth", "/authenticate", "/session",
+    "/v1/auth", "/api/auth", "/api/login", "/api/token"
+  ]
+}
