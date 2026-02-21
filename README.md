@@ -34,7 +34,7 @@ Detected PII is replaced with deterministic anonymized tokens (e.g., `user<hash>
 
 ## Prerequisites
 
-- **Go 1.21+** — [go.dev/dl](https://go.dev/dl/)
+- **Go 1.24.13+** — [go.dev/dl](https://go.dev/dl/)
 - **Ollama** (optional, for AI-powered PII detection) — [ollama.com](https://ollama.com)
 
 If Ollama is not running, the proxy falls back to regex-only detection.
@@ -512,6 +512,38 @@ nssm status ai-proxy
 - **Ollama cache is unbounded.** The in-memory AI detection cache grows without limit. Restart the proxy to clear it.
 - **Management API has no authentication.** Anyone who can reach port 8081 can add or remove domains. Bind it to localhost or use firewall rules in production.
 
+## Development
+
+### Linting
+
+The project uses [golangci-lint](https://golangci-lint.run/) with a strict configuration (15 linters enabled). Run locally:
+
+```bash
+make lint
+```
+
+### Security scanning
+
+```bash
+make security      # gosec static analysis
+make vulncheck     # Go vulnerability database check
+```
+
+### All checks
+
+```bash
+make check         # lint + test + security + vulncheck
+```
+
+### CI/CD
+
+GitHub Actions runs automatically on push/PR to `main` with four parallel jobs:
+
+1. **Lint** — golangci-lint (govet, staticcheck, errcheck, gosec, revive, noctx, bodyclose, etc.)
+2. **Test** — `go test -race`
+3. **Security** — gosec + govulncheck
+4. **Build** — compiles binary, uploads artifact (depends on all three passing)
+
 ## Project Structure
 
 ```text
@@ -525,8 +557,10 @@ ai-proxy/
 │   │   ├── cert.go                # CA loading, auto-generation, cert cache
 │   │   └── mitm.go                # MITM TLS handler (HTTP/1.1 + H2)
 │   └── proxy/proxy.go             # Core HTTP proxy
+├── .github/workflows/ci.yml       # CI pipeline
+├── .golangci.yml                  # Linter configuration
 ├── proxy-config.json              # Default configuration
-├── Makefile                       # Build targets (Linux/macOS)
+├── Makefile                       # Build, lint, security targets
 └── go.mod
 ```
 
