@@ -85,6 +85,7 @@ Place this file in the working directory where the proxy runs:
 {
   "proxyPort": 8080,
   "managementPort": 8081,
+  "bindAddress": "127.0.0.1",
   "ollamaEndpoint": "http://localhost:11434",
   "ollamaModel": "qwen2.5:3b",
   "useAIDetection": true,
@@ -119,18 +120,19 @@ Place this file in the working directory where the proxy runs:
 
 ### Environment variables
 
-| Variable                     | Default                  | Description                                         |
-|------------------------------|--------------------------|-----------------------------------------------------|
-| `PROXY_PORT`                 | `8080`                   | Proxy listener port                                 |
-| `MANAGEMENT_PORT`            | `8081`                   | Management API port                                 |
-| `OLLAMA_ENDPOINT`            | `http://localhost:11434` | Ollama server URL                                   |
-| `OLLAMA_MODEL`               | `qwen2.5:3b`             | Ollama model for PII detection                      |
-| `USE_AI_DETECTION`           | `true`                   | Set `false` to disable Ollama (regex only)          |
-| `AI_CONFIDENCE_THRESHOLD`    | `0.7`                    | Minimum confidence for AI detections (0.0–1.0)      |
-| `LOG_LEVEL`                  | `info`                   | Log verbosity                                       |
-| `CA_CERT_FILE`               | `ca-cert.pem`            | Path to CA certificate for MITM TLS interception    |
-| `CA_KEY_FILE`                | `ca-key.pem`             | Path to CA private key for MITM TLS interception    |
-| `HTTP_PROXY` / `HTTPS_PROXY` | —                        | Upstream proxy for chaining (e.g., corporate proxy) |
+| Variable                     | Default                  | Description                                              |
+|------------------------------|--------------------------|----------------------------------------------------------|
+| `PROXY_PORT`                 | `8080`                   | Proxy listener port                                      |
+| `MANAGEMENT_PORT`            | `8081`                   | Management API port                                      |
+| `BIND_ADDRESS`               | `127.0.0.1`              | Proxy bind address (`0.0.0.0` for all interfaces)        |
+| `OLLAMA_ENDPOINT`            | `http://localhost:11434` | Ollama server URL                                        |
+| `OLLAMA_MODEL`               | `qwen2.5:3b`             | Ollama model for PII detection                           |
+| `USE_AI_DETECTION`           | `true`                   | Set `false` to disable Ollama (regex only)               |
+| `AI_CONFIDENCE_THRESHOLD`    | `0.7`                    | Minimum confidence for AI detections (0.0–1.0)           |
+| `LOG_LEVEL`                  | `info`                   | Log verbosity                                            |
+| `CA_CERT_FILE`               | `ca-cert.pem`            | Path to CA certificate for MITM TLS interception         |
+| `CA_KEY_FILE`                | `ca-key.pem`             | Path to CA private key for MITM TLS interception         |
+| `HTTP_PROXY` / `HTTPS_PROXY` | —                        | Upstream proxy for chaining (e.g., corporate proxy)      |
 
 ## Running
 
@@ -483,6 +485,8 @@ curl -X POST http://localhost:8081/domains/remove \
   -d '{"domain":"api.newai.example.com"}'
 ```
 
+Domain changes made via the management API are persisted to `ai-domains.json` and automatically restored on restart. If the file is missing or corrupt, the proxy falls back to the domains listed in `proxy-config.json`.
+
 ## Monitoring
 
 ### macOS
@@ -510,7 +514,7 @@ nssm status ai-proxy
 
 - **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the proxy's CA certificate. Without it, clients will see TLS certificate errors.
 - **Ollama cache is unbounded.** The in-memory AI detection cache grows without limit. Restart the proxy to clear it.
-- **Management API has no authentication.** Anyone who can reach port 8081 can add or remove domains. Bind it to localhost or use firewall rules in production.
+- **Management API has no authentication.** The management API binds to `127.0.0.1` only, but anyone with local access can add or remove domains.
 
 ## Development
 
