@@ -128,7 +128,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		log.Printf("[MITM] Hijack error for %s: %v", host, err)
 		return
 	}
-	defer clientConn.Close()
+	defer clientConn.Close() //nolint:errcheck // best-effort close
 
 	// Build a handler that anonymizes and forwards requests
 	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -158,12 +158,12 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 			http.Error(rw, fmt.Sprintf("upstream error: %v", err), http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 		removeHopByHop(resp.Header)
 		copyHeader(rw.Header(), resp.Header)
 		rw.WriteHeader(resp.StatusCode)
-		io.Copy(rw, resp.Body) //nolint:errcheck
+		io.Copy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 	})
 
 	// Perform TLS handshake and serve HTTP/1.1 or HTTP/2
@@ -171,7 +171,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
-func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
+func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, _ *http.Request, host string) {
 	log.Printf("[TUNNEL] CONNECT %s", host)
 
 	destConn, err := net.DialTimeout("tcp", host, 20*time.Second)
@@ -179,7 +179,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		http.Error(w, fmt.Sprintf("cannot connect to %s: %v", host, err), http.StatusBadGateway)
 		return
 	}
-	defer destConn.Close()
+	defer destConn.Close() //nolint:errcheck // best-effort close
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -194,12 +194,12 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		log.Printf("[TUNNEL] Hijack error for %s: %v", host, err)
 		return
 	}
-	defer clientConn.Close()
+	defer clientConn.Close() //nolint:errcheck // best-effort close
 
 	// Bidirectional copy
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(destConn, clientConn); done <- struct{}{} }() //nolint:errcheck
-	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }() //nolint:errcheck
+	go func() { io.Copy(destConn, clientConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
+	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
 	<-done
 }
 
@@ -216,7 +216,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isAuth := s.isAuthRequest(domain, r.URL.Path)
-	isAI   := s.aiDomains[domain]
+	isAI := s.aiDomains[domain]
 
 	tag := "[PASS]"
 	if isAuth {
@@ -256,12 +256,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	removeHopByHop(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body) //nolint:errcheck
+	io.Copy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 }
 
 func (s *Server) anonymizeRequestBody(r *http.Request) error {
@@ -270,7 +270,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) error {
 	}
 
 	body, err := io.ReadAll(r.Body)
-	r.Body.Close()
+	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
 	if err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ package anonymizer
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -18,11 +19,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PIIType classifies the kind of sensitive data found.
 type PIIType string
 
+// Supported PII types for detection and anonymization.
 const (
 	PIIEmail      PIIType = "email"
 	PIIPhone      PIIType = "phone"
@@ -46,11 +49,11 @@ type pattern struct {
 
 // Anonymizer holds compiled patterns and the Ollama client config.
 type Anonymizer struct {
-	patterns     []pattern
-	ollamaURL    string
-	ollamaModel  string
-	useAI        bool
-	aiThreshold  float64
+	patterns    []pattern
+	ollamaURL   string
+	ollamaModel string
+	useAI       bool
+	aiThreshold float64
 
 	cacheMu sync.RWMutex
 	cache   map[string][]ollamaDetection // keyed by md5(text)
@@ -254,11 +257,20 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 		Stream: false,
 	})
 
-	resp, err := http.Post(a.ollamaURL, "application/json", bytes.NewReader(reqBody)) //nolint:noctx
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.ollamaURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("create ollama request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response body
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

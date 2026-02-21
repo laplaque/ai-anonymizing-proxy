@@ -1,0 +1,97 @@
+run:
+  timeout: 5m
+  concurrency: 4
+  go: "1.24"
+  modules-download-mode: readonly
+
+output:
+  formats:
+    - format: colored-line-number
+  sort-results: true
+
+linters:
+  disable-all: true
+  enable:
+    # Correctness
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - typecheck
+
+    # Security
+    - gosec
+
+    # Code quality
+    - gosimple
+    - revive
+    - misspell
+    - gofmt
+    - goimports
+
+    # HTTP / concurrency
+    - bodyclose
+    - noctx
+    - copyloopvar
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+
+  staticcheck:
+    checks:
+      - all
+
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+
+  gosec:
+    excludes:
+      - G304
+    severity: medium
+    confidence: medium
+
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+      - name: increment-decrement
+      - name: indent-error-flow
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: unexported-return
+      - name: unreachable-code
+      - name: unused-parameter
+        arguments:
+          - allowRegex: "^_"
+
+  misspell:
+    locale: US
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # MD5 in anonymizer is for deterministic PII tokens, not cryptographic use
+    - path: internal/anonymizer/anonymizer\.go
+      linters:
+        - gosec
+      text: "G401|G501|MD5"
+
+    # select{} in singleConnListener is the intended design to block until close
+    - path: internal/mitm/mitm\.go
+      linters:
+        - staticcheck
+      text: "SA1000|empty branch"

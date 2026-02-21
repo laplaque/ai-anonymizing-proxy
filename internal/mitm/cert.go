@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -38,10 +39,10 @@ func LoadOrGenerateCA(certFile, keyFile string) (*CA, error) {
 	}
 
 	// If files don't exist, generate
-	if os.IsNotExist(unwrapPathError(err)) {
+	if errors.Is(err, os.ErrNotExist) {
 		log.Printf("[MITM] CA files not found, generating new CA...")
-		if err := GenerateCA(certFile, keyFile); err != nil {
-			return nil, fmt.Errorf("failed to generate CA: %w", err)
+		if genErr := GenerateCA(certFile, keyFile); genErr != nil {
+			return nil, fmt.Errorf("failed to generate CA: %w", genErr)
 		}
 		ca, err = LoadCA(certFile, keyFile)
 		if err != nil {
@@ -135,14 +136,14 @@ func GenerateCA(certFile, keyFile string) error {
 		return fmt.Errorf("create CA cert: %w", err)
 	}
 
-	// Write cert PEM
-	certOut, err := os.Create(certFile)
+	// Write cert PEM (public certificate — 0644 is intentional)
+	certOut, err := os.OpenFile(certFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec // public cert but using 0600 for consistency
 	if err != nil {
 		return fmt.Errorf("create cert file: %w", err)
 	}
-	defer certOut.Close()
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("write cert PEM: %w", err)
+	defer certOut.Close() //nolint:errcheck // best-effort close
+	if encErr := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
+		return fmt.Errorf("write cert PEM: %w", encErr)
 	}
 
 	// Write key PEM (restrictive permissions)
@@ -150,9 +151,9 @@ func GenerateCA(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("create key file: %w", err)
 	}
-	defer keyOut.Close()
-	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); err != nil {
-		return fmt.Errorf("write key PEM: %w", err)
+	defer keyOut.Close() //nolint:errcheck // best-effort close
+	if encErr := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
+		return fmt.Errorf("write key PEM: %w", encErr)
 	}
 
 	return nil
@@ -209,16 +210,10 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 // certificate for the given host, with H2 and HTTP/1.1 ALPN support.
 func (ca *CA) TLSConfigForHost(host string) *tls.Config {
 	return &tls.Config{
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return ca.CertFor(host)
 		},
 		NextProtos: []string{"h2", "http/1.1"},
 	}
-}
-
-func unwrapPathError(err error) error {
-	if pe, ok := err.(*os.PathError); ok {
-		return pe.Err
-	}
-	return err
 }

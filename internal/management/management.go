@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
@@ -28,6 +29,7 @@ type Server struct {
 // DomainRegistry holds the mutable set of AI API domains.
 // It is shared between the proxy and management server.
 type DomainRegistry struct {
+	mu      sync.RWMutex
 	domains map[string]bool
 }
 
@@ -42,21 +44,29 @@ func NewDomainRegistry(cfg *config.Config) *DomainRegistry {
 
 // Has returns true if the domain is registered as an AI API domain.
 func (r *DomainRegistry) Has(domain string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.domains[domain]
 }
 
 // Add adds a domain to the registry.
 func (r *DomainRegistry) Add(domain string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.domains[domain] = true
 }
 
 // Remove removes a domain from the registry.
 func (r *DomainRegistry) Remove(domain string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.domains, domain)
 }
 
-// All returns a sorted slice of all registered domains.
+// All returns a slice of all registered domains.
 func (r *DomainRegistry) All() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]string, 0, len(r.domains))
 	for d := range r.domains {
 		out = append(out, d)
@@ -82,7 +92,7 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	type response struct {
 		Status    string   `json:"status"`
 		Uptime    string   `json:"uptime"`
@@ -117,7 +127,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		Domain string `json:"domain"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
-		http.Error(w, "invalid request: need {\"domain\":\"...\"}",  http.StatusBadRequest)
+		http.Error(w, "invalid request: need {\"domain\":\"...\"}", http.StatusBadRequest)
 		return
 	}
 	s.domains.Add(req.Domain)
@@ -154,5 +164,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func (s *Server) ListenAndServe() error {
 	addr := fmt.Sprintf(":%d", s.cfg.ManagementPort)
 	log.Printf("[MANAGEMENT] Listening on %s", addr)
-	return http.ListenAndServe(addr, s.Handler())
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return srv.ListenAndServe()
 }

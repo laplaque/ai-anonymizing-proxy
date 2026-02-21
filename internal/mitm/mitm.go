@@ -20,7 +20,7 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 		log.Printf("[MITM] TLS handshake failed for %s: %v", host, err)
 		return
 	}
-	defer tlsConn.Close()
+	defer tlsConn.Close() //nolint:errcheck // best-effort close on TLS connection
 
 	// Use an http.Server to handle both HTTP/1.1 and HTTP/2 on this connection.
 	// The server reads requests from the decrypted TLS connection and dispatches
@@ -48,7 +48,7 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 	default:
 		// HTTP/1.1: serve using a single-connection listener
 		ln := &singleConnListener{conn: tlsConn}
-		srv.Serve(ln) //nolint:errcheck
+		srv.Serve(ln) //nolint:errcheck // always ErrServerClosed for single-conn listener
 	}
 }
 
@@ -61,7 +61,8 @@ type singleConnListener struct {
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
 	if l.done {
-		// Block until the server shuts down
+		// Block forever; Serve() calls Close() when the handler returns,
+		// which terminates the listener and unblocks the server.
 		select {}
 	}
 	l.done = true

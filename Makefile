@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint gen-ca import-ca-macos import-ca-linux import-ca-windows
+.PHONY: all build run clean test lint security vulncheck check gen-ca import-ca-macos import-ca-linux import-ca-windows
 
 all: build
 
@@ -26,6 +26,17 @@ test:
 
 lint:
 	golangci-lint run ./...
+
+security:
+	@echo "Running gosec security scanner..."
+	gosec -exclude=G304 ./...
+
+vulncheck:
+	@echo "Running govulncheck..."
+	govulncheck ./...
+
+check: lint test security vulncheck
+	@echo "All checks passed."
 
 clean:
 	rm -rf bin/

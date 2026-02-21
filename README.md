@@ -6,7 +6,7 @@ Supports **MITM TLS termination** for HTTPS traffic — the proxy decrypts, anon
 
 ## How It Works
 
-```
+```text
 Client ──TLS (proxy CA)──► Proxy (:8080) ──► anonymize PII ──TLS (real cert)──► AI API
                                                    │
                                             regex + Ollama
@@ -17,13 +17,13 @@ Management API (:8081) ──► status, add/remove domains at runtime
 
 **Traffic routing:**
 
-| Request type | Behavior |
-|---|---|
+| Request type                   | Behavior                                                                   |
+|--------------------------------|----------------------------------------------------------------------------|
 | HTTPS CONNECT to AI API domain | MITM TLS intercept — body anonymized, then forwarded (requires trusted CA) |
-| HTTPS CONNECT to other domains | TCP tunnel, no inspection |
-| HTTP to AI API domain | Body anonymized, then forwarded |
-| HTTP to auth domain/path | Passed through unchanged |
-| Everything else | Passed through unchanged |
+| HTTPS CONNECT to other domains | TCP tunnel, no inspection                                                  |
+| HTTP to AI API domain          | Body anonymized, then forwarded                                            |
+| HTTP to auth domain/path       | Passed through unchanged                                                   |
+| Everything else                | Passed through unchanged                                                   |
 
 **PII detection runs in two stages:**
 
@@ -119,18 +119,18 @@ Place this file in the working directory where the proxy runs:
 
 ### Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `PROXY_PORT` | `8080` | Proxy listener port |
-| `MANAGEMENT_PORT` | `8081` | Management API port |
-| `OLLAMA_ENDPOINT` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen2.5:3b` | Ollama model for PII detection |
-| `USE_AI_DETECTION` | `true` | Set `false` to disable Ollama (regex only) |
-| `AI_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence for AI detections (0.0–1.0) |
-| `LOG_LEVEL` | `info` | Log verbosity |
-| `CA_CERT_FILE` | `ca-cert.pem` | Path to CA certificate for MITM TLS interception |
-| `CA_KEY_FILE` | `ca-key.pem` | Path to CA private key for MITM TLS interception |
-| `HTTP_PROXY` / `HTTPS_PROXY` | — | Upstream proxy for chaining (e.g., corporate proxy) |
+| Variable                     | Default                  | Description                                         |
+|------------------------------|--------------------------|-----------------------------------------------------|
+| `PROXY_PORT`                 | `8080`                   | Proxy listener port                                 |
+| `MANAGEMENT_PORT`            | `8081`                   | Management API port                                 |
+| `OLLAMA_ENDPOINT`            | `http://localhost:11434` | Ollama server URL                                   |
+| `OLLAMA_MODEL`               | `qwen2.5:3b`             | Ollama model for PII detection                      |
+| `USE_AI_DETECTION`           | `true`                   | Set `false` to disable Ollama (regex only)          |
+| `AI_CONFIDENCE_THRESHOLD`    | `0.7`                    | Minimum confidence for AI detections (0.0–1.0)      |
+| `LOG_LEVEL`                  | `info`                   | Log verbosity                                       |
+| `CA_CERT_FILE`               | `ca-cert.pem`            | Path to CA certificate for MITM TLS interception    |
+| `CA_KEY_FILE`                | `ca-key.pem`             | Path to CA private key for MITM TLS interception    |
+| `HTTP_PROXY` / `HTTPS_PROXY` | —                        | Upstream proxy for chaining (e.g., corporate proxy) |
 
 ## Running
 
@@ -514,7 +514,7 @@ nssm status ai-proxy
 
 ## Project Structure
 
-```
+```text
 ai-proxy/
 ├── cmd/proxy/main.go              # Entry point
 ├── internal/

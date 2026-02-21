@@ -27,6 +27,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
@@ -41,7 +42,8 @@ func main() {
 	// Build the management domain registry so both servers share the same state
 	registry := management.NewDomainRegistry(cfg)
 
-	// Start management API in background
+	// Start management API in background.
+	// Fatal is intentional: the proxy should not run without its control plane.
 	mgmt := management.New(cfg, registry)
 	go func() {
 		if err := mgmt.ListenAndServe(); err != nil {
@@ -56,8 +58,9 @@ func main() {
 	log.Printf("[PROXY] Listening on %s", addr)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: proxyServer,
+		Addr:              addr,
+		Handler:           proxyServer,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	if err := srv.ListenAndServe(); err != nil {

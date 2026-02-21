@@ -13,13 +13,13 @@ import (
 
 // Config holds the full proxy configuration.
 type Config struct {
-	ProxyPort      int    `json:"proxyPort"`
-	ManagementPort int    `json:"managementPort"`
-	OllamaEndpoint string `json:"ollamaEndpoint"`
-	OllamaModel    string `json:"ollamaModel"`
-	UseAIDetection bool   `json:"useAIDetection"`
+	ProxyPort      int     `json:"proxyPort"`
+	ManagementPort int     `json:"managementPort"`
+	OllamaEndpoint string  `json:"ollamaEndpoint"`
+	OllamaModel    string  `json:"ollamaModel"`
+	UseAIDetection bool    `json:"useAIDetection"`
 	AIConfidence   float64 `json:"aiConfidenceThreshold"`
-	LogLevel       string `json:"logLevel"`
+	LogLevel       string  `json:"logLevel"`
 
 	CACertFile string `json:"caCertFile"`
 	CAKeyFile  string `json:"caKeyFile"`
