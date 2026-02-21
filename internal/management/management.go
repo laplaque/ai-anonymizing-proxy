@@ -9,13 +9,16 @@
 package management
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +30,7 @@ type Server struct {
 	cfg       *config.Config
 	startTime time.Time
 	domains   *DomainRegistry
+	token     string // bearer token for auth; empty = no auth
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -173,11 +177,16 @@ func (r *DomainRegistry) persist(domains []string) {
 
 // New creates a management server.
 func New(cfg *config.Config, registry *DomainRegistry) *Server {
-	return &Server{
+	s := &Server{
 		cfg:       cfg,
 		startTime: time.Now(),
 		domains:   registry,
+		token:     cfg.ManagementToken,
 	}
+	if s.token != "" {
+		log.Printf("[MANAGEMENT] Bearer token authentication enabled")
+	}
+	return s
 }
 
 // Handler returns the HTTP handler for the management API.
@@ -186,7 +195,36 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/domains/add", s.handleAddDomain)
 	mux.HandleFunc("/domains/remove", s.handleRemoveDomain)
-	return mux
+	return s.authMiddleware(mux)
+}
+
+// authMiddleware checks for a valid Bearer token if one is configured.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(auth, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimSpace(auth[len(prefix):])), []byte(s.token)) != 1 {
+			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", r.RemoteAddr, r.URL.Path)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// domainRegexp validates a DNS hostname (RFC 952 / RFC 1123).
+var domainRegexp = regexp.MustCompile(
+	`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`,
+)
+
+// validDomain checks that the domain is a syntactically valid hostname.
+func validDomain(d string) bool {
+	return len(d) <= 253 && domainRegexp.MatchString(d)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
@@ -220,11 +258,17 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var req struct {
 		Domain string `json:"domain"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
 		http.Error(w, "invalid request: need {\"domain\":\"...\"}", http.StatusBadRequest)
+		return
+	}
+	req.Domain = strings.ToLower(req.Domain)
+	if !validDomain(req.Domain) {
+		http.Error(w, "invalid domain name", http.StatusBadRequest)
 		return
 	}
 	s.domains.Add(req.Domain)
@@ -237,11 +281,17 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var req struct {
 		Domain string `json:"domain"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
 		http.Error(w, "invalid request: need {\"domain\":\"...\"}", http.StatusBadRequest)
+		return
+	}
+	req.Domain = strings.ToLower(req.Domain)
+	if !validDomain(req.Domain) {
+		http.Error(w, "invalid domain name", http.StatusBadRequest)
 		return
 	}
 	s.domains.Remove(req.Domain)
