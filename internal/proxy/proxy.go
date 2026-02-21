@@ -1,7 +1,8 @@
 // Package proxy implements the core HTTP proxy server.
 //
 // Traffic flow:
-//   - HTTPS CONNECT requests: tunneled transparently (no TLS termination)
+//   - HTTPS CONNECT to AI API domains (with MITM CA): TLS terminated, body anonymized
+//   - HTTPS CONNECT to other domains: tunneled transparently (no inspection)
 //   - HTTP requests to AI API domains: body is anonymized before forwarding
 //   - HTTP requests to auth domains/paths: passed through unchanged
 //   - All other HTTP requests: passed through unchanged
@@ -24,16 +25,18 @@ import (
 
 	"ai-anonymizing-proxy/internal/anonymizer"
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/mitm"
 )
 
 // Server is the HTTP proxy server.
 type Server struct {
-	cfg        *config.Config
-	anon       *anonymizer.Anonymizer
-	aiDomains  map[string]bool
+	cfg         *config.Config
+	anon        *anonymizer.Anonymizer
+	aiDomains   map[string]bool
 	authDomains map[string]bool
-	authPaths  map[string]bool
-	transport  *http.Transport
+	authPaths   map[string]bool
+	transport   *http.Transport
+	ca          *mitm.CA // nil if MITM is not available
 }
 
 // New creates and configures a new proxy server.
@@ -61,6 +64,17 @@ func New(cfg *config.Config) *Server {
 		ForceAttemptHTTP2:     true,
 	}
 
+	// Load or auto-generate CA for MITM TLS termination
+	if cfg.CACertFile != "" && cfg.CAKeyFile != "" {
+		ca, err := mitm.LoadOrGenerateCA(cfg.CACertFile, cfg.CAKeyFile)
+		if err != nil {
+			log.Printf("[PROXY] MITM disabled: %v", err)
+		} else {
+			s.ca = ca
+			log.Printf("[PROXY] MITM TLS interception enabled for AI API domains")
+		}
+	}
+
 	return s
 }
 
@@ -73,10 +87,91 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handleHTTP(w, r)
 }
 
-// handleTunnel handles HTTPS CONNECT requests by establishing a TCP tunnel.
-// Traffic inside the tunnel is not inspected (no TLS termination).
+// handleTunnel dispatches CONNECT requests: MITM intercept for AI domains,
+// opaque tunnel for everything else.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
+
+	// Extract domain without port for matching
+	domain := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		domain = h
+	}
+
+	// MITM intercept for AI API domains when CA is available
+	if s.ca != nil && s.aiDomains[domain] && !s.isAuthRequest(domain, "") {
+		s.handleMITMTunnel(w, r, host, domain)
+		return
+	}
+
+	s.handleOpaqueTunnel(w, r, host)
+}
+
+// handleMITMTunnel intercepts HTTPS connections to AI API domains.
+// It performs TLS termination with a dynamically generated certificate,
+// reads the plaintext HTTP request, anonymizes it, and forwards upstream.
+func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, domain string) {
+	log.Printf("[MITM] Intercepting CONNECT %s", host)
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		log.Printf("[MITM] Hijacking not supported for %s", host)
+		s.handleOpaqueTunnel(w, r, host)
+		return
+	}
+
+	// Tell the client the tunnel is established
+	w.WriteHeader(http.StatusOK)
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		log.Printf("[MITM] Hijack error for %s: %v", host, err)
+		return
+	}
+	defer clientConn.Close()
+
+	// Build a handler that anonymizes and forwards requests
+	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		// Fix up the request URL to be absolute for the transport
+		req.URL.Scheme = "https"
+		req.URL.Host = host
+		req.RequestURI = ""
+
+		isAuth := s.isAuthRequest(domain, req.URL.Path)
+		tag := "[ANON]"
+		if isAuth {
+			tag = "[AUTH][PASS]"
+		}
+		log.Printf("[MITM] %s %s%s %s", req.Method, domain, req.URL.Path, tag)
+
+		// Anonymize body for non-auth requests
+		if !isAuth {
+			if err := s.anonymizeRequestBody(req); err != nil {
+				log.Printf("[MITM] Anonymization error for %s: %v", domain, err)
+			}
+		}
+
+		// Forward to the real destination
+		removeHopByHop(req.Header)
+		resp, err := s.transport.RoundTrip(req)
+		if err != nil {
+			http.Error(rw, fmt.Sprintf("upstream error: %v", err), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		removeHopByHop(resp.Header)
+		copyHeader(rw.Header(), resp.Header)
+		rw.WriteHeader(resp.StatusCode)
+		io.Copy(rw, resp.Body) //nolint:errcheck
+	})
+
+	// Perform TLS handshake and serve HTTP/1.1 or HTTP/2
+	mitm.HandleConn(clientConn, domain, s.ca, handler)
+}
+
+// handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
+func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
 	log.Printf("[TUNNEL] CONNECT %s", host)
 
 	destConn, err := net.DialTimeout("tcp", host, 20*time.Second)

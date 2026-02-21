@@ -2,8 +2,10 @@ BINARY     := bin/proxy
 CMD        := ./cmd/proxy
 GO         := go
 BUILD_FLAGS := -ldflags="-s -w"
+CA_CERT    := ca-cert.pem
+CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint
+.PHONY: all build run clean test lint gen-ca import-ca-macos import-ca-linux import-ca-windows
 
 all: build
 
@@ -27,6 +29,34 @@ lint:
 
 clean:
 	rm -rf bin/
+
+# --- CA Certificate Management ---
+
+# Generate a self-signed CA certificate for MITM TLS interception.
+# The proxy can also auto-generate these on first start.
+gen-ca:
+	openssl genrsa -out $(CA_KEY) 4096
+	openssl req -new -x509 -key $(CA_KEY) -out $(CA_CERT) -days 3650 \
+		-subj "/CN=AI-Proxy Local CA/O=AI Anonymizing Proxy"
+	@echo "CA certificate generated: $(CA_CERT) / $(CA_KEY)"
+	@echo "Trust this CA on your OS to enable HTTPS interception."
+
+# Import CA into macOS trust store (requires admin password)
+import-ca-macos:
+	sudo security add-trusted-cert -d -r trustRoot \
+		-k /Library/Keychains/System.keychain $(CA_CERT)
+	@echo "CA trusted on macOS."
+
+# Import CA into Linux trust store (Debian/Ubuntu)
+import-ca-linux:
+	sudo cp $(CA_CERT) /usr/local/share/ca-certificates/ai-proxy-ca.crt
+	sudo update-ca-certificates
+	@echo "CA trusted on Linux."
+
+# Import CA into Windows trust store (run from elevated prompt)
+import-ca-windows:
+	@echo "Run from an elevated Command Prompt:"
+	@echo "  certutil -addstore -f \"ROOT\" $(CA_CERT)"
 
 # Quick smoke test against a running proxy
 smoke:

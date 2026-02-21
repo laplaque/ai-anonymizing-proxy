@@ -1,14 +1,16 @@
 # AI Anonymizing Proxy
 
-An HTTP forward proxy that intercepts requests to AI API providers and strips personally identifiable information (PII) from request bodies before forwarding them. Sits between your applications and AI APIs (OpenAI, Anthropic, Cohere, Mistral, etc.) to prevent sensitive data from leaking into LLM prompts.
+An HTTP/HTTPS forward proxy that intercepts requests to AI API providers and strips personally identifiable information (PII) from request bodies before forwarding them. Sits between your applications and AI APIs (OpenAI, Anthropic, Cohere, Mistral, etc.) to prevent sensitive data from leaking into LLM prompts.
+
+Supports **MITM TLS termination** for HTTPS traffic — the proxy decrypts, anonymizes, and re-encrypts requests to AI API domains using a local CA certificate. Non-AI traffic is tunneled transparently.
 
 ## How It Works
 
 ```
-Client ──► Proxy (:8080) ──► anonymize PII ──► AI API
-                                  │
-                           regex + Ollama
-                           (two-stage detection)
+Client ──TLS (proxy CA)──► Proxy (:8080) ──► anonymize PII ──TLS (real cert)──► AI API
+                                                   │
+                                            regex + Ollama
+                                            (two-stage detection)
 
 Management API (:8081) ──► status, add/remove domains at runtime
 ```
@@ -17,7 +19,8 @@ Management API (:8081) ──► status, add/remove domains at runtime
 
 | Request type | Behavior |
 |---|---|
-| HTTPS (CONNECT) | TCP tunnel, no inspection |
+| HTTPS CONNECT to AI API domain | MITM TLS intercept — body anonymized, then forwarded (requires trusted CA) |
+| HTTPS CONNECT to other domains | TCP tunnel, no inspection |
 | HTTP to AI API domain | Body anonymized, then forwarded |
 | HTTP to auth domain/path | Passed through unchanged |
 | Everything else | Passed through unchanged |
@@ -87,6 +90,8 @@ Place this file in the working directory where the proxy runs:
   "useAIDetection": true,
   "aiConfidenceThreshold": 0.7,
   "logLevel": "info",
+  "caCertFile": "ca-cert.pem",
+  "caKeyFile": "ca-key.pem",
   "aiApiDomains": [
     "api.anthropic.com",
     "api.openai.com",
@@ -123,6 +128,8 @@ Place this file in the working directory where the proxy runs:
 | `USE_AI_DETECTION` | `true` | Set `false` to disable Ollama (regex only) |
 | `AI_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence for AI detections (0.0–1.0) |
 | `LOG_LEVEL` | `info` | Log verbosity |
+| `CA_CERT_FILE` | `ca-cert.pem` | Path to CA certificate for MITM TLS interception |
+| `CA_KEY_FILE` | `ca-key.pem` | Path to CA private key for MITM TLS interception |
 | `HTTP_PROXY` / `HTTPS_PROXY` | — | Upstream proxy for chaining (e.g., corporate proxy) |
 
 ## Running
@@ -292,6 +299,94 @@ Start-ScheduledTask -TaskName "ai-proxy"
 Unregister-ScheduledTask -TaskName "ai-proxy" -Confirm:$false  # remove
 ```
 
+## HTTPS Interception (MITM TLS)
+
+The proxy performs MITM TLS termination on HTTPS connections to AI API domains. This allows it to decrypt, anonymize PII in the request body, and re-encrypt before forwarding to the real API server. Non-AI domains are tunneled transparently without inspection.
+
+### How it works
+
+1. Client sends `CONNECT api.openai.com:443`
+2. Proxy checks if the domain is in `aiApiDomains`
+   - **Yes**: generates a TLS certificate for that domain signed by the proxy's CA, performs TLS handshake with client, reads plaintext HTTP, anonymizes PII, forwards over real TLS to the API
+   - **No**: establishes an opaque TCP tunnel (existing behavior)
+3. Supports both HTTP/1.1 and HTTP/2 (ALPN negotiation)
+
+### CA certificate setup
+
+On first start, the proxy **auto-generates** a CA certificate (`ca-cert.pem` / `ca-key.pem`) in its working directory if the files don't exist. You can also generate one manually or bring your own.
+
+**Auto-generate (default):** Just start the proxy. The CA files will be created and the log will show trust instructions.
+
+**Manual generation:**
+
+```bash
+make gen-ca
+```
+
+**Bring your own CA:** Set `CA_CERT_FILE` and `CA_KEY_FILE` environment variables (or `caCertFile`/`caKeyFile` in `proxy-config.json`) pointing to your own PEM files. This is useful for corporate PKI or shared CA infrastructure.
+
+### Trusting the CA
+
+Clients must trust the proxy's CA certificate for HTTPS interception to work. Without this, clients will reject the proxy's certificates with TLS errors.
+
+**macOS:**
+
+```bash
+# System-wide (requires admin password)
+# Use the full path to the CA cert in the proxy's working directory
+sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain /opt/ai-proxy/ca-cert.pem
+
+# Or from the proxy directory:
+cd /opt/ai-proxy && make import-ca-macos
+```
+
+**Linux (Debian/Ubuntu):**
+
+```bash
+sudo cp ca-cert.pem /usr/local/share/ca-certificates/ai-proxy-ca.crt
+sudo update-ca-certificates
+
+# Or use: make import-ca-linux
+```
+
+**Linux (RHEL/Fedora):**
+
+```bash
+sudo cp ca-cert.pem /etc/pki/ca-trust/source/anchors/ai-proxy-ca.crt
+sudo update-ca-trust
+```
+
+**Windows (elevated Command Prompt):**
+
+```cmd
+certutil -addstore -f "ROOT" ca-cert.pem
+```
+
+**Node.js / npm:**
+
+```bash
+export NODE_EXTRA_CA_CERTS=/path/to/ca-cert.pem
+```
+
+**Python (requests / pip):**
+
+```bash
+export REQUESTS_CA_BUNDLE=/path/to/ca-cert.pem
+# or
+export SSL_CERT_FILE=/path/to/ca-cert.pem
+```
+
+### Disabling MITM
+
+To disable HTTPS interception, set the CA paths to empty strings:
+
+```bash
+CA_CERT_FILE="" CA_KEY_FILE="" ./bin/proxy
+```
+
+The proxy will fall back to opaque TCP tunneling for all HTTPS traffic.
+
 ## Configuring Clients
 
 Point your applications at the proxy by setting environment variables or application-specific settings.
@@ -413,8 +508,7 @@ nssm status ai-proxy
 
 ## Limitations
 
-- **HTTPS traffic is opaque.** CONNECT tunnels are passed through without inspection. The proxy only anonymizes plain HTTP request bodies. Most AI APIs use HTTPS, so requests over HTTPS are tunneled but not anonymized.
-- **No TLS termination (MITM).** The proxy does not decrypt HTTPS traffic. To anonymize HTTPS bodies, you would need to add MITM TLS termination with a custom CA certificate trusted by clients.
+- **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the proxy's CA certificate. Without it, clients will see TLS certificate errors.
 - **Ollama cache is unbounded.** The in-memory AI detection cache grows without limit. Restart the proxy to clear it.
 - **Management API has no authentication.** Anyone who can reach port 8081 can add or remove domains. Bind it to localhost or use firewall rules in production.
 
@@ -427,6 +521,9 @@ ai-proxy/
 │   ├── anonymizer/anonymizer.go   # PII detection (regex + Ollama)
 │   ├── config/config.go           # Configuration loading
 │   ├── management/management.go   # Runtime management API
+│   ├── mitm/
+│   │   ├── cert.go                # CA loading, auto-generation, cert cache
+│   │   └── mitm.go                # MITM TLS handler (HTTP/1.1 + H2)
 │   └── proxy/proxy.go             # Core HTTP proxy
 ├── proxy-config.json              # Default configuration
 ├── Makefile                       # Build targets (Linux/macOS)

@@ -6,6 +6,8 @@
   "useAIDetection": true,
   "aiConfidenceThreshold": 0.7,
   "logLevel": "info",
+  "caCertFile": "ca-cert.pem",
+  "caKeyFile": "ca-key.pem",
   "aiApiDomains": [
     "api.anthropic.com",
     "api.openai.com",
