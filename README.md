@@ -451,7 +451,9 @@ os.environ["HTTPS_PROXY"] = "http://localhost:8080"
 
 The management API runs on port 8081 (configurable) and binds to `127.0.0.1` only.
 
-If `MANAGEMENT_TOKEN` is set, all requests require a `Authorization: Bearer <token>` header. Domain names are validated against RFC 1123 hostname rules.
+If `MANAGEMENT_TOKEN` is set, all requests require a `Authorization: Bearer <token>` header. Domain names are validated against RFC 1123 hostname rules and normalized to lowercase.
+
+> **Security note:** Prefer setting `MANAGEMENT_TOKEN` via an environment variable rather than storing it in `proxy-config.json`, as config files can be accidentally committed to version control.
 
 ### Check status
 

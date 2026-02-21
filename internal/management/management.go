@@ -9,6 +9,7 @@
 package management
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -206,7 +207,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		auth := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(auth, prefix) || strings.TrimSpace(auth[len(prefix):]) != s.token {
+		if !strings.HasPrefix(auth, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimSpace(auth[len(prefix):])), []byte(s.token)) != 1 {
+			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", r.RemoteAddr, r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -263,6 +266,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request: need {\"domain\":\"...\"}", http.StatusBadRequest)
 		return
 	}
+	req.Domain = strings.ToLower(req.Domain)
 	if !validDomain(req.Domain) {
 		http.Error(w, "invalid domain name", http.StatusBadRequest)
 		return
@@ -285,6 +289,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request: need {\"domain\":\"...\"}", http.StatusBadRequest)
 		return
 	}
+	req.Domain = strings.ToLower(req.Domain)
 	if !validDomain(req.Domain) {
 		http.Error(w, "invalid domain name", http.StatusBadRequest)
 		return
