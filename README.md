@@ -113,8 +113,8 @@ nssm status ai-proxy
 
 - **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the
   proxy's CA certificate. Without it, clients will see TLS certificate errors.
-- **Ollama cache is unbounded.** The in-memory AI detection cache grows without limit. Restart
-  the proxy to clear it.
+- **Ollama detection cache is in-memory and bounded.** Capped at roughly 10 000 entries;
+  the oldest 25 % are evicted when the limit is reached. Restarting the proxy clears it entirely.
 - **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token
   auth. Without it, anyone with network access to port 8081 can add or remove domains.
 

@@ -53,12 +53,6 @@ func init() {
 		}
 		privateNetworks = append(privateNetworks, network)
 	}
-	// IPv4 loopback and link-local are appended as net.IPNet structs with byte-array
-	// IPs so the PII anonymizer (which replaces dotted-quad literals) cannot corrupt them.
-	privateNetworks = append(privateNetworks,
-		&net.IPNet{IP: net.IP{127, 0, 0, 0}, Mask: net.CIDRMask(8, 32)},    // loopback
-		&net.IPNet{IP: net.IP{169, 254, 0, 0}, Mask: net.CIDRMask(16, 32)}, // link-local / cloud metadata
-	)
 }
 
 // isPrivateHost checks literal IP addresses only. It does not perform DNS
@@ -108,11 +102,12 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 			}
 		}
 
-		// Dial using the first resolved IP to ensure we connect to what we checked
-		if len(ips) > 0 {
-			return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		// Dial using the first resolved IP to ensure we connect to what we checked.
+		// Return an error if the resolver returned no addresses (empty IPs = unknown host).
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("proxy: no IP addresses returned for host %q", host)
 		}
-		return d.DialContext(ctx, network, addr)
+		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 	}
 }
 
@@ -124,6 +119,7 @@ type Server struct {
 	authDomains map[string]bool
 	authPaths   map[string]bool
 	transport   *http.Transport
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	ca          *mitm.CA // nil if MITM is not available
 }
 
@@ -157,9 +153,12 @@ func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 		}
 	}
 
+	safeDial := ssrfSafeDialContext(dialer)
+	s.dialContext = safeDial
+
 	s.transport = &http.Transport{
 		Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
-		DialContext:           ssrfSafeDialContext(dialer),
+		DialContext:           safeDial,
 		MaxIdleConns:          200,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -251,6 +250,8 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		if !isAuth {
 			if err := s.anonymizeRequestBody(req); err != nil {
 				log.Printf("[MITM] Anonymization error for %s: %v", domain, err)
+				http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+				return
 			}
 		}
 
@@ -275,7 +276,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
-func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, _ *http.Request, host string) {
+func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
 	log.Printf("[TUNNEL] CONNECT %s", host)
 
 	if isPrivateHost(host) {
@@ -284,7 +285,10 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, _ *http.Request, host
 		return
 	}
 
-	destConn, err := net.DialTimeout("tcp", host, 20*time.Second)
+	// Use ssrfSafeDialContext so DNS-resolved IPs are also checked (prevents rebinding).
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
 		log.Printf("[TUNNEL] Connection failed for %s: %v", host, err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -342,6 +346,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if isAI && !isAuth {
 		if err := s.anonymizeRequestBody(r); err != nil {
 			log.Printf("[HTTP] Anonymization error for %s: %v", domain, err)
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
 		}
 	}
 

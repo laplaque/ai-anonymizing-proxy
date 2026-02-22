@@ -104,10 +104,10 @@ proxy process (running as your user) cannot write to. This causes an exit at sta
 
 Create `/etc/newsyslog.d/ai-proxy.conf` (requires `sudo`):
 
-```
+```text
 # logfile                              owner:group    mode count  size  when  flags
-/opt/ai-proxy/logs/proxy.err.log       earlplak:admin  644   5    [ADDRESS_8eddb379]     *     GZ
-/opt/ai-proxy/logs/proxy.out.log       earlplak:admin  644   5    [ADDRESS_8eddb379]     *     GZ
+/opt/ai-proxy/logs/proxy.err.log       earlplak:admin  644   5    2048   *     GZ
+/opt/ai-proxy/logs/proxy.out.log       earlplak:admin  644   5    2048   *     GZ
 ```
 
 Replace `earlplak` with your macOS username. The `G` flag compresses rotated files with gzip;

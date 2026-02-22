@@ -34,10 +34,14 @@ Add to `settings.json`:
 
 ```json
 {
-  "http.proxy": "http://localhost:8080",
-  "http.proxyStrictSSL": false
+  "http.proxy": "http://localhost:8080"
 }
 ```
+
+> **Note:** `http.proxyStrictSSL` is intentionally omitted. If you enabled MITM TLS interception,
+> trust the proxy CA certificate in your OS keychain instead of disabling SSL validation globally
+> (disabling it would suppress TLS errors for all VSCode traffic, not just proxy connections).
+> See [tls-mitm.md](tls-mitm.md) for per-platform CA trust instructions.
 
 To make sure extensions running in the integrated terminal also use the proxy, add:
 

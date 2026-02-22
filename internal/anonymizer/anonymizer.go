@@ -350,7 +350,15 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 		for _, k := range a.cacheOrder[:evict] {
 			delete(a.cache, k)
 		}
-		a.cacheOrder = a.cacheOrder[evict:]
+		// Compact cacheOrder: keep only keys still present in the cache map
+		// (handles duplicate keys caused by re-insertion after eviction).
+		alive := a.cacheOrder[:0]
+		for _, k := range a.cacheOrder[evict:] {
+			if _, ok := a.cache[k]; ok {
+				alive = append(alive, k)
+			}
+		}
+		a.cacheOrder = alive
 	}
 	a.cacheMu.Unlock()
 
