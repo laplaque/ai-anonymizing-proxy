@@ -49,6 +49,8 @@ type pattern struct {
 	piiType PIIType
 }
 
+const maxDetectionCache = 10_000
+
 // Anonymizer holds compiled patterns and the Ollama client config.
 type Anonymizer struct {
 	patterns    []pattern
@@ -57,10 +59,11 @@ type Anonymizer struct {
 	useAI       bool
 	aiThreshold float64
 
-	cacheMu   sync.RWMutex
-	cache     map[string][]ollamaDetection // keyed by md5(text)
-	inFlight  sync.Map                     // tracks in-progress Ollama queries (key: cacheKey)
-	ollamaSem chan struct{}                // semaphore: limits concurrent Ollama calls
+	cacheMu    sync.RWMutex
+	cache      map[string][]ollamaDetection // keyed by md5(text)
+	cacheOrder []string                     // insertion order for FIFO eviction
+	inFlight   sync.Map                     // tracks in-progress Ollama queries (key: cacheKey)
+	ollamaSem  chan struct{}                 // semaphore: limits concurrent Ollama calls
 }
 
 // New creates an Anonymizer with the given options.
@@ -310,9 +313,13 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response body
 
 	const maxOllamaResponse = 10 << 20 // 10 MB
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaResponse))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaResponse+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > maxOllamaResponse {
+		log.Printf("[ANONYMIZER] Ollama response truncated at %d bytes", maxOllamaResponse)
+		body = body[:maxOllamaResponse]
 	}
 
 	var ollamaResp ollamaResponse
@@ -334,9 +341,17 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 		return nil, fmt.Errorf("detection parse error: %w", err)
 	}
 
-	// Store in cache
+	// Store in cache; evict oldest 25 % of entries when the limit is exceeded.
 	a.cacheMu.Lock()
 	a.cache[cacheKey] = detections
+	a.cacheOrder = append(a.cacheOrder, cacheKey)
+	if len(a.cache) > maxDetectionCache {
+		evict := maxDetectionCache / 4
+		for _, k := range a.cacheOrder[:evict] {
+			delete(a.cache, k)
+		}
+		a.cacheOrder = a.cacheOrder[evict:]
+	}
 	a.cacheMu.Unlock()
 
 	return detections, nil

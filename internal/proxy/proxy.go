@@ -7,19 +7,22 @@
 //   - HTTP requests to auth domains/paths: passed through unchanged
 //   - All other HTTP requests: passed through unchanged
 //
-// Upstream proxy (corporate proxy) chaining is automatic: Go's net/http
-// respects HTTP_PROXY / HTTPS_PROXY / NO_PROXY environment variables natively.
-// No extra configuration is needed — just set those env vars before starting.
+// Upstream proxy chaining: configure via UPSTREAM_PROXY env var or upstreamProxy in
+// proxy-config.json. The transport intentionally never reads HTTP_PROXY / HTTPS_PROXY
+// from the environment to prevent the proxy from routing its own traffic back through
+// itself when those vars are set for downstream clients.
 package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,31 +47,30 @@ func init() {
 		"fc00::/7",
 		"fe80::/10",
 	} {
-		_, network, _ := net.ParseCIDR(cidr)
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Fatalf("proxy: invalid private network CIDR %q: %v", cidr, err)
+		}
 		privateNetworks = append(privateNetworks, network)
 	}
+	// IPv4 loopback and link-local are appended as net.IPNet structs with byte-array
+	// IPs so the PII anonymizer (which replaces dotted-quad literals) cannot corrupt them.
+	privateNetworks = append(privateNetworks,
+		&net.IPNet{IP: net.IP{127, 0, 0, 0}, Mask: net.CIDRMask(8, 32)},   // loopback
+		&net.IPNet{IP: net.IP{169, 254, 0, 0}, Mask: net.CIDRMask(16, 32)}, // link-local / cloud metadata
+	)
 }
 
-// isPrivateHost resolves the hostname and returns true if any of its IPs
-// fall within a private/loopback/link-local range.
+// isPrivateHost checks literal IP addresses only. It does not perform DNS
+// resolution to avoid TOCTOU issues (DNS rebinding). DNS-resolved IPs are
+// checked at connection time by ssrfSafeDialContext.
 func isPrivateHost(host string) bool {
 	hostname := host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		hostname = h
 	}
-	// Fast-path: try parsing as literal IP first
 	if ip := net.ParseIP(hostname); ip != nil {
 		return isPrivateIP(ip)
-	}
-	// Resolve DNS
-	ips, err := net.LookupIP(hostname)
-	if err != nil {
-		return false // resolution failed; let the dial fail naturally
-	}
-	for _, ip := range ips {
-		if isPrivateIP(ip) {
-			return true
-		}
 	}
 	return false
 }
@@ -80,6 +82,38 @@ func isPrivateIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+var errPrivateIP = fmt.Errorf("connection to private IP blocked")
+
+// ssrfSafeDialContext wraps a net.Dialer and checks the resolved IP address
+// at connection time — eliminating the TOCTOU gap between DNS resolution and dial.
+func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return d.DialContext(ctx, network, addr)
+		}
+
+		// Resolve the hostname ourselves so we can inspect the IPs
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ipAddr := range ips {
+			if isPrivateIP(ipAddr.IP) {
+				log.Printf("[SSRF] Blocked connection to private IP %s (host: %s)", ipAddr.IP, host)
+				return nil, errPrivateIP
+			}
+		}
+
+		// Dial using the first resolved IP to ensure we connect to what we checked
+		if len(ips) > 0 {
+			return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		}
+		return d.DialContext(ctx, network, addr)
+	}
 }
 
 // Server is the HTTP proxy server.
@@ -103,14 +137,29 @@ func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 		authPaths:   toSet(cfg.AuthPaths),
 	}
 
-	// transport uses ProxyFromEnvironment — automatically picks up
+	// Upstream proxy set explicitly via config — never inherits HTTP_PROXY from environment
 	// HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars for upstream chaining.
+	// The custom DialContext enforces SSRF protection at connection time,
+	// preventing DNS rebinding attacks (TOCTOU).
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if cfg.UpstreamProxy != "" {
+	    upstreamURL, err := url.Parse(cfg.UpstreamProxy)
+	    if err != nil {
+	        log.Printf("[PROXY] Invalid upstreamProxy %q: %v — using direct", cfg.UpstreamProxy, err)
+	    } else {
+	        log.Printf("[PROXY] Upstream proxy: %s", cfg.UpstreamProxy)
+	        proxyFunc = http.ProxyURL(upstreamURL)
+	    }
+	}
+
 	s.transport = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+    	Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
+		DialContext:           ssrfSafeDialContext(dialer),
 		MaxIdleConns:          200,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -340,10 +389,13 @@ func (s *Server) anonymizeRequestBody(r *http.Request) error {
 		return nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
 	if err != nil {
 		return err
+	}
+	if int64(len(body)) > maxRequestBody {
+		return fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
 	}
 
 	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
