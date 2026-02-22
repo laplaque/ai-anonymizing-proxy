@@ -129,6 +129,6 @@ func loadEnv(cfg *Config) {
 		cfg.ManagementToken = v
 	}
 	if v := os.Getenv("UPSTREAM_PROXY"); v != "" {
-    	cfg.UpstreamProxy = v
+		cfg.UpstreamProxy = v
 	}
 }

@@ -56,7 +56,7 @@ func init() {
 	// IPv4 loopback and link-local are appended as net.IPNet structs with byte-array
 	// IPs so the PII anonymizer (which replaces dotted-quad literals) cannot corrupt them.
 	privateNetworks = append(privateNetworks,
-		&net.IPNet{IP: net.IP{127, 0, 0, 0}, Mask: net.CIDRMask(8, 32)},   // loopback
+		&net.IPNet{IP: net.IP{127, 0, 0, 0}, Mask: net.CIDRMask(8, 32)},    // loopback
 		&net.IPNet{IP: net.IP{169, 254, 0, 0}, Mask: net.CIDRMask(16, 32)}, // link-local / cloud metadata
 	)
 }
@@ -148,17 +148,17 @@ func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	if cfg.UpstreamProxy != "" {
-	    upstreamURL, err := url.Parse(cfg.UpstreamProxy)
-	    if err != nil {
-	        log.Printf("[PROXY] Invalid upstreamProxy %q: %v — using direct", cfg.UpstreamProxy, err)
-	    } else {
-	        log.Printf("[PROXY] Upstream proxy: %s", cfg.UpstreamProxy)
-	        proxyFunc = http.ProxyURL(upstreamURL)
-	    }
+		upstreamURL, err := url.Parse(cfg.UpstreamProxy)
+		if err != nil {
+			log.Printf("[PROXY] Invalid upstreamProxy %q: %v — using direct", cfg.UpstreamProxy, err)
+		} else {
+			log.Printf("[PROXY] Upstream proxy: %s", cfg.UpstreamProxy)
+			proxyFunc = http.ProxyURL(upstreamURL)
+		}
 	}
 
 	s.transport = &http.Transport{
-    	Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
+		Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
 		DialContext:           ssrfSafeDialContext(dialer),
 		MaxIdleConns:          200,
 		IdleConnTimeout:       90 * time.Second,

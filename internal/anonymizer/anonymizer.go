@@ -63,7 +63,7 @@ type Anonymizer struct {
 	cache      map[string][]ollamaDetection // keyed by md5(text)
 	cacheOrder []string                     // insertion order for FIFO eviction
 	inFlight   sync.Map                     // tracks in-progress Ollama queries (key: cacheKey)
-	ollamaSem  chan struct{}                 // semaphore: limits concurrent Ollama calls
+	ollamaSem  chan struct{}                // semaphore: limits concurrent Ollama calls
 }
 
 // New creates an Anonymizer with the given options.

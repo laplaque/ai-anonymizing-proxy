@@ -45,8 +45,8 @@ func TestIsPrivateIP(t *testing.T) {
 func TestIsPrivateHost_Literal(t *testing.T) {
 	// Build public IP strings at runtime so the source doesn't contain dotted-quad
 	// literals that the PII anonymizer would replace with 10.0.0.x.
-	publicDNS := fmt.Sprintf("%d.%d.%d.%d:53", 8, 8, 8, 8)   // "8.8.8.8:53"
-	publicHost := fmt.Sprintf("%d.%d.%d.%d", 1, 1, 1, 1)      // "1.1.1.1"
+	publicDNS := fmt.Sprintf("%d.%d.%d.%d:53", 8, 8, 8, 8) // "8.8.8.8:53"
+	publicHost := fmt.Sprintf("%d.%d.%d.%d", 1, 1, 1, 1)   // "1.1.1.1"
 
 	tests := []struct {
 		host    string
