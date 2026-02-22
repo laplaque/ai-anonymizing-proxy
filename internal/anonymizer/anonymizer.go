@@ -3,8 +3,10 @@
 //  1. Fast regex pass for structured patterns (email, phone, SSN, etc.)
 //  2. Ollama AI pass for context-aware detection (names, job titles, etc.)
 //
-// Results from the AI pass are cached by content hash to avoid re-querying
-// Ollama for identical text fragments.
+// The AI pass is best-effort and async: the regex result is returned immediately
+// while Ollama runs in the background. On the next request with identical content
+// the cached AI detections are applied on top of the regex result.
+// This means zero added latency on cache miss, and full AI+regex on cache hit.
 package anonymizer
 
 import (
@@ -47,6 +49,8 @@ type pattern struct {
 	piiType PIIType
 }
 
+const maxDetectionCache = 10_000
+
 // Anonymizer holds compiled patterns and the Ollama client config.
 type Anonymizer struct {
 	patterns    []pattern
@@ -55,8 +59,11 @@ type Anonymizer struct {
 	useAI       bool
 	aiThreshold float64
 
-	cacheMu sync.RWMutex
-	cache   map[string][]ollamaDetection // keyed by md5(text)
+	cacheMu    sync.RWMutex
+	cache      map[string][]ollamaDetection // keyed by md5(text)
+	cacheOrder []string                     // insertion order for FIFO eviction
+	inFlight   sync.Map                     // tracks in-progress Ollama queries (key: cacheKey)
+	ollamaSem  chan struct{}                // semaphore: limits concurrent Ollama calls
 }
 
 // New creates an Anonymizer with the given options.
@@ -67,6 +74,7 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64) *A
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		cache:       make(map[string][]ollamaDetection),
+		ollamaSem:   make(chan struct{}, 1), // one Ollama query at a time
 	}
 	a.compilePatterns()
 	return a
@@ -98,23 +106,27 @@ func (a *Anonymizer) compilePatterns() {
 
 // AnonymizeText replaces all detected PII in the given string.
 // The requestID is used only for logging; it does not affect output.
+//
+// Stage 1 (regex) always runs synchronously.
+// Stage 2 (Ollama AI) is async best-effort: if detections are cached they are
+// applied immediately; otherwise a background query is started and this call
+// returns the regex-only result without waiting.
 func (a *Anonymizer) AnonymizeText(text, requestID string) string {
 	if text == "" {
 		return text
 	}
 
+	// Stage 1: fast regex replacements (always synchronous)
 	result := text
-
-	// Stage 1: regex replacements
 	for _, p := range a.patterns {
 		result = p.re.ReplaceAllStringFunc(result, func(match string) string {
 			return a.replacement(p.piiType, match)
 		})
 	}
 
-	// Stage 2: AI-powered detection (if enabled)
+	// Stage 2: AI-powered detection (async best-effort)
 	if a.useAI {
-		result = a.applyAIDetections(result, requestID)
+		result = a.applyAIDetectionsAsync(result, requestID)
 	}
 
 	return result
@@ -212,13 +224,47 @@ type ollamaDetection struct {
 	Confidence float64 `json:"confidence"`
 }
 
-func (a *Anonymizer) applyAIDetections(text, requestID string) string {
-	detections, err := a.queryOllama(text)
-	if err != nil {
-		log.Printf("[ANONYMIZER] [%s] Ollama unavailable, using regex only: %v", requestID, err)
-		return text
+// applyAIDetectionsAsync applies cached Ollama detections if available and
+// schedules a background query for cache misses. Returns immediately in both cases.
+func (a *Anonymizer) applyAIDetectionsAsync(text, requestID string) string {
+	cacheKey := fmt.Sprintf("%x", md5.Sum([]byte(text))) // #nosec G401 -- cache key, not crypto
+
+	// Cache hit: apply detections now
+	a.cacheMu.RLock()
+	cached, hit := a.cache[cacheKey]
+	a.cacheMu.RUnlock()
+
+	if hit {
+		return a.applyDetections(text, cached)
 	}
 
+	// Cache miss: kick off background query if not already in flight
+	if _, loaded := a.inFlight.LoadOrStore(cacheKey, struct{}{}); !loaded {
+		go func() {
+			defer a.inFlight.Delete(cacheKey)
+
+			// Acquire semaphore — drop query if Ollama is already busy
+			select {
+			case a.ollamaSem <- struct{}{}:
+				defer func() { <-a.ollamaSem }()
+			default:
+				log.Printf("[ANONYMIZER] [%s] Ollama busy, skipping background query", requestID)
+				return
+			}
+
+			_, err := a.queryOllama(text, cacheKey)
+			if err != nil {
+				log.Printf("[ANONYMIZER] [%s] background Ollama query failed: %v", requestID, err)
+			}
+		}()
+	}
+
+	// Return regex-only result immediately
+	return text
+}
+
+// applyDetections applies a slice of Ollama detections to text.
+func (a *Anonymizer) applyDetections(text string, detections []ollamaDetection) string {
 	result := text
 	for _, d := range detections {
 		if d.Confidence >= a.aiThreshold && d.Original != "" {
@@ -229,15 +275,9 @@ func (a *Anonymizer) applyAIDetections(text, requestID string) string {
 	return result
 }
 
-func (a *Anonymizer) queryOllama(text string) ([]ollamaDetection, error) {
-	// Check cache
-	cacheKey := fmt.Sprintf("%x", md5.Sum([]byte(text))) // #nosec G401 -- cache key, not crypto
-	a.cacheMu.RLock()
-	if cached, ok := a.cache[cacheKey]; ok {
-		a.cacheMu.RUnlock()
-		return cached, nil
-	}
-	a.cacheMu.RUnlock()
+// queryOllama calls the Ollama API and stores results in the cache.
+// cacheKey must be the md5 of text (pre-computed by the caller).
+func (a *Anonymizer) queryOllama(text, cacheKey string) ([]ollamaDetection, error) {
 
 	prompt := fmt.Sprintf(`Analyze the following text for PII (personally identifiable information).
 Return ONLY a JSON array of detections. Each item must have:
@@ -257,7 +297,7 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 		Stream: false,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.ollamaURL, bytes.NewReader(reqBody))
@@ -272,9 +312,14 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response body
 
-	body, err := io.ReadAll(resp.Body)
+	const maxOllamaResponse = 10 << 20 // 10 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOllamaResponse+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > maxOllamaResponse {
+		log.Printf("[ANONYMIZER] Ollama response truncated at %d bytes", maxOllamaResponse)
+		body = body[:maxOllamaResponse]
 	}
 
 	var ollamaResp ollamaResponse
@@ -296,9 +341,25 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 		return nil, fmt.Errorf("detection parse error: %w", err)
 	}
 
-	// Store in cache
+	// Store in cache; evict oldest 25 % of entries when the limit is exceeded.
 	a.cacheMu.Lock()
 	a.cache[cacheKey] = detections
+	a.cacheOrder = append(a.cacheOrder, cacheKey)
+	if len(a.cache) > maxDetectionCache {
+		evict := maxDetectionCache / 4
+		for _, k := range a.cacheOrder[:evict] {
+			delete(a.cache, k)
+		}
+		// Compact cacheOrder: keep only keys still present in the cache map
+		// (handles duplicate keys caused by re-insertion after eviction).
+		alive := a.cacheOrder[:0]
+		for _, k := range a.cacheOrder[evict:] {
+			if _, ok := a.cache[k]; ok {
+				alive = append(alive, k)
+			}
+		}
+		a.cacheOrder = alive
+	}
 	a.cacheMu.Unlock()
 
 	return detections, nil

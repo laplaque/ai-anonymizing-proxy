@@ -7,19 +7,22 @@
 //   - HTTP requests to auth domains/paths: passed through unchanged
 //   - All other HTTP requests: passed through unchanged
 //
-// Upstream proxy (corporate proxy) chaining is automatic: Go's net/http
-// respects HTTP_PROXY / HTTPS_PROXY / NO_PROXY environment variables natively.
-// No extra configuration is needed — just set those env vars before starting.
+// Upstream proxy chaining: configure via UPSTREAM_PROXY env var or upstreamProxy in
+// proxy-config.json. The transport intentionally never reads HTTP_PROXY / HTTPS_PROXY
+// from the environment to prevent the proxy from routing its own traffic back through
+// itself when those vars are set for downstream clients.
 package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,6 +32,85 @@ import (
 	"ai-anonymizing-proxy/internal/mitm"
 )
 
+// privateNetworks lists CIDR ranges that must never be reachable via CONNECT
+// or plain-HTTP forwarding (SSRF protection).
+var privateNetworks []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+	} {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Fatalf("proxy: invalid private network CIDR %q: %v", cidr, err)
+		}
+		privateNetworks = append(privateNetworks, network)
+	}
+}
+
+// isPrivateHost checks literal IP addresses only. It does not perform DNS
+// resolution to avoid TOCTOU issues (DNS rebinding). DNS-resolved IPs are
+// checked at connection time by ssrfSafeDialContext.
+func isPrivateHost(host string) bool {
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		return isPrivateIP(ip)
+	}
+	return false
+}
+
+func isPrivateIP(ip net.IP) bool {
+	for _, n := range privateNetworks {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var errPrivateIP = fmt.Errorf("connection to private IP blocked")
+
+// ssrfSafeDialContext wraps a net.Dialer and checks the resolved IP address
+// at connection time — eliminating the TOCTOU gap between DNS resolution and dial.
+func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return d.DialContext(ctx, network, addr)
+		}
+
+		// Resolve the hostname ourselves so we can inspect the IPs
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ipAddr := range ips {
+			if isPrivateIP(ipAddr.IP) {
+				log.Printf("[SSRF] Blocked connection to private IP %s (host: %s)", ipAddr.IP, host)
+				return nil, errPrivateIP
+			}
+		}
+
+		// Dial using the first resolved IP to ensure we connect to what we checked.
+		// Return an error if the resolver returned no addresses (empty IPs = unknown host).
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("proxy: no IP addresses returned for host %q", host)
+		}
+		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+}
+
 // Server is the HTTP proxy server.
 type Server struct {
 	cfg         *config.Config
@@ -37,6 +119,7 @@ type Server struct {
 	authDomains map[string]bool
 	authPaths   map[string]bool
 	transport   *http.Transport
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	ca          *mitm.CA // nil if MITM is not available
 }
 
@@ -50,14 +133,32 @@ func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 		authPaths:   toSet(cfg.AuthPaths),
 	}
 
-	// transport uses ProxyFromEnvironment — automatically picks up
+	// Upstream proxy set explicitly via config — never inherits HTTP_PROXY from environment
 	// HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars for upstream chaining.
+	// The custom DialContext enforces SSRF protection at connection time,
+	// preventing DNS rebinding attacks (TOCTOU).
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if cfg.UpstreamProxy != "" {
+		upstreamURL, err := url.Parse(cfg.UpstreamProxy)
+		if err != nil {
+			log.Printf("[PROXY] Invalid upstreamProxy %q: %v — using direct", cfg.UpstreamProxy, err)
+		} else {
+			log.Printf("[PROXY] Upstream proxy: %s", cfg.UpstreamProxy)
+			proxyFunc = http.ProxyURL(upstreamURL)
+		}
+	}
+
+	safeDial := ssrfSafeDialContext(dialer)
+	s.dialContext = safeDial
+
 	s.transport = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
+		DialContext:           safeDial,
 		MaxIdleConns:          200,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -149,6 +250,8 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		if !isAuth {
 			if err := s.anonymizeRequestBody(req); err != nil {
 				log.Printf("[MITM] Anonymization error for %s: %v", domain, err)
+				http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+				return
 			}
 		}
 
@@ -156,7 +259,8 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		removeHopByHop(req.Header)
 		resp, err := s.transport.RoundTrip(req)
 		if err != nil {
-			http.Error(rw, fmt.Sprintf("upstream error: %v", err), http.StatusBadGateway)
+			log.Printf("[MITM] Upstream error for %s: %v", host, err)
+			http.Error(rw, "bad gateway", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -172,12 +276,22 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
-func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, _ *http.Request, host string) {
+func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
 	log.Printf("[TUNNEL] CONNECT %s", host)
 
-	destConn, err := net.DialTimeout("tcp", host, 20*time.Second)
+	if isPrivateHost(host) {
+		log.Printf("[TUNNEL] Blocked CONNECT to private address: %s", host)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Use ssrfSafeDialContext so DNS-resolved IPs are also checked (prevents rebinding).
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("cannot connect to %s: %v", host, err), http.StatusBadGateway)
+		log.Printf("[TUNNEL] Connection failed for %s: %v", host, err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer destConn.Close() //nolint:errcheck // best-effort close
@@ -232,6 +346,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if isAI && !isAuth {
 		if err := s.anonymizeRequestBody(r); err != nil {
 			log.Printf("[HTTP] Anonymization error for %s: %v", domain, err)
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
 		}
 	}
 
@@ -248,13 +364,20 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		r.URL.Host = r.Host
 	}
 
+	if isPrivateHost(r.URL.Host) {
+		log.Printf("[HTTP] Blocked request to private address: %s", r.URL.Host)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Strip hop-by-hop headers
 	r.RequestURI = ""
 	removeHopByHop(r.Header)
 
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+		log.Printf("[HTTP] Upstream error for %s: %v", r.URL.Host, err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
@@ -265,15 +388,20 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 }
 
+const maxRequestBody = 50 << 20 // 50 MB
+
 func (s *Server) anonymizeRequestBody(r *http.Request) error {
 	if r.Body == nil || r.ContentLength == 0 {
 		return nil
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
 	if err != nil {
 		return err
+	}
+	if int64(len(body)) > maxRequestBody {
+		return fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
 	}
 
 	requestID := fmt.Sprintf("%d", time.Now().UnixNano())

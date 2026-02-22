@@ -19,6 +19,8 @@ import (
 	"time"
 )
 
+const maxCertCache = 10_000
+
 // CA holds certificate authority material for generating leaf certificates.
 type CA struct {
 	cert *x509.Certificate
@@ -201,6 +203,11 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 
 	ca.mu.Lock()
 	ca.cache[host] = leaf
+	if len(ca.cache) > maxCertCache {
+		// Certs are cheap to regenerate (~ms); clear the map rather than tracking LRU.
+		ca.cache = make(map[string]*tls.Certificate)
+		ca.cache[host] = leaf
+	}
 	ca.mu.Unlock()
 
 	return leaf, nil
