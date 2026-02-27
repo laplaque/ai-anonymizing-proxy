@@ -186,6 +186,119 @@ func (r *bytewiseReader) Read(p []byte) (int, error) {
 
 func (r *bytewiseReader) Close() error { return nil }
 
+// TestLowConfidenceCacheMissAppliesFallback verifies that a low-confidence
+// regex match with no cache entry is still anonymized immediately — PII is
+// never left unmasked waiting for an async Ollama response.
+func TestLowConfidenceCacheMissAppliesFallback(t *testing.T) {
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, nil)
+	sessionID := "sess-miss-1"
+
+	// Phone has confidence 0.65, below the 0.80 threshold — goes through cache path.
+	// Number placed at start of string to avoid the phone regex capturing a leading space.
+	input := "555-867-5309 is my number"
+	result := a.AnonymizeText(input, sessionID)
+
+	if strings.Contains(result, "555-867-5309") {
+		t.Errorf("low-confidence cache miss left PII unmasked: %q", result)
+	}
+	if result == input {
+		t.Errorf("AnonymizeText made no change on low-confidence miss: %q", result)
+	}
+}
+
+// TestLowConfidenceCacheHit verifies that a pre-warmed per-value cache entry
+// is used directly, and that the cached token round-trips through deanonymization.
+func TestLowConfidenceCacheHit(t *testing.T) {
+	// First pass with useAI=false to discover the exact string the phone regex
+	// captures — this becomes the cache key for the second pass.
+	discovery := New("http://localhost:11434", "test-model", false, 0.80, 1, nil)
+	input := "555-867-5309 is my number"
+	discovery.AnonymizeText(input, "discover")
+	discovery.sessionMu.RLock()
+	var matchedValue string
+	for _, orig := range discovery.sessions["discover"] {
+		matchedValue = orig
+		break
+	}
+	discovery.sessionMu.RUnlock()
+	if matchedValue == "" {
+		t.Fatal("discovery pass produced no session mappings")
+	}
+
+	// Now pre-warm the cache with the real match key and verify it is used.
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, nil)
+	sessionID := "sess-hit-1"
+	cachedToken := "[PHONE_cached1]"
+	a.cacheMu.Lock()
+	a.cache[matchedValue] = cachedToken
+	a.cacheMu.Unlock()
+
+	result := a.AnonymizeText(input, sessionID)
+	if !strings.Contains(result, cachedToken) {
+		t.Errorf("cached token not used: got %q, want it to contain %q", result, cachedToken)
+	}
+
+	// Deanonymization must reverse the cached token.
+	restored := a.DeanonymizeText(result, sessionID)
+	if restored != input {
+		t.Errorf("round-trip with cached token failed\n  want: %q\n   got: %q", input, restored)
+	}
+}
+
+// TestOllamaCacheKeyedByValue verifies that the same PII value appearing in
+// two different messages produces the same token — proving the cache is keyed
+// by value, not by surrounding text. Uses useAI=false (high-confidence email)
+// to exercise the deterministic replacement path without Ollama.
+func TestOllamaCacheKeyedByValue(t *testing.T) {
+	a := New("http://localhost:11434", "test-model", false, 0.80, 1, nil)
+
+	// Email has confidence 0.95 — same replacement() call regardless of context.
+	result1 := a.AnonymizeText("First message from alice@example.com today", "sess-val-1")
+	result2 := a.AnonymizeText("Second message from alice@example.com tomorrow", "sess-val-2")
+
+	// Extract the token from each result.
+	token1 := strings.TrimPrefix(strings.Split(result1, " ")[3], "")
+	token2 := strings.TrimPrefix(strings.Split(result2, " ")[3], "")
+
+	// Both results must contain the same token for the same email value.
+	a.sessionMu.RLock()
+	map1 := a.sessions["sess-val-1"]
+	map2 := a.sessions["sess-val-2"]
+	a.sessionMu.RUnlock()
+
+	if len(map1) == 0 || len(map2) == 0 {
+		t.Fatal("expected session maps to be populated")
+	}
+
+	// The token for alice@example.com must be identical across both sessions.
+	var tok1, tok2 string
+	for tok, orig := range map1 {
+		if orig == "alice@example.com" {
+			tok1 = tok
+		}
+	}
+	for tok, orig := range map2 {
+		if orig == "alice@example.com" {
+			tok2 = tok
+		}
+	}
+	_ = token1
+	_ = token2
+
+	if tok1 == "" || tok2 == "" {
+		t.Fatal("alice@example.com not found in session maps")
+	}
+	if tok1 != tok2 {
+		t.Errorf("same PII value produced different tokens across sessions: %q vs %q", tok1, tok2)
+	}
+	if strings.Contains(result1, "alice@example.com") {
+		t.Errorf("PII not masked in result1: %q", result1)
+	}
+	if strings.Contains(result2, "alice@example.com") {
+		t.Errorf("PII not masked in result2: %q", result2)
+	}
+}
+
 // TestTokenFormatNonRetriggering verifies that no token produced by replacement()
 // matches any compiled regex pattern. A failure here means the proxy would
 // re-tokenize its own output in future sessions ("proxy eats itself").

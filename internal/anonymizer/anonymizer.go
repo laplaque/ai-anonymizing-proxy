@@ -1,20 +1,20 @@
 // Package anonymizer detects and replaces PII in text.
-// Detection runs in two stages:
+// Detection runs in two stages per matched value:
 //  1. Fast regex pass for structured patterns (email, phone, SSN, etc.).
-//     Each pattern carries a base confidence score reflecting how specifically
-//     the regex identifies the target PII type.
-//  2. AI pass via Ollama — triggered only when the regex stage produces at
-//     least one low-confidence match (or no matches at all, which means the
-//     text may still contain AI-detectable PII such as names or medical terms).
+//     Each pattern carries a confidence score. High-confidence matches are
+//     tokenized immediately. Low-confidence matches go to stage 2.
+//  2. Per-value Ollama cache — consulted for each low-confidence regex match.
+//     Cache hit  → use the cached token.
+//     Cache miss → apply a deterministic fallback token immediately (PII is
+//                  never left unmasked), log the miss, and dispatch an async
+//                  Ollama goroutine to warm the cache for future requests.
 //
-// The AI pass is fully asynchronous on cache-miss:
-//   - Cache hit  → detections applied immediately to the current request.
-//   - Cache miss → a background goroutine dispatches the Ollama query and
-//     stores the result; the current request proceeds with regex-only output.
-//     Subsequent requests for identical text will benefit from the warm cache.
+// The cache is keyed by the original PII value, not by a hash of the
+// surrounding text. A recurring value (e.g. an IP address) gets a cache hit
+// regardless of which message body it appears in.
 //
 // An in-flight deduplication map prevents multiple concurrent goroutines from
-// querying Ollama for the same content hash.
+// querying Ollama for the same value.
 package anonymizer
 
 import (
@@ -73,7 +73,7 @@ type Anonymizer struct {
 	m           *metrics.Metrics // nil = no metrics collection
 
 	cacheMu sync.RWMutex
-	cache   map[string][]ollamaDetection // keyed by md5(text)
+	cache   map[string]string // keyed by original PII value → anonymized token
 
 	inflightMu sync.Mutex
 	inflight   map[string]bool // prevents duplicate concurrent Ollama queries
@@ -96,7 +96,7 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ol
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		m:           m,
-		cache:       make(map[string][]ollamaDetection),
+		cache:       make(map[string]string),
 		inflight:    make(map[string]bool),
 		ollamaSem:   make(chan struct{}, ollamaMaxConcurrent),
 		sessions:    make(map[string]map[string]string),
@@ -146,100 +146,76 @@ func (a *Anonymizer) compilePatterns() {
 // AnonymizeText replaces all detected PII in the given string.
 // sessionID is used to record token→original mappings for later de-anonymization.
 //
-// Flow:
-//  1. Regex pass — replace structured PII, track minimum match confidence.
-//  2. If useAI is enabled and minConfidence < aiThreshold (or no matches):
-//     a. Cache hit  → apply AI detections immediately.
-//     b. Cache miss → dispatch async Ollama goroutine; return regex-only result.
+// For each regex match:
+//   - High-confidence (>= aiThreshold): token applied immediately.
+//   - Low-confidence (< aiThreshold) with useAI enabled:
+//     cache hit  → use cached token.
+//     cache miss → apply fallback token, log miss, dispatch async Ollama.
+//
+// PII is never left unmasked: every match produces a token regardless of
+// cache state or Ollama availability.
 func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 	if text == "" {
 		return text
 	}
 
 	result := text
-	minConfidence := 1.0 // assume perfect until a low-confidence pattern fires
-	anyMatch := false
-
-	// Stage 1: regex pass with per-match confidence tracking.
 	for _, p := range a.patterns {
-		matched := false
 		result = p.re.ReplaceAllStringFunc(result, func(match string) string {
-			matched = true
-			token := a.replacement(p.piiType, match)
+			token := a.tokenForMatch(p, match)
 			a.recordMapping(sessionID, token, match)
 			return token
 		})
-		if matched {
-			anyMatch = true
-			if p.confidence < minConfidence {
-				minConfidence = p.confidence
-			}
-		}
+	}
+	return result
+}
+
+// tokenForMatch returns the anonymization token for a single regex match.
+// High-confidence patterns are tokenized directly. Low-confidence patterns
+// consult the Ollama cache; on miss a fallback token is applied immediately
+// and an async Ollama dispatch warms the cache for future requests.
+func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
+	if !a.useAI || p.confidence >= a.aiThreshold {
+		return a.replacement(p.piiType, match)
 	}
 
-	// Stage 2: AI pass — only when enabled and regex confidence is insufficient.
-	// If no regex match occurred at all (minConfidence stays 1.0) we treat the
-	// text as unscored (confidence = 0.0) because it may still contain
-	// AI-detectable PII such as names, medical terms, or salary figures.
-	if !a.useAI {
-		return result
-	}
-	effectiveConfidence := minConfidence
-	if !anyMatch {
-		effectiveConfidence = 0.0
-	}
-	if effectiveConfidence >= a.aiThreshold {
-		return result // regex caught everything with sufficient confidence
-	}
-
-	cacheKey := fmt.Sprintf("%x", md5.Sum([]byte(text))) // #nosec G401 -- cache key, not crypto
-
+	// Low-confidence path: check per-value cache.
 	a.cacheMu.RLock()
-	cached, hit := a.cache[cacheKey]
+	cached, hit := a.cache[match]
 	a.cacheMu.RUnlock()
 
 	if hit {
-		// Apply cached AI detections immediately.
-		result = a.applyDetections(result, sessionID, cached)
-	} else {
-		// Fire-and-forget: populate cache for future requests.
-		a.dispatchOllamaAsync(text, cacheKey)
-		// Current request proceeds with regex-only result.
+		return cached
 	}
 
-	return result
-}
-
-// applyDetections applies a set of ollamaDetections to text, recording session
-// mappings for all matches that meet the confidence threshold.
-func (a *Anonymizer) applyDetections(text, sessionID string, detections []ollamaDetection) string {
-	result := text
-	for _, d := range detections {
-		if d.Confidence >= a.aiThreshold && d.Original != "" {
-			token := a.replacement(d.PIIType, d.Original)
-			a.recordMapping(sessionID, token, d.Original)
-			result = strings.ReplaceAll(result, d.Original, token)
-		}
+	// Cache miss: apply fallback token immediately so PII is never unmasked,
+	// then dispatch Ollama async to warm the cache.
+	token := a.replacement(p.piiType, match)
+	preview := match
+	if len(preview) > 8 {
+		preview = preview[:8] + "..."
 	}
-	return result
+	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s match=%q", p.piiType, preview)
+	a.dispatchOllamaAsync(match)
+	return token
 }
 
-// dispatchOllamaAsync fires a background goroutine to query Ollama for text
-// and store the result in the cache. An in-flight map prevents duplicate
-// concurrent queries for the same cacheKey.
-func (a *Anonymizer) dispatchOllamaAsync(text, cacheKey string) {
+// dispatchOllamaAsync fires a background goroutine to query Ollama for a
+// single PII value and store the result in the per-value cache.
+// An in-flight map prevents duplicate concurrent queries for the same value.
+func (a *Anonymizer) dispatchOllamaAsync(original string) {
 	a.inflightMu.Lock()
-	if a.inflight[cacheKey] {
+	if a.inflight[original] {
 		a.inflightMu.Unlock()
 		return // already in progress
 	}
-	a.inflight[cacheKey] = true
+	a.inflight[original] = true
 	a.inflightMu.Unlock()
 
 	go func() {
 		defer func() {
 			a.inflightMu.Lock()
-			delete(a.inflight, cacheKey)
+			delete(a.inflight, original)
 			a.inflightMu.Unlock()
 		}()
 
@@ -248,21 +224,25 @@ func (a *Anonymizer) dispatchOllamaAsync(text, cacheKey string) {
 		case a.ollamaSem <- struct{}{}:
 			defer func() { <-a.ollamaSem }()
 		default:
-			log.Printf("[ANONYMIZER] Ollama busy, skipping background query for key %s", cacheKey[:8])
+			log.Printf("[ANONYMIZER] Ollama busy, skipping background query for value")
 			return
 		}
 
-		detections, err := a.queryOllamaHTTP(text)
+		detections, err := a.queryOllamaHTTP(original)
 		if err != nil {
 			log.Printf("[ANONYMIZER] async Ollama query failed: %v", err)
 			return
 		}
 
 		a.cacheMu.Lock()
-		a.cache[cacheKey] = detections
+		for _, d := range detections {
+			if d.Original != "" && d.Confidence >= a.aiThreshold {
+				a.cache[d.Original] = a.replacement(d.PIIType, d.Original)
+			}
+		}
 		a.cacheMu.Unlock()
 
-		log.Printf("[ANONYMIZER] async Ollama cache populated for key %s (%d detections)", cacheKey[:8], len(detections))
+		log.Printf("[ANONYMIZER] async Ollama cache populated for %d value(s)", len(detections))
 	}()
 }
 
