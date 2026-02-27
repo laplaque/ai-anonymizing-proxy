@@ -130,7 +130,7 @@ type Server struct {
 func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
 		cfg:         cfg,
-		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m),
+		anon:        anonymizer.NewWithCache(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m, cfg.OllamaCacheFile),
 		m:           m,
 		aiDomains:   domains,
 		authDomains: toSet(cfg.AuthDomains),
@@ -170,6 +170,12 @@ func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metr
 	}
 
 	return s
+}
+
+// Close releases resources held by the proxy server, including the persistent
+// Ollama cache. Must be called on shutdown.
+func (s *Server) Close() error {
+	return s.anon.Close()
 }
 
 // ServeHTTP dispatches incoming proxy requests.

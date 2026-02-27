@@ -26,6 +26,7 @@ type Config struct {
 	BindAddress     string `json:"bindAddress"`
 	ManagementToken string `json:"managementToken"`
 	UpstreamProxy   string `json:"upstreamProxy"`
+	OllamaCacheFile string `json:"ollamaCacheFile"` // path to bbolt persistent cache; empty = in-memory only
 
 	AIAPIDomains []string `json:"aiApiDomains"`
 	AuthDomains  []string `json:"authDomains"`
@@ -53,6 +54,7 @@ func defaults() *Config {
 		CACertFile:          "ca-cert.pem",
 		CAKeyFile:           "ca-key.pem",
 		BindAddress:         "127.0.0.1",
+		OllamaCacheFile:     "ollama-cache.db",
 		AIAPIDomains: []string{
 			"api.anthropic.com",
 			"api.openai.com",
@@ -137,5 +139,8 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv("UPSTREAM_PROXY"); v != "" {
 		cfg.UpstreamProxy = v
+	}
+	if v := os.Getenv("OLLAMA_CACHE_FILE"); v != "" {
+		cfg.OllamaCacheFile = v
 	}
 }
