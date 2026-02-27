@@ -78,6 +78,8 @@ type Anonymizer struct {
 	inflightMu sync.Mutex
 	inflight   map[string]bool // prevents duplicate concurrent Ollama queries
 
+	ollamaSem chan struct{} // limits concurrent Ollama queries
+
 	sessionMu sync.RWMutex
 	sessions  map[string]map[string]string // sessionID → token → original
 }
@@ -91,9 +93,10 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, m 
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		m:           m,
-		cache:       make(map[string][]ollamaDetection),
-		inflight:    make(map[string]bool),
-		sessions:    make(map[string]map[string]string),
+		cache:     make(map[string][]ollamaDetection),
+		inflight:  make(map[string]bool),
+		ollamaSem: make(chan struct{}, 1), // one Ollama query at a time
+		sessions:  make(map[string]map[string]string),
 	}
 	a.compilePatterns()
 	return a
@@ -236,6 +239,15 @@ func (a *Anonymizer) dispatchOllamaAsync(text, cacheKey string) {
 			delete(a.inflight, cacheKey)
 			a.inflightMu.Unlock()
 		}()
+
+		// Acquire semaphore; drop the request if Ollama is already busy.
+		select {
+		case a.ollamaSem <- struct{}{}:
+			defer func() { <-a.ollamaSem }()
+		default:
+			log.Printf("[ANONYMIZER] Ollama busy, skipping background query for key %s", cacheKey[:8])
+			return
+		}
 
 		detections, err := a.queryOllamaHTTP(text)
 		if err != nil {
