@@ -72,8 +72,7 @@ type Anonymizer struct {
 	aiThreshold float64
 	m           *metrics.Metrics // nil = no metrics collection
 
-	cacheMu sync.RWMutex
-	cache   map[string]string // keyed by original PII value → anonymized token
+	cache PersistentCache // cross-session Ollama value cache; keyed by original PII value
 
 	inflightMu sync.Mutex
 	inflight   map[string]bool // prevents duplicate concurrent Ollama queries
@@ -86,23 +85,51 @@ type Anonymizer struct {
 
 // New creates an Anonymizer with the given options.
 // Pass a non-nil m to collect performance metrics; pass nil to disable.
+// cachePath is the path to the bbolt persistent cache file. If empty, an
+// in-memory cache is used (suitable for tests and stateless deployments).
 func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics) *Anonymizer {
+	return NewWithCache(ollamaEndpoint, ollamaModel, useAI, aiThreshold, ollamaMaxConcurrent, m, "")
+}
+
+// NewWithCache creates an Anonymizer with an explicit cache path.
+// If cachePath is non-empty, a bbolt persistent cache is opened at that path.
+// If cachePath is empty, an in-memory cache is used.
+func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string) *Anonymizer {
 	if ollamaMaxConcurrent < 1 {
 		ollamaMaxConcurrent = 1
 	}
+
+	var c PersistentCache
+	if cachePath != "" {
+		var err error
+		c, err = newBboltCache(cachePath)
+		if err != nil {
+			log.Printf("[ANONYMIZER] failed to open persistent cache at %q, falling back to memory: %v", cachePath, err)
+			c = newMemoryCache()
+		}
+	} else {
+		c = newMemoryCache()
+	}
+
 	a := &Anonymizer{
 		ollamaURL:   ollamaEndpoint + "/api/generate",
 		ollamaModel: ollamaModel,
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		m:           m,
-		cache:       make(map[string]string),
+		cache:       c,
 		inflight:    make(map[string]bool),
 		ollamaSem:   make(chan struct{}, ollamaMaxConcurrent),
 		sessions:    make(map[string]map[string]string),
 	}
 	a.compilePatterns()
 	return a
+}
+
+// Close releases resources held by the anonymizer, including the persistent cache.
+// Must be called when the anonymizer is shut down.
+func (a *Anonymizer) Close() error {
+	return a.cache.Close()
 }
 
 func (a *Anonymizer) compilePatterns() {
@@ -172,19 +199,15 @@ func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 
 // tokenForMatch returns the anonymization token for a single regex match.
 // High-confidence patterns are tokenized directly. Low-confidence patterns
-// consult the Ollama cache; on miss a fallback token is applied immediately
+// consult the persistent cache; on miss a fallback token is applied immediately
 // and an async Ollama dispatch warms the cache for future requests.
 func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
 	if !a.useAI || p.confidence >= a.aiThreshold {
 		return a.replacement(p.piiType, match)
 	}
 
-	// Low-confidence path: check per-value cache.
-	a.cacheMu.RLock()
-	cached, hit := a.cache[match]
-	a.cacheMu.RUnlock()
-
-	if hit {
+	// Low-confidence path: check persistent per-value cache.
+	if cached, hit := a.cache.Get(match); hit {
 		return cached
 	}
 
@@ -234,13 +257,11 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 			return
 		}
 
-		a.cacheMu.Lock()
 		for _, d := range detections {
 			if d.Original != "" && d.Confidence >= a.aiThreshold {
-				a.cache[d.Original] = a.replacement(d.PIIType, d.Original)
+				a.cache.Set(d.Original, a.replacement(d.PIIType, d.Original))
 			}
 		}
-		a.cacheMu.Unlock()
 
 		log.Printf("[ANONYMIZER] async Ollama cache populated for %d value(s)", len(detections))
 	}()

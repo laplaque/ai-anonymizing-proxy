@@ -229,9 +229,7 @@ func TestLowConfidenceCacheHit(t *testing.T) {
 	a := New("http://localhost:11434", "test-model", true, 0.80, 1, nil)
 	sessionID := "sess-hit-1"
 	cachedToken := "[PHONE_cached1]"
-	a.cacheMu.Lock()
-	a.cache[matchedValue] = cachedToken
-	a.cacheMu.Unlock()
+	a.cache.Set(matchedValue, cachedToken)
 
 	result := a.AnonymizeText(input, sessionID)
 	if !strings.Contains(result, cachedToken) {
