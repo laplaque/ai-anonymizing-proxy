@@ -23,8 +23,8 @@ func captureStdout(t *testing.T, fn func()) string {
 
 	fn()
 
-	if err := w.Close(); err != nil {
-		t.Fatalf("pipe write close: %v", err)
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatalf("pipe write close: %v", closeErr)
 	}
 	os.Stdout = old
 
