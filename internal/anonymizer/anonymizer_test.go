@@ -1,6 +1,7 @@
 package anonymizer
 
 import (
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -294,6 +295,101 @@ func TestOllamaCacheKeyedByValue(t *testing.T) {
 	}
 	if strings.Contains(result2, "alice@example.com") {
 		t.Errorf("PII not masked in result2: %q", result2)
+	}
+}
+
+// TestTokenFormatNonRetriggering verifies that no token produced by replacement()
+// matches any compiled regex pattern. A failure here means the proxy would
+// re-tokenize its own output in future sessions ("proxy eats itself").
+// TestAnonymizeJSONInjectsSystemInstructionAnthropicString verifies that when
+// PII is detected in a request with an Anthropic-style string system field,
+// the piiSystemInstruction is appended to the system prompt.
+func TestAnonymizeJSONInjectsSystemInstructionAnthropicString(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"system":"You are a helpful assistant.","messages":[{"role":"user","content":"Email alice@example.com"}]}`)
+
+	out := a.AnonymizeJSON(body, "sess-inject-1")
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err);
+	}
+	sys, _ := doc["system"].(string)
+	if !strings.Contains(sys, "PRIVACY TOKENS") {
+		t.Errorf("system prompt missing PII instruction; got: %q", sys)
+	}
+	if !strings.Contains(sys, "You are a helpful assistant.") {
+		t.Errorf("original system prompt lost; got: %q", sys)
+	}
+}
+
+// TestAnonymizeJSONInjectsSystemInstructionAnthropicBlockArray verifies injection
+// when the Anthropic system field is a content-block array.
+func TestAnonymizeJSONInjectsSystemInstructionAnthropicBlockArray(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"system":[{"type":"text","text":"Be concise."}],"messages":[{"role":"user","content":"My SSN is 123-45-6789"}]}`)
+
+	out := a.AnonymizeJSON(body, "sess-inject-2")
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	blocks, _ := doc["system"].([]any)
+	if len(blocks) < 2 {
+		t.Fatalf("expected at least 2 system blocks, got %d", len(blocks))
+	}
+	last, _ := blocks[len(blocks)-1].(map[string]any)
+	text, _ := last["text"].(string)
+	if !strings.Contains(text, "PRIVACY TOKENS") {
+		t.Errorf("injected block missing PII instruction; got: %q", text)
+	}
+}
+
+// TestAnonymizeJSONInjectsSystemInstructionOpenAI verifies injection for
+// OpenAI-compatible requests where the system prompt is the first messages entry.
+func TestAnonymizeJSONInjectsSystemInstructionOpenAI(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"Be helpful."},{"role":"user","content":"Email bob@corp.io"}]}`)
+
+	out := a.AnonymizeJSON(body, "sess-inject-3")
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	msgs, _ := doc["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("messages array empty")
+	}
+	first, _ := msgs[0].(map[string]any)
+	content, _ := first["content"].(string)
+	if first["role"] != "system" {
+		t.Errorf("first message role is not system: %q", first["role"])
+	}
+	if !strings.Contains(content, "PRIVACY TOKENS") {
+		t.Errorf("system message missing PII instruction; got: %q", content)
+	}
+	if !strings.Contains(content, "Be helpful.") {
+		t.Errorf("original system content lost; got: %q", content)
+	}
+}
+
+// TestAnonymizeJSONNoInjectionWhenNoPII verifies that the system prompt is
+// NOT modified when no PII tokens are detected in the request.
+func TestAnonymizeJSONNoInjectionWhenNoPII(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"system":"Be helpful.","messages":[{"role":"user","content":"Hello world"}]}`)
+
+	out := a.AnonymizeJSON(body, "sess-inject-4")
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	sys, _ := doc["system"].(string)
+	if strings.Contains(sys, "PRIVACY TOKENS") {
+		t.Errorf("PII instruction injected when no PII was present; got: %q", sys)
 	}
 }
 
