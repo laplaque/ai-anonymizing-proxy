@@ -408,6 +408,18 @@ func (a *Anonymizer) replacement(_ PIIType, original string) string {
 	return fmt.Sprintf("[PII_%s]", h)
 }
 
+// SessionTokenCount returns the number of tokens recorded for sessionID.
+// Returns 0 for unknown or empty sessions.
+func (a *Anonymizer) SessionTokenCount(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	a.sessionMu.RLock()
+	n := len(a.sessions[sessionID])
+	a.sessionMu.RUnlock()
+	return n
+}
+
 // recordMapping stores token → original in the session map.
 func (a *Anonymizer) recordMapping(sessionID, token, original string) {
 	if sessionID == "" {
@@ -480,6 +492,7 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 	}
 	a.sessionMu.RUnlock()
 
+	log.Printf("[DEANON] StreamingDeanonymize sessionID=%s tokens=%d", sessionID, len(tokenMap))
 	if len(tokenMap) == 0 {
 		return src
 	}
@@ -526,11 +539,15 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 				}
 
 				if safeEnd > 0 {
-					replaced := replacer.Replace(string(window[:safeEnd]))
-					if _, werr := pw.Write([]byte(replaced)); werr != nil {
-						return
-					}
+				chunk := string(window[:safeEnd])
+				replaced := replacer.Replace(chunk)
+				if replaced != chunk {
+				 log.Printf("[DEANON] replacement hit in chunk safeEnd=%d", safeEnd)
+				 }
+				if _, werr := pw.Write([]byte(replaced)); werr != nil {
+					return
 				}
+			}
 
 				// Carry forward the unprocessed tail
 				overlap = append(overlap[:0], window[safeEnd:]...)

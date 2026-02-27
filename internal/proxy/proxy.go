@@ -238,11 +238,6 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		req.RequestURI = ""
 
 		isAuth := s.isAuthRequest(domain, req.URL.Path)
-		tag := "[ANON]"
-		if isAuth {
-			tag = "[AUTH][PASS]"
-		}
-		log.Printf("[MITM] %s %s%s %s", req.Method, domain, req.URL.Path, tag)
 
 		if s.m != nil {
 			s.m.RequestsTotal.Add(1)
@@ -266,6 +261,10 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 			if sessionID != "" {
 				defer s.anon.DeleteSession(sessionID)
 			}
+			log.Printf("[MITM] %s %s%s [ANON] sessionID=%s tokens=%d",
+				req.Method, domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+		} else {
+			log.Printf("[MITM] %s %s%s [AUTH][PASS]", req.Method, domain, req.URL.Path)
 		}
 
 		// Forward to the real destination
@@ -355,15 +354,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	isAuth := s.isAuthRequest(domain, r.URL.Path)
 	isAI := s.aiDomains.Has(domain)
 
-	tag := "[PASS]"
-	if isAuth {
-		tag = "[AUTH][PASS]"
-	} else if isAI {
-		tag = "[ANON]"
-	}
-
-	log.Printf("[HTTP] %s %s%s %s", r.Method, domain, r.URL.Path, tag)
-
 	if s.m != nil {
 		s.m.RequestsTotal.Add(1)
 		switch {
@@ -389,6 +379,12 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if sessionID != "" {
 			defer s.anon.DeleteSession(sessionID)
 		}
+		log.Printf("[HTTP] %s %s%s [ANON] sessionID=%s tokens=%d",
+			r.Method, domain, r.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+	} else if isAuth {
+		log.Printf("[HTTP] %s %s%s [AUTH][PASS]", r.Method, domain, r.URL.Path)
+	} else {
+		log.Printf("[HTTP] %s %s%s [PASS]", r.Method, domain, r.URL.Path)
 	}
 
 	// Forward the request
@@ -477,13 +473,18 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 
 func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) {
 	if sessionID == "" || resp == nil || resp.Body == nil {
+		log.Printf("[DEANON] skipping: sessionID=%q resp=%v bodyNil=%v", sessionID, resp == nil, resp != nil && resp.Body == nil)
 		return
 	}
+
+	ct := resp.Header.Get("Content-Type")
+	streaming := isStreamingResponse(resp)
+	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v", sessionID, ct, streaming)
 
 	// Streaming responses (SSE or unknown-length chunked) must never be fully
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
 	// Wrap the body in a pipe-based reader that replaces tokens on-the-fly.
-	if isStreamingResponse(resp) {
+	if streaming {
 		resp.Body = s.anon.StreamingDeanonymize(resp.Body, sessionID)
 		resp.ContentLength = -1 // length is unknown; let the client stream
 		return
@@ -496,6 +497,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) 
 		return
 	}
 	deanonymized := s.anon.DeanonymizeText(string(body), sessionID)
+	log.Printf("[DEANON] non-streaming: body=%d bytes, deanon=%d bytes", len(body), len(deanonymized))
 	resp.Body = io.NopCloser(strings.NewReader(deanonymized))
 	resp.ContentLength = int64(len(deanonymized))
 }
