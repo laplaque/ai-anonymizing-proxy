@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
 	"net"
@@ -17,7 +18,7 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 	tlsCfg := ca.TLSConfigForHost(host)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
 		log.Printf("[MITM] TLS handshake failed for %s: %v", host, err)
 		return
 	}
