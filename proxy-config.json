@@ -5,6 +5,7 @@
   "ollamaModel": "qwen2.5:3b",
   "useAIDetection": true,
   "aiConfidenceThreshold": 0.7,
+  "ollamaMaxConcurrent": 1,
   "logLevel": "info",
   "caCertFile": "ca-cert.pem",
   "caKeyFile": "ca-key.pem",

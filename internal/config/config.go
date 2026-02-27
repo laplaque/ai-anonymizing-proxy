@@ -17,9 +17,10 @@ type Config struct {
 	ManagementPort int     `json:"managementPort"`
 	OllamaEndpoint string  `json:"ollamaEndpoint"`
 	OllamaModel    string  `json:"ollamaModel"`
-	UseAIDetection bool    `json:"useAIDetection"`
-	AIConfidence   float64 `json:"aiConfidenceThreshold"`
-	LogLevel       string  `json:"logLevel"`
+	UseAIDetection     bool    `json:"useAIDetection"`
+	AIConfidence       float64 `json:"aiConfidenceThreshold"`
+	OllamaMaxConcurrent int    `json:"ollamaMaxConcurrent"`
+	LogLevel           string  `json:"logLevel"`
 
 	CACertFile      string `json:"caCertFile"`
 	CAKeyFile       string `json:"caKeyFile"`
@@ -45,9 +46,10 @@ func defaults() *Config {
 		ManagementPort: 8081,
 		OllamaEndpoint: "http://localhost:11434",
 		OllamaModel:    "qwen2.5:3b",
-		UseAIDetection: true,
-		AIConfidence:   0.7,
-		LogLevel:       "info",
+		UseAIDetection:      true,
+		AIConfidence:        0.7,
+		OllamaMaxConcurrent: 1,
+		LogLevel:            "info",
 		CACertFile:     "ca-cert.pem",
 		CAKeyFile:      "ca-key.pem",
 		BindAddress:    "127.0.0.1",
@@ -111,6 +113,11 @@ func loadEnv(cfg *Config) {
 	if v := os.Getenv("AI_CONFIDENCE_THRESHOLD"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.AIConfidence = f
+		}
+	}
+	if v := os.Getenv("OLLAMA_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.OllamaMaxConcurrent = n
 		}
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {

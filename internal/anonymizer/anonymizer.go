@@ -86,7 +86,10 @@ type Anonymizer struct {
 
 // New creates an Anonymizer with the given options.
 // Pass a non-nil m to collect performance metrics; pass nil to disable.
-func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, m *metrics.Metrics) *Anonymizer {
+func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics) *Anonymizer {
+	if ollamaMaxConcurrent < 1 {
+		ollamaMaxConcurrent = 1
+	}
 	a := &Anonymizer{
 		ollamaURL:   ollamaEndpoint + "/api/generate",
 		ollamaModel: ollamaModel,
@@ -95,7 +98,7 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, m 
 		m:           m,
 		cache:     make(map[string][]ollamaDetection),
 		inflight:  make(map[string]bool),
-		ollamaSem: make(chan struct{}, 1), // one Ollama query at a time
+		ollamaSem: make(chan struct{}, ollamaMaxConcurrent),
 		sessions:  make(map[string]map[string]string),
 	}
 	a.compilePatterns()

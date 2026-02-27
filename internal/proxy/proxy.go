@@ -130,7 +130,7 @@ type Server struct {
 func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
 		cfg:         cfg,
-		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, m),
+		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m),
 		m:           m,
 		aiDomains:   domains,
 		authDomains: toSet(cfg.AuthDomains),
