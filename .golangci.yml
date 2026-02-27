@@ -70,8 +70,6 @@ linters:
       locale: US
 
   exclusions:
-    max-issues-per-linter: 0
-    max-same-issues: 0
     rules:
       # MD5 in anonymizer is for deterministic PII tokens, not cryptographic use
       - path: internal/anonymizer/anonymizer\.go
@@ -84,6 +82,10 @@ linters:
         linters:
           - staticcheck
         text: "SA1000|empty branch"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 formatters:
   enable:
