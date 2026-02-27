@@ -110,8 +110,8 @@ func (f *flushRecorder) Flush() {
 }
 
 // Header and WriteHeader satisfy http.ResponseWriter (needed for the Flusher cast).
-func (f *flushRecorder) Header() http.Header        { return http.Header{} }
-func (f *flushRecorder) WriteHeader(_ int) {}
+func (f *flushRecorder) Header() http.Header { return http.Header{} }
+func (f *flushRecorder) WriteHeader(_ int)   {}
 
 func TestFlushingCopy_FlushesPerWrite(t *testing.T) {
 	// Simulate a streaming SSE response: three separate chunks arriving over time.
