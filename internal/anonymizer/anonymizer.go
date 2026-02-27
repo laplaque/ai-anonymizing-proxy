@@ -96,10 +96,10 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ol
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		m:           m,
-		cache:     make(map[string][]ollamaDetection),
-		inflight:  make(map[string]bool),
-		ollamaSem: make(chan struct{}, ollamaMaxConcurrent),
-		sessions:  make(map[string]map[string]string),
+		cache:       make(map[string][]ollamaDetection),
+		inflight:    make(map[string]bool),
+		ollamaSem:   make(chan struct{}, ollamaMaxConcurrent),
+		sessions:    make(map[string]map[string]string),
 	}
 	a.compilePatterns()
 	return a
