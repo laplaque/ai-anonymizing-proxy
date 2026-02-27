@@ -6,13 +6,93 @@ Non-AI domains are tunneled transparently without inspection.
 
 ## How it works
 
-1. Client sends `CONNECT api.openai.com:443`
-2. Proxy checks if the domain is in `aiApiDomains`
-   - **Yes**: generates a TLS certificate for that domain signed by the proxy's CA, performs TLS
-     handshake with the client, reads plaintext HTTP, anonymizes PII, forwards over real TLS to
-     the API
-   - **No**: establishes an opaque TCP tunnel — traffic is not inspected (private IPs blocked)
-3. Supports both HTTP/1.1 and HTTP/2 (ALPN negotiation)
+```mermaid
+sequenceDiagram
+    participant C as Client<br/>(trusts proxy CA)
+    participant P as Proxy
+    participant CA as mitm/cert.go
+    participant API as AI API<br/>(real TLS)
+
+    C->>P: CONNECT api.openai.com:443
+    P->>P: domain in aiApiDomains? → Yes
+    P->>C: 200 Connection Established
+
+    Note over C,P: TLS handshake begins
+    C->>P: ClientHello
+    P->>CA: CertFor("api.openai.com")
+    CA-->>P: leaf cert signed by proxy CA
+    P->>C: ServerHello (proxy-signed cert)
+    Note over C,P: Client verifies cert against trusted proxy CA ✓
+
+    Note over P,API: Proxy opens its own TLS to the real API
+    P->>API: TLS handshake (real api.openai.com cert)
+
+    Note over C,P,API: Tunnel established — proxy sees plaintext
+    C->>P: HTTP request (plaintext inside proxy TLS)
+    P->>P: Anonymize PII in body
+    P->>API: HTTP request (anonymized, inside real TLS)
+    API-->>P: HTTP response
+    P->>P: De-anonymize response
+    P-->>C: HTTP response (original values restored)
+```
+
+**ALPN / protocol negotiation:**
+
+The proxy advertises both `h2` and `http/1.1` during the TLS handshake. After the handshake,
+`mitm.HandleConn` checks `NegotiatedProtocol` and routes to the appropriate server:
+
+- `h2` → `golang.org/x/net/http2.Server.ServeConn`
+- `http/1.1` (or empty) → `http.Server` wrapping a `singleConnListener`
+
+## Connection states
+
+State diagram for a single CONNECT request from arrival through to teardown. The `RequestActive`
+self-transition captures the key behaviour: multiple requests share one hijacked connection
+(HTTP/1.1 keep-alive or concurrent HTTP/2 streams) with a fresh session ID per request.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Received : CONNECT host:443
+
+    state domainCheck <<choice>>
+    Received --> domainCheck
+    domainCheck --> MITMPath : AI domain + CA loaded
+    domainCheck --> OpaquePath : not AI domain
+
+    state privateCheck <<choice>>
+    OpaquePath --> privateCheck
+    privateCheck --> Blocked : private IP detected
+    privateCheck --> Tunneling : public IP—bidirectional copy
+
+    Blocked --> [*]
+    Tunneling --> Closed : either side closes
+
+    MITMPath --> TLSHandshake : 200 sent\nconn hijacked from http.Server
+
+    TLSHandshake --> Failed : handshake error
+    Failed --> [*]
+
+    state alpn <<choice>>
+    TLSHandshake --> alpn : handshake complete
+    alpn --> ServingH2 : ALPN → h2
+    alpn --> ServingH1 : ALPN → http/1.1
+
+    ServingH2 --> RequestActive : stream opened
+    ServingH1 --> RequestActive : request received
+
+    state RequestActive {
+        [*] --> Anonymizing
+        Anonymizing --> Forwarding : body anonymized\nsessionID created
+        Forwarding --> DeAnonymizing : upstream responded
+        DeAnonymizing --> SessionCleanup
+        SessionCleanup --> [*] : DeleteSession
+    }
+
+    RequestActive --> RequestActive : next keep-alive request\nor next H2 stream
+    RequestActive --> Closed : client disconnects\nor upstream error
+
+    Closed --> [*]
+```
 
 ## CA certificate setup
 
@@ -20,7 +100,7 @@ On first start, the proxy **auto-generates** a CA certificate (`ca-cert.pem` / `
 its working directory if the files don't exist.
 
 **Auto-generate (default):** Just start the proxy. The CA files will be created and the log will
-show trust instructions.
+show platform-specific trust instructions.
 
 **Manual generation:**
 
@@ -87,6 +167,12 @@ export REQUESTS_CA_BUNDLE=/path/to/ca-cert.pem
 # or
 export SSL_CERT_FILE=/path/to/ca-cert.pem
 ```
+
+## Cert cache
+
+The proxy caches one signed leaf certificate per hostname. Certificates are valid for 7 days and
+regenerated transparently when they expire. The cache holds up to 10 000 entries; when that limit
+is reached the entire cache is cleared (certs are cheap to regenerate, ~ms).
 
 ## Disabling MITM
 
