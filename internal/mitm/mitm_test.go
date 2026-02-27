@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// tempCA generates a CA into a temp dir and returns (certFile, keyFile, dir).
+// tempCA generates a CA into a temp dir and returns (certFile, keyFile).
 func tempCA(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -94,8 +94,12 @@ func TestLoadCA_InvalidCertPEM(t *testing.T) {
 	dir := t.TempDir()
 	certFile := filepath.Join(dir, "bad-cert.pem")
 	keyFile := filepath.Join(dir, "key.pem")
-	os.WriteFile(certFile, []byte("not a pem"), 0600)
-	os.WriteFile(keyFile, []byte("not a pem"), 0600)
+	if err := os.WriteFile(certFile, []byte("not a pem"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte("not a pem"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := LoadCA(certFile, keyFile)
 	if err == nil {
 		t.Error("expected error for invalid cert PEM")
@@ -116,8 +120,6 @@ func TestLoadOrGenerateCA_GeneratesWhenMissing(t *testing.T) {
 	if ca == nil {
 		t.Fatal("expected non-nil CA")
 	}
-
-	// Files should now exist
 	if _, err := os.Stat(cert); err != nil {
 		t.Error("cert file was not generated")
 	}
@@ -139,9 +141,12 @@ func TestLoadOrGenerateCA_ErrorOnBadExistingCert(t *testing.T) {
 	cert := filepath.Join(dir, "ca-cert.pem")
 	key := filepath.Join(dir, "ca-key.pem")
 
-	// Write garbage — the file exists but is invalid
-	os.WriteFile(cert, []byte("garbage"), 0600)
-	os.WriteFile(key, []byte("garbage"), 0600)
+	if err := os.WriteFile(cert, []byte("garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, []byte("garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := LoadOrGenerateCA(cert, key)
 	if err == nil {
@@ -182,8 +187,6 @@ func TestCertFor_CachesOnSecondCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second CertFor: %v", err)
 	}
-
-	// Pointer equality — second call must return the same object
 	if c1 != c2 {
 		t.Error("expected same *tls.Certificate on cache hit")
 	}
@@ -214,8 +217,8 @@ func TestCertFor_CertSignedByCA(t *testing.T) {
 	roots.AddCert(ca.cert)
 
 	_, err := tlsCert.Leaf.Verify(x509.VerifyOptions{
-		DNSName: "signed.example.com",
-		Roots:   roots,
+		DNSName:     "signed.example.com",
+		Roots:       roots,
 		CurrentTime: time.Now(),
 	})
 	if err != nil {
@@ -277,11 +280,10 @@ func TestTLSConfigForHost_NextProtos(t *testing.T) {
 	ca, _ := LoadCA(cert, key)
 
 	cfg := ca.TLSConfigForHost("proto.example.com")
-	protos := cfg.NextProtos
 
 	hasH2 := false
 	hasHTTP1 := false
-	for _, p := range protos {
+	for _, p := range cfg.NextProtos {
 		if p == "h2" {
 			hasH2 = true
 		}
@@ -301,7 +303,11 @@ func TestTLSConfigForHost_NextProtos(t *testing.T) {
 
 func TestSingleConnListener_AcceptReturnsConn(t *testing.T) {
 	server, client := net.Pipe()
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("client.Close: %v", err)
+		}
+	}()
 
 	l := &singleConnListener{conn: server}
 	conn, err := l.Accept()
@@ -315,13 +321,16 @@ func TestSingleConnListener_AcceptReturnsConn(t *testing.T) {
 
 func TestSingleConnListener_CloseClosesConn(t *testing.T) {
 	server, client := net.Pipe()
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("client.Close: %v", err)
+		}
+	}()
 
 	l := &singleConnListener{conn: server}
 	if err := l.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
-	// server conn should now be closed; reading should fail
 	buf := make([]byte, 1)
 	_, err := server.Read(buf)
 	if err == nil {
@@ -331,12 +340,17 @@ func TestSingleConnListener_CloseClosesConn(t *testing.T) {
 
 func TestSingleConnListener_Addr(t *testing.T) {
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() {
+		if err := server.Close(); err != nil {
+			t.Errorf("server.Close: %v", err)
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("client.Close: %v", err)
+		}
+	}()
 
 	l := &singleConnListener{conn: server}
-	addr := l.Addr()
-	if addr == nil {
+	if l.Addr() == nil {
 		t.Error("Addr() should not be nil")
 	}
 }

@@ -1,14 +1,39 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"ai-anonymizing-proxy/internal/config"
 )
+
+// captureStdout redirects os.Stdout to a pipe for the duration of fn,
+// then returns everything written to it.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("pipe write close: %v", err)
+	}
+	os.Stdout = old
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out)
+}
 
 func TestPrintBanner_ContainsExpectedFields(t *testing.T) {
 	cfg := &config.Config{
@@ -19,19 +44,7 @@ func TestPrintBanner_ContainsExpectedFields(t *testing.T) {
 		UseAIDetection: true,
 	}
 
-	// Capture stdout
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	printBanner(cfg)
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	out := buf.String()
+	out := captureStdout(t, func() { printBanner(cfg) })
 
 	for _, want := range []string{"8080", "8081", "localhost:11434", "qwen2.5:3b"} {
 		if !strings.Contains(out, want) {
@@ -44,19 +57,7 @@ func TestPrintBanner_UpstreamProxy_FromEnv(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://corporate:8888")
 
 	cfg := &config.Config{ProxyPort: 8080, ManagementPort: 8081}
-
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	printBanner(cfg)
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	out := buf.String()
+	out := captureStdout(t, func() { printBanner(cfg) })
 
 	if !strings.Contains(out, "http://corporate:8888") {
 		t.Errorf("expected upstream proxy in banner, got:\n%s", out)
@@ -64,23 +65,11 @@ func TestPrintBanner_UpstreamProxy_FromEnv(t *testing.T) {
 }
 
 func TestPrintBanner_NoProxy_ShowsDirect(t *testing.T) {
-	os.Unsetenv("HTTPS_PROXY")
-	os.Unsetenv("HTTP_PROXY")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
 
 	cfg := &config.Config{ProxyPort: 8080, ManagementPort: 8081}
-
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	printBanner(cfg)
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	out := buf.String()
+	out := captureStdout(t, func() { printBanner(cfg) })
 
 	if !strings.Contains(out, "direct") {
 		t.Errorf("expected 'direct' in banner when no proxy set, got:\n%s", out)
@@ -97,12 +86,7 @@ func TestMain_Smoke(t *testing.T) {
 				t.Errorf("printBanner panicked: %v", r)
 			}
 		}()
-		old := os.Stdout
-		_, w, _ := os.Pipe()
-		os.Stdout = w
-		printBanner(&config.Config{})
-		w.Close()
-		os.Stdout = old
+		captureStdout(t, func() { printBanner(&config.Config{}) })
 	}()
 
 	// Self-referential sanity: package name is main

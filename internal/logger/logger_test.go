@@ -121,19 +121,19 @@ func TestSetLevel_ChangesFilter(t *testing.T) {
 func TestFormattedMethods(t *testing.T) {
 	cases := []struct {
 		name string
-		fn   func(l *Logger, buf *bytes.Buffer)
+		fn   func(l *Logger)
 		want string
 	}{
-		{"Debugf", func(l *Logger, buf *bytes.Buffer) { l.Debugf("a", "val=%d", 42) }, "val=42"},
-		{"Infof", func(l *Logger, buf *bytes.Buffer) { l.Infof("a", "val=%d", 42) }, "val=42"},
-		{"Warnf", func(l *Logger, buf *bytes.Buffer) { l.Warnf("a", "val=%d", 42) }, "val=42"},
-		{"Errorf", func(l *Logger, buf *bytes.Buffer) { l.Errorf("a", "val=%d", 42) }, "val=42"},
+		{"Debugf", func(l *Logger) { l.Debugf("a", "val=%d", 42) }, "val=42"},
+		{"Infof", func(l *Logger) { l.Infof("a", "val=%d", 42) }, "val=42"},
+		{"Warnf", func(l *Logger) { l.Warnf("a", "val=%d", 42) }, "val=42"},
+		{"Errorf", func(l *Logger) { l.Errorf("a", "val=%d", 42) }, "val=42"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			l := newTestLogger("TEST", "debug", &buf)
-			c.fn(l, &buf)
+			c.fn(l)
 			if !strings.Contains(buf.String(), c.want) {
 				t.Errorf("%s: expected %q in output, got: %s", c.name, c.want, buf.String())
 			}

@@ -79,7 +79,7 @@ func defaults() *Config {
 }
 
 func loadFile(cfg *Config, path string) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G703: path is a controlled config file path, not user input
 	if err != nil {
 		return // file is optional
 	}

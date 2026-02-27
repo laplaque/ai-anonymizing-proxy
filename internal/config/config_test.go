@@ -120,7 +120,6 @@ func TestLoadEnv_OllamaMaxConcurrent_Zero_Ignored(t *testing.T) {
 	t.Setenv("OLLAMA_MAX_CONCURRENT", "0")
 	cfg := defaults()
 	loadEnv(cfg)
-	// zero is invalid, default should be preserved
 	if cfg.OllamaMaxConcurrent != 1 {
 		t.Errorf("OllamaMaxConcurrent: got %d, want 1 (zero should be ignored)", cfg.OllamaMaxConcurrent)
 	}
@@ -175,7 +174,6 @@ func TestLoadEnv_InvalidPort_Ignored(t *testing.T) {
 	t.Setenv("PROXY_PORT", "not-a-number")
 	cfg := defaults()
 	loadEnv(cfg)
-	// invalid value should leave default intact
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort: got %d, want 8080 (invalid env should be ignored)", cfg.ProxyPort)
 	}
@@ -186,14 +184,21 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 
-	data, _ := json.Marshal(map[string]any{
+	data, marshalErr := json.Marshal(map[string]any{
 		"proxyPort":      9999,
 		"ollamaModel":    "mistral:7b",
 		"useAIDetection": false,
 	})
-	f.Write(data)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := defaults()
 	loadFile(cfg, f.Name())
@@ -212,7 +217,6 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 func TestLoadFile_Missing_IsNoOp(t *testing.T) {
 	cfg := defaults()
 	loadFile(cfg, "/nonexistent/path/config.json")
-	// should not panic and defaults remain unchanged
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed unexpectedly: %d", cfg.ProxyPort)
 	}
@@ -223,18 +227,21 @@ func TestLoadFile_InvalidJSON_PreservesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	f.WriteString("{this is not json}")
+	if _, err := f.WriteString("{this is not json}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := defaults()
-	loadFile(cfg, f.Name()) // should not panic
+	loadFile(cfg, f.Name())
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed on bad JSON: %d", cfg.ProxyPort)
 	}
 }
 
 func TestLoad_ReturnsNonNil(t *testing.T) {
-	// Load from the real environment (no config file in test dir)
 	cfg := Load()
 	if cfg == nil {
 		t.Fatal("Load() returned nil")
