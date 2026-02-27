@@ -228,7 +228,7 @@ func TestLowConfidenceCacheHit(t *testing.T) {
 	// Now pre-warm the cache with the real match key and verify it is used.
 	a := New("http://localhost:11434", "test-model", true, 0.80, 1, nil)
 	sessionID := "sess-hit-1"
-	cachedToken := "[PHONE_cached1]"
+	cachedToken := "[PII_cached01]"
 	a.cache.Set(matchedValue, cachedToken)
 
 	result := a.AnonymizeText(input, sessionID)

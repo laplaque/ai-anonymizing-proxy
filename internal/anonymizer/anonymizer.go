@@ -310,39 +310,25 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 }
 
 // replacement generates a deterministic anonymised token for a detected value.
-// All tokens use [TYPE_<8hex>] bracket notation. This format is critical:
-// no token may match any compiled regex pattern, or the proxy will re-tokenize
-// its own output in future sessions ("proxy eats itself" failure mode).
-// TestTokenFormatNonRetriggering enforces this property for every PII type.
-func (a *Anonymizer) replacement(piiType PIIType, original string) string {
+// All tokens use [PII_<8hex>] notation regardless of PII type. This is critical
+// for two reasons:
+//
+//  1. No token may match any compiled regex pattern, or the proxy will re-tokenize
+//     its own output in future sessions ("proxy eats itself" failure mode).
+//     TestTokenFormatNonRetriggering enforces this.
+//
+//  2. The token must not encode the PII type. If the type is visible (e.g.
+//     [EMAIL_<hex>]), the LLM infers the semantic class and renders a plausible
+//     substitute (e.g. user<hex>@example.com) instead of reproducing the token
+//     verbatim. The proxy then cannot find its own token in the response and
+//     deanonymization silently fails — the user sees a fake value, not their real one.
+//
+// The piiType parameter is accepted for interface compatibility but not used in
+// the output. Type information is retained in the session map (token → original)
+// and is sufficient for deanonymization without leaking it to the LLM.
+func (a *Anonymizer) replacement(_ PIIType, original string) string {
 	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8] // #nosec G401 -- deterministic token, not crypto
-	switch piiType {
-	case PIIEmail:
-		return fmt.Sprintf("[EMAIL_%s]", h)
-	case PIIPhone:
-		return fmt.Sprintf("[PHONE_%s]", h)
-	case PIISSN:
-		return fmt.Sprintf("[SSN_%s]", h)
-	case PIICreditCard:
-		return fmt.Sprintf("[CC_%s]", h)
-	case PIIIPAddress:
-		return fmt.Sprintf("[IP_%s]", h)
-	case PIIAPIKey:
-		return fmt.Sprintf("[APIKEY_%s]", h)
-	case PIIName:
-		return fmt.Sprintf("[NAME_%s]", h)
-	case PIIAddress:
-		return fmt.Sprintf("[ADDRESS_%s]", h)
-	case PIIMedical:
-		return fmt.Sprintf("[MEDICAL_%s]", h)
-	case PIISalary:
-		return fmt.Sprintf("[SALARY_%s]", h)
-	case PIICompany:
-		return fmt.Sprintf("[COMPANY_%s]", h)
-	case PIIJobTitle:
-		return fmt.Sprintf("[JOBTITLE_%s]", h)
-	}
-	return fmt.Sprintf("[REDACTED_%s]", h)
+	return fmt.Sprintf("[PII_%s]", h)
 }
 
 // recordMapping stores token → original in the session map.
@@ -393,7 +379,7 @@ func (a *Anonymizer) DeleteSession(sessionID string) {
 // maxTokenLen is the length of the longest possible anonymization token.
 // Used as the overlap window in StreamingDeanonymize to prevent tokens
 // from being split across chunk boundaries.
-// Longest token: "[JOBTITLE_<8hex>]" = 17 chars; 64 gives comfortable headroom.
+// Longest token: "[PII_<8hex>]" = 13 chars; 64 gives comfortable headroom.
 const maxTokenLen = 64
 
 // StreamingDeanonymize wraps src in a reader that replaces tokens on-the-fly
