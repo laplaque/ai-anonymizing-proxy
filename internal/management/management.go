@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/metrics"
 )
 
 // Server is the management API server.
@@ -30,7 +31,8 @@ type Server struct {
 	cfg       *config.Config
 	startTime time.Time
 	domains   *DomainRegistry
-	token     string // bearer token for auth; empty = no auth
+	token     string           // bearer token for auth; empty = no auth
+	metrics   *metrics.Metrics // nil = no metrics
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -159,29 +161,30 @@ func (r *DomainRegistry) persist(domains []string) {
 
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
 		tmp.Close()        //nolint:errcheck // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
 		log.Printf("[DOMAINS] Persist error (write): %v", err)
 		return
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
 		log.Printf("[DOMAINS] Persist error (close): %v", err)
 		return
 	}
 	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
-		os.Remove(tmpName) //nolint:errcheck // #nosec G703 -- tmpName from os.CreateTemp, not user input
+		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
 		log.Printf("[DOMAINS] Persist error (rename): %v", err)
 		return
 	}
 }
 
 // New creates a management server.
-func New(cfg *config.Config, registry *DomainRegistry) *Server {
+func New(cfg *config.Config, registry *DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
 		cfg:       cfg,
 		startTime: time.Now(),
 		domains:   registry,
 		token:     cfg.ManagementToken,
+		metrics:   m,
 	}
 	if s.token != "" {
 		log.Printf("[MANAGEMENT] Bearer token authentication enabled")
@@ -193,6 +196,7 @@ func New(cfg *config.Config, registry *DomainRegistry) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/domains/add", s.handleAddDomain)
 	mux.HandleFunc("/domains/remove", s.handleRemoveDomain)
 	return s.authMiddleware(mux)
@@ -297,6 +301,14 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 	s.domains.Remove(req.Domain)
 	log.Printf("[MANAGEMENT] Removed AI domain: %s", req.Domain)
 	writeJSON(w, http.StatusOK, map[string]string{"removed": req.Domain})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	if s.metrics == nil {
+		http.Error(w, "metrics not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.metrics.Snapshot())
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
 	"net"
@@ -17,38 +18,38 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 	tlsCfg := ca.TLSConfigForHost(host)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
 		log.Printf("[MITM] TLS handshake failed for %s: %v", host, err)
 		return
 	}
 	defer tlsConn.Close() //nolint:errcheck // best-effort close on TLS connection
-
-	// Use an http.Server to handle both HTTP/1.1 and HTTP/2 on this connection.
-	// The server reads requests from the decrypted TLS connection and dispatches
-	// them to the handler.
-	srv := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	// Configure HTTP/2 support on the server
-	if err := http2.ConfigureServer(srv, &http2.Server{}); err != nil {
-		log.Printf("[MITM] H2 config error for %s: %v", host, err)
-	}
 
 	// Determine which protocol was negotiated
 	proto := tlsConn.ConnectionState().NegotiatedProtocol
 
 	switch proto {
 	case "h2":
-		// Serve HTTP/2 directly on the TLS connection
-		srv.TLSConfig = tlsCfg
-		h2srv := &http2.Server{}
+		// Serve HTTP/2 directly on the TLS connection using a configured h2 server.
+		// ServeConn errors are logged — previously they were silently discarded,
+		// which caused ECONNRESET on the client with nothing in the proxy error log.
+		h2srv := &http2.Server{
+			MaxHandlers:                  0, // unlimited
+			MaxConcurrentStreams:         250,
+			MaxDecoderHeaderTableSize:    4096,
+			MaxEncoderHeaderTableSize:    4096,
+			MaxReadFrameSize:             1 << 20, // 1 MiB
+			PermitProhibitedCipherSuites: false,
+			IdleTimeout:                  90 * time.Second,
+		}
 		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
 			Handler: handler,
 		})
 	default:
 		// HTTP/1.1: serve using a single-connection listener
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
 		ln := &singleConnListener{conn: tlsConn}
 		srv.Serve(ln) //nolint:errcheck // always ErrServerClosed for single-conn listener
 	}
