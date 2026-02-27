@@ -16,19 +16,21 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
 
 	"ai-anonymizing-proxy/internal/anonymizer"
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
+	"ai-anonymizing-proxy/internal/metrics"
 	"ai-anonymizing-proxy/internal/mitm"
 )
 
@@ -115,6 +117,7 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 type Server struct {
 	cfg         *config.Config
 	anon        *anonymizer.Anonymizer
+	m           *metrics.Metrics
 	aiDomains   *management.DomainRegistry
 	authDomains map[string]bool
 	authPaths   map[string]bool
@@ -124,17 +127,16 @@ type Server struct {
 }
 
 // New creates and configures a new proxy server.
-func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
+func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
 		cfg:         cfg,
-		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence),
+		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, m),
+		m:           m,
 		aiDomains:   domains,
 		authDomains: toSet(cfg.AuthDomains),
 		authPaths:   toSet(cfg.AuthPaths),
 	}
 
-	// Upstream proxy set explicitly via config — never inherits HTTP_PROXY from environment
-	// HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars for upstream chaining.
 	// The custom DialContext enforces SSRF protection at connection time,
 	// preventing DNS rebinding attacks (TOCTOU).
 	dialer := &net.Dialer{
@@ -142,22 +144,12 @@ func New(cfg *config.Config, domains *management.DomainRegistry) *Server {
 		KeepAlive: 30 * time.Second,
 	}
 
-	var proxyFunc func(*http.Request) (*url.URL, error)
-	if cfg.UpstreamProxy != "" {
-		upstreamURL, err := url.Parse(cfg.UpstreamProxy)
-		if err != nil {
-			log.Printf("[PROXY] Invalid upstreamProxy %q: %v — using direct", cfg.UpstreamProxy, err)
-		} else {
-			log.Printf("[PROXY] Upstream proxy: %s", cfg.UpstreamProxy)
-			proxyFunc = http.ProxyURL(upstreamURL)
-		}
-	}
-
 	safeDial := ssrfSafeDialContext(dialer)
 	s.dialContext = safeDial
 
+	// ProxyFromEnvironment picks up HTTP_PROXY / HTTPS_PROXY / NO_PROXY.
 	s.transport = &http.Transport{
-		Proxy:                 proxyFunc, // nil = direct; never reads HTTP_PROXY from env
+		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           safeDial,
 		MaxIdleConns:          200,
 		IdleConnTimeout:       90 * time.Second,
@@ -246,29 +238,53 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		}
 		log.Printf("[MITM] %s %s%s %s", req.Method, domain, req.URL.Path, tag)
 
+		if s.m != nil {
+			s.m.RequestsTotal.Add(1)
+			if isAuth {
+				s.m.RequestsAuth.Add(1)
+			} else {
+				s.m.RequestsAnonymized.Add(1)
+			}
+		}
+
 		// Anonymize body for non-auth requests
+		var sessionID string
 		if !isAuth {
-			if err := s.anonymizeRequestBody(req); err != nil {
+			var err error
+			sessionID, err = s.anonymizeRequestBody(req)
+			if err != nil {
 				log.Printf("[MITM] Anonymization error for %s: %v", domain, err)
 				http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
 				return
+			}
+			if sessionID != "" {
+				defer s.anon.DeleteSession(sessionID)
 			}
 		}
 
 		// Forward to the real destination
 		removeHopByHop(req.Header)
+		upstreamStart := time.Now()
 		resp, err := s.transport.RoundTrip(req)
 		if err != nil {
-			log.Printf("[MITM] Upstream error for %s: %v", host, err)
+			if s.m != nil {
+				s.m.ErrorsUpstream.Add(1)
+			}
 			http.Error(rw, "bad gateway", http.StatusBadGateway)
 			return
 		}
+		if s.m != nil {
+			s.m.RecordUpstreamLatency(time.Since(upstreamStart))
+		}
 		defer resp.Body.Close() //nolint:errcheck // best-effort close
+
+		// De-anonymize response before returning to client
+		s.deanonymizeResponseBody(resp, sessionID)
 
 		removeHopByHop(resp.Header)
 		copyHeader(rw.Header(), resp.Header)
 		rw.WriteHeader(resp.StatusCode)
-		io.Copy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+		flushingCopy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 	})
 
 	// Perform TLS handshake and serve HTTP/1.1 or HTTP/2
@@ -342,20 +358,38 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[HTTP] %s %s%s %s", r.Method, domain, r.URL.Path, tag)
 
+	if s.m != nil {
+		s.m.RequestsTotal.Add(1)
+		switch {
+		case isAuth:
+			s.m.RequestsAuth.Add(1)
+		case isAI:
+			s.m.RequestsAnonymized.Add(1)
+		default:
+			s.m.RequestsPassthrough.Add(1)
+		}
+	}
+
 	// Anonymize body only for AI API requests that are not auth
+	var sessionID string
 	if isAI && !isAuth {
-		if err := s.anonymizeRequestBody(r); err != nil {
+		var err error
+		sessionID, err = s.anonymizeRequestBody(r)
+		if err != nil {
 			log.Printf("[HTTP] Anonymization error for %s: %v", domain, err)
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
+		if sessionID != "" {
+			defer s.anon.DeleteSession(sessionID)
+		}
 	}
 
 	// Forward the request
-	s.forward(w, r)
+	s.forward(w, r, sessionID)
 }
 
-func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID string) {
 	// Ensure the URL is absolute
 	if r.URL.Scheme == "" {
 		r.URL.Scheme = "http"
@@ -374,42 +408,98 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	r.RequestURI = ""
 	removeHopByHop(r.Header)
 
+	upstreamStart := time.Now()
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
-		log.Printf("[HTTP] Upstream error for %s: %v", r.URL.Host, err)
+		if s.m != nil {
+			s.m.ErrorsUpstream.Add(1)
+		}
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
+	if s.m != nil {
+		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
+	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
+
+	// De-anonymize response before returning to client
+	s.deanonymizeResponseBody(resp, sessionID)
 
 	removeHopByHop(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+	flushingCopy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 }
 
 const maxRequestBody = 50 << 20 // 50 MB
 
-func (s *Server) anonymizeRequestBody(r *http.Request) error {
+func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	if r.Body == nil || r.ContentLength == 0 {
-		return nil
+		return "", nil
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
 	if err != nil {
-		return err
+		if s.m != nil {
+			s.m.ErrorsAnonymize.Add(1)
+		}
+		return "", err
 	}
 	if int64(len(body)) > maxRequestBody {
-		return fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
+		return "", fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
 	}
 
-	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
-	anonymized := s.anon.AnonymizeJSON(body, requestID)
+	var sessionID string
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
+	} else {
+		sessionID = hex.EncodeToString(b)
+	}
+
+	anonStart := time.Now()
+	anonymized := s.anon.AnonymizeJSON(body, sessionID)
+	if s.m != nil {
+		s.m.RecordAnonLatency(time.Since(anonStart))
+	}
 
 	r.Body = io.NopCloser(bytes.NewReader(anonymized))
 	r.ContentLength = int64(len(anonymized))
-	return nil
+	return sessionID, nil
+}
+
+func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) {
+	if sessionID == "" || resp == nil || resp.Body == nil {
+		return
+	}
+
+	// Streaming responses (SSE or unknown-length chunked) must never be fully
+	// buffered: io.ReadAll blocks until the upstream closes the connection.
+	// Wrap the body in a pipe-based reader that replaces tokens on-the-fly.
+	if isStreamingResponse(resp) {
+		resp.Body = s.anon.StreamingDeanonymize(resp.Body, sessionID)
+		resp.ContentLength = -1 // length is unknown; let the client stream
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck // body already read; close is best-effort
+	if err != nil {
+		resp.Body = http.NoBody
+		return
+	}
+	deanonymized := s.anon.DeanonymizeText(string(body), sessionID)
+	resp.Body = io.NopCloser(strings.NewReader(deanonymized))
+	resp.ContentLength = int64(len(deanonymized))
+}
+
+// isStreamingResponse returns true for responses whose body must not be fully
+// buffered before forwarding.  SSE connections stay open indefinitely; chunked
+// responses with no Content-Length may also be long-lived.
+func isStreamingResponse(resp *http.Response) bool {
+	ct := resp.Header.Get("Content-Type")
+	return strings.Contains(ct, "text/event-stream")
 }
 
 func (s *Server) isAuthRequest(domain, path string) bool {
@@ -464,6 +554,26 @@ func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		for _, v := range vv {
 			dst.Add(k, v)
+		}
+	}
+}
+
+// flushingCopy copies src to dst, flushing after each write if dst supports
+// http.Flusher. This ensures SSE and other streaming responses are delivered
+// to the client immediately rather than being buffered.
+func flushingCopy(dst io.Writer, src io.Reader) {
+	flusher, canFlush := dst.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			dst.Write(buf[:n]) //nolint:errcheck // caller ignores; headers already sent
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }

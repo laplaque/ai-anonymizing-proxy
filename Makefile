@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint security vulncheck check gen-ca import-ca-macos import-ca-linux import-ca-windows
+.PHONY: all build run clean test lint security vulncheck check gen-ca import-ca-macos import-ca-linux import-ca-windows deploy
 
 all: build
 
@@ -40,6 +40,11 @@ check: lint test security vulncheck
 
 clean:
 	rm -rf bin/
+
+deploy: build
+	sudo cp $(BINARY) /opt/ai-proxy/proxy
+	launchctl kickstart -k gui/$$(id -u)/com.ai-proxy
+	@echo "Deployed $(BINARY) → /opt/ai-proxy/proxy and restarted service"
 
 # --- CA Certificate Management ---
 

@@ -19,15 +19,13 @@ import (
 	"time"
 )
 
-const maxCertCache = 10_000
-
 // CA holds certificate authority material for generating leaf certificates.
 type CA struct {
 	cert *x509.Certificate
 	key  *rsa.PrivateKey
 
 	mu    sync.RWMutex
-	cache map[string]*tls.Certificate // hostname → leaf cert
+	cache map[string]*tls.Certificate // hostname → leaf cert (Leaf field carries NotAfter)
 }
 
 // LoadOrGenerateCA loads a CA from PEM files, or generates one if the files
@@ -166,18 +164,26 @@ func GenerateCA(certFile, keyFile string) error {
 func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 	ca.mu.RLock()
 	if c, ok := ca.cache[host]; ok {
-		ca.mu.RUnlock()
-		return c, nil
+		if c.Leaf != nil && time.Until(c.Leaf.NotAfter) > time.Hour {
+			ca.mu.RUnlock()
+			log.Printf("[MITM] Certificate cache hit for %s (expires %s)", host, c.Leaf.NotAfter.Format(time.RFC3339))
+			return c, nil
+		}
+		log.Printf("[MITM] Certificate expired for %s, regenerating", host)
 	}
 	ca.mu.RUnlock()
 
+	log.Printf("[MITM] Generating certificate for %s", host)
+
 	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
+		log.Printf("[MITM] Failed to generate key for %s: %v", host, err)
 		return nil, fmt.Errorf("generate leaf key: %w", err)
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
+		log.Printf("[MITM] Failed to generate serial for %s: %v", host, err)
 		return nil, fmt.Errorf("generate serial: %w", err)
 	}
 
@@ -186,13 +192,14 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 		Subject:      pkix.Name{CommonName: host},
 		DNSNames:     []string{host},
 		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(24 * time.Hour),
+		NotAfter:     time.Now().Add(7 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &leafKey.PublicKey, ca.key)
 	if err != nil {
+		log.Printf("[MITM] Failed to sign certificate for %s: %v", host, err)
 		return nil, fmt.Errorf("sign leaf cert: %w", err)
 	}
 
@@ -200,16 +207,13 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 		Certificate: [][]byte{derBytes, ca.cert.Raw},
 		PrivateKey:  leafKey,
 	}
+	leaf.Leaf, _ = x509.ParseCertificate(derBytes)
 
 	ca.mu.Lock()
 	ca.cache[host] = leaf
-	if len(ca.cache) > maxCertCache {
-		// Certs are cheap to regenerate (~ms); clear the map rather than tracking LRU.
-		ca.cache = make(map[string]*tls.Certificate)
-		ca.cache[host] = leaf
-	}
 	ca.mu.Unlock()
 
+	log.Printf("[MITM] Certificate cached for %s (expires %s)", host, leaf.Leaf.NotAfter.Format(time.RFC3339))
 	return leaf, nil
 }
 

@@ -31,6 +31,7 @@ import (
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
+	"ai-anonymizing-proxy/internal/metrics"
 	"ai-anonymizing-proxy/internal/proxy"
 )
 
@@ -43,9 +44,12 @@ func main() {
 	// Runtime domain changes are persisted to ai-domains.json and restored on restart.
 	registry := management.NewDomainRegistry(cfg, "ai-domains.json")
 
+	// Shared metrics collector — passed to both servers so counters are unified.
+	m := metrics.New()
+
 	// Start management API in background.
 	// Fatal is intentional: the proxy should not run without its control plane.
-	mgmt := management.New(cfg, registry)
+	mgmt := management.New(cfg, registry, m)
 	go func() {
 		if err := mgmt.ListenAndServe(); err != nil {
 			log.Fatalf("[MANAGEMENT] Fatal: %v", err)
@@ -53,7 +57,7 @@ func main() {
 	}()
 
 	// Start proxy server
-	proxyServer := proxy.New(cfg, registry)
+	proxyServer := proxy.New(cfg, registry, m)
 
 	addr := fmt.Sprintf("%s:%d", cfg.BindAddress, cfg.ProxyPort)
 	log.Printf("[PROXY] Listening on %s", addr)

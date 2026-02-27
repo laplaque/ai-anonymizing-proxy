@@ -1,8 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -80,4 +85,84 @@ func TestSsrfSafeDialContext_BlocksPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error dialing localhost, got nil")
 	}
+}
+
+// flushRecorder implements io.Writer and http.Flusher to verify that
+// flushingCopy flushes after each write.
+type flushRecorder struct {
+	mu      sync.Mutex
+	writes  int
+	flushes int
+	buf     bytes.Buffer
+}
+
+func (f *flushRecorder) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writes++
+	return f.buf.Write(p)
+}
+
+func (f *flushRecorder) Flush() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushes++
+}
+
+// Header and WriteHeader satisfy http.ResponseWriter (needed for the Flusher cast).
+func (f *flushRecorder) Header() http.Header        { return http.Header{} }
+func (f *flushRecorder) WriteHeader(statusCode int) {}
+
+func TestFlushingCopy_FlushesPerWrite(t *testing.T) {
+	// Simulate a streaming SSE response: three separate chunks arriving over time.
+	chunks := "data: chunk1\n\ndata: chunk2\n\ndata: chunk3\n\n"
+	src := &slowReader{data: []byte(chunks), chunkSize: 14} // one SSE event per read
+	dst := &flushRecorder{}
+
+	flushingCopy(dst, src)
+
+	dst.mu.Lock()
+	defer dst.mu.Unlock()
+
+	if dst.writes == 0 {
+		t.Fatal("expected at least one write, got 0")
+	}
+	if dst.flushes != dst.writes {
+		t.Errorf("flushes (%d) should equal writes (%d)", dst.flushes, dst.writes)
+	}
+	if got := dst.buf.String(); got != chunks {
+		t.Errorf("content mismatch:\n got: %q\nwant: %q", got, chunks)
+	}
+}
+
+func TestFlushingCopy_NoFlusher(t *testing.T) {
+	// When dst does not implement http.Flusher, flushingCopy should still copy all data.
+	src := strings.NewReader("hello world")
+	var dst bytes.Buffer
+
+	flushingCopy(&dst, src)
+
+	if got := dst.String(); got != "hello world" {
+		t.Errorf("got %q, want %q", got, "hello world")
+	}
+}
+
+// slowReader returns at most chunkSize bytes per Read, simulating chunked arrival.
+type slowReader struct {
+	data      []byte
+	chunkSize int
+	offset    int
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if r.offset >= len(r.data) {
+		return 0, io.EOF
+	}
+	end := r.offset + r.chunkSize
+	if end > len(r.data) {
+		end = len(r.data)
+	}
+	n := copy(p, r.data[r.offset:end])
+	r.offset += n
+	return n, nil
 }

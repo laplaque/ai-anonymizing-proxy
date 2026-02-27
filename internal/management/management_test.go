@@ -135,7 +135,7 @@ func newTestServer(token string) (*Server, *DomainRegistry) {
 	cfg := testConfig()
 	cfg.ManagementToken = token
 	reg := NewDomainRegistry(cfg, "")
-	srv := New(cfg, reg)
+	srv := New(cfg, reg, nil)
 	return srv, reg
 }
 

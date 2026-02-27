@@ -1,6 +1,7 @@
 // Package config loads and holds all proxy configuration.
-// Settings are layered: defaults → proxy-config.json → environment variables (env vars win).
-// Upstream proxy chaining is configured via the UpstreamProxy field / UPSTREAM_PROXY env var.
+// Settings are read from environment variables first, then proxy-config.json.
+// Go's net/http automatically respects HTTP_PROXY / HTTPS_PROXY env vars,
+// so upstream (corporate) proxy chaining requires no extra code here.
 package config
 
 import (
@@ -24,7 +25,6 @@ type Config struct {
 	CAKeyFile       string `json:"caKeyFile"`
 	BindAddress     string `json:"bindAddress"`
 	ManagementToken string `json:"managementToken"`
-	UpstreamProxy   string `json:"upstreamProxy"`
 
 	AIAPIDomains []string `json:"aiApiDomains"`
 	AuthDomains  []string `json:"authDomains"`
@@ -127,8 +127,5 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv("MANAGEMENT_TOKEN"); v != "" {
 		cfg.ManagementToken = v
-	}
-	if v := os.Getenv("UPSTREAM_PROXY"); v != "" {
-		cfg.UpstreamProxy = v
 	}
 }
