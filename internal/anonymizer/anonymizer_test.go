@@ -9,7 +9,7 @@ import (
 )
 
 func newTestAnonymizer() *Anonymizer {
-	return New("http://localhost:11434", "test-model", false, 0.8, nil)
+	return New("http://localhost:11434", "test-model", false, 0.8, 1, nil)
 }
 
 func TestAnonymizeTextEmail(t *testing.T) {
@@ -151,7 +151,7 @@ func TestMultipleSessionsIsolated(t *testing.T) {
 
 func TestMetricsCountersIncrement(t *testing.T) {
 	m := metrics.New()
-	a := New("http://localhost:[ADDRESS_c13ffb79]", "test-model", false, 0.8, m)
+	a := New("http://localhost:[ADDRESS_c13ffb79]", "test-model", false, 0.8, 1, m)
 
 	sessionID := "sess-metrics-1"
 	a.AnonymizeText("userc160f8cc@example.com and XXX-XX-1e87", sessionID)
