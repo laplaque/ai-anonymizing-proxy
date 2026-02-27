@@ -539,15 +539,12 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 				}
 
 				if safeEnd > 0 {
-				chunk := string(window[:safeEnd])
-				replaced := replacer.Replace(chunk)
-				if replaced != chunk {
-				 log.Printf("[DEANON] replacement hit in chunk safeEnd=%d", safeEnd)
-				 }
-				if _, werr := pw.Write([]byte(replaced)); werr != nil {
-					return
+					chunk := string(window[:safeEnd])
+					replaced := replacer.Replace(chunk)
+					if _, werr := pw.Write([]byte(replaced)); werr != nil {
+						return
+					}
 				}
-			}
 
 				// Carry forward the unprocessed tail
 				overlap = append(overlap[:0], window[safeEnd:]...)

@@ -15,6 +15,8 @@ package proxy
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -409,7 +411,6 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	// Strip hop-by-hop headers
 	r.RequestURI = ""
 	removeHopByHop(r.Header)
-
 	upstreamStart := time.Now()
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
@@ -477,9 +478,16 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) 
 		return
 	}
 
+	// Decompress the body before token replacement. The upstream may have
+	// compressed the response even if we sent Accept-Encoding: identity,
+	// so handle it defensively here.
+	if err := decompressResponse(resp); err != nil {
+		log.Printf("[DEANON] decompression error sessionID=%s: %v", sessionID, err)
+	}
+
 	ct := resp.Header.Get("Content-Type")
 	streaming := isStreamingResponse(resp)
-	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v", sessionID, ct, streaming)
+	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v encoding=%q", sessionID, ct, streaming, resp.Header.Get("Content-Encoding"))
 
 	// Streaming responses (SSE or unknown-length chunked) must never be fully
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
@@ -564,6 +572,38 @@ func copyHeader(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+}
+
+// decompressResponse transparently decompresses a gzip or deflate response body
+// and removes the Content-Encoding header so the client receives plain text.
+// If the encoding is unsupported or absent, the body is left unchanged.
+func decompressResponse(resp *http.Response) error {
+	enc := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	switch enc {
+	case "gzip":
+		gr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return fmt.Errorf("gzip reader: %w", err)
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{gr, resp.Body}
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = -1
+	case "deflate":
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{flate.NewReader(resp.Body), resp.Body}
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = -1
+	case "", "identity":
+		// nothing to do
+	default:
+		log.Printf("[DEANON] unsupported Content-Encoding %q — token replacement may fail", enc)
+	}
+	return nil
 }
 
 // flushingCopy copies src to dst, flushing after each write if dst supports
