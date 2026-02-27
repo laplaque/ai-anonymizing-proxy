@@ -309,33 +309,37 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 }
 
 // replacement generates a deterministic anonymised token for a detected value.
+// All tokens use [TYPE_<8hex>] bracket notation. This format is critical:
+// no token may match any compiled regex pattern, or the proxy will re-tokenize
+// its own output in future sessions ("proxy eats itself" failure mode).
+// TestTokenFormatNonRetriggering enforces this property for every PII type.
 func (a *Anonymizer) replacement(piiType PIIType, original string) string {
 	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8] // #nosec G401 -- deterministic token, not crypto
 	switch piiType {
 	case PIIEmail:
-		return fmt.Sprintf("user%s@example.com", h)
+		return fmt.Sprintf("[EMAIL_%s]", h)
 	case PIIPhone:
-		return fmt.Sprintf("+1-555-%s", h[:4])
+		return fmt.Sprintf("[PHONE_%s]", h)
 	case PIISSN:
-		return fmt.Sprintf("XXX-XX-%s", h[:4])
+		return fmt.Sprintf("[SSN_%s]", h)
 	case PIICreditCard:
-		return fmt.Sprintf("XXXX-XXXX-XXXX-%s", h[:4])
+		return fmt.Sprintf("[CC_%s]", h)
 	case PIIIPAddress:
-		return fmt.Sprintf("10.0.0.%d", []byte(h)[0])
+		return fmt.Sprintf("[IP_%s]", h)
 	case PIIAPIKey:
-		return fmt.Sprintf("[REDACTED_KEY_%s]", h)
+		return fmt.Sprintf("[APIKEY_%s]", h)
 	case PIIName:
-		return fmt.Sprintf("Person%s", h[:4])
+		return fmt.Sprintf("[NAME_%s]", h)
 	case PIIAddress:
 		return fmt.Sprintf("[ADDRESS_%s]", h)
 	case PIIMedical:
 		return fmt.Sprintf("[MEDICAL_%s]", h)
 	case PIISalary:
-		return "$XX,XXX"
+		return fmt.Sprintf("[SALARY_%s]", h)
 	case PIICompany:
-		return fmt.Sprintf("Company%s", h[:4])
+		return fmt.Sprintf("[COMPANY_%s]", h)
 	case PIIJobTitle:
-		return fmt.Sprintf("Role%s", h[:4])
+		return fmt.Sprintf("[JOBTITLE_%s]", h)
 	}
 	return fmt.Sprintf("[REDACTED_%s]", h)
 }
@@ -388,7 +392,7 @@ func (a *Anonymizer) DeleteSession(sessionID string) {
 // maxTokenLen is the length of the longest possible anonymization token.
 // Used as the overlap window in StreamingDeanonymize to prevent tokens
 // from being split across chunk boundaries.
-// Longest token: "user<8hex>@example.com" = 24 chars; 64 gives comfortable headroom.
+// Longest token: "[JOBTITLE_<8hex>]" = 17 chars; 64 gives comfortable headroom.
 const maxTokenLen = 64
 
 // StreamingDeanonymize wraps src in a reader that replaces tokens on-the-fly

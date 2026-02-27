@@ -90,7 +90,7 @@ func TestStreamingDeanonymizeRoundTrip(t *testing.T) {
 	a := newTestAnonymizer()
 	sessionID := "sess-stream-1"
 
-	original := `data: {"content":"call user9aab5a23@example.com or +1-555-d2df"}` + "\n\n"
+	original := `data: {"content":"call alice@example.com or +1-800-555-1234"}` + "\n\n"
 	anonymized := a.AnonymizeText(original, sessionID)
 	if anonymized == original {
 		t.Fatal("AnonymizeText did not change the text")
@@ -151,10 +151,10 @@ func TestMultipleSessionsIsolated(t *testing.T) {
 
 func TestMetricsCountersIncrement(t *testing.T) {
 	m := metrics.New()
-	a := New("http://localhost:[ADDRESS_c13ffb79]", "test-model", false, 0.8, 1, m)
+	a := New("http://localhost:11434", "test-model", false, 0.8, 1, m)
 
 	sessionID := "sess-metrics-1"
-	a.AnonymizeText("userc160f8cc@example.com and XXX-XX-1e87", sessionID)
+	a.AnonymizeText("contact me at test@example.com and my SSN is 123-45-6789", sessionID)
 
 	replaced := m.TokensReplaced.Load()
 	if replaced == 0 {
@@ -185,6 +185,26 @@ func (r *bytewiseReader) Read(p []byte) (int, error) {
 }
 
 func (r *bytewiseReader) Close() error { return nil }
+
+// TestTokenFormatNonRetriggering verifies that no token produced by replacement()
+// matches any compiled regex pattern. A failure here means the proxy would
+// re-tokenize its own output in future sessions ("proxy eats itself").
+func TestTokenFormatNonRetriggering(t *testing.T) {
+	a := newTestAnonymizer()
+	piiTypes := []PIIType{
+		PIIEmail, PIIPhone, PIISSN, PIICreditCard, PIIIPAddress,
+		PIIAPIKey, PIIName, PIIAddress, PIIMedical, PIISalary,
+		PIICompany, PIIJobTitle,
+	}
+	for _, pt := range piiTypes {
+		token := a.replacement(pt, "test-value-for-"+string(pt))
+		for _, p := range a.patterns {
+			if p.re.MatchString(token) {
+				t.Errorf("token for PII type %q re-triggers pattern %q: token=%q", pt, p.piiType, token)
+			}
+		}
+	}
+}
 
 func TestStreamingDeanonymizeChunkBoundary(t *testing.T) {
 	a := newTestAnonymizer()
