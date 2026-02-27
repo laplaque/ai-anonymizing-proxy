@@ -13,14 +13,14 @@ import (
 
 // Config holds the full proxy configuration.
 type Config struct {
-	ProxyPort      int     `json:"proxyPort"`
-	ManagementPort int     `json:"managementPort"`
-	OllamaEndpoint string  `json:"ollamaEndpoint"`
-	OllamaModel    string  `json:"ollamaModel"`
-	UseAIDetection     bool    `json:"useAIDetection"`
-	AIConfidence       float64 `json:"aiConfidenceThreshold"`
-	OllamaMaxConcurrent int    `json:"ollamaMaxConcurrent"`
-	LogLevel           string  `json:"logLevel"`
+	ProxyPort           int     `json:"proxyPort"`
+	ManagementPort      int     `json:"managementPort"`
+	OllamaEndpoint      string  `json:"ollamaEndpoint"`
+	OllamaModel         string  `json:"ollamaModel"`
+	UseAIDetection      bool    `json:"useAIDetection"`
+	AIConfidence        float64 `json:"aiConfidenceThreshold"`
+	OllamaMaxConcurrent int     `json:"ollamaMaxConcurrent"`
+	LogLevel            string  `json:"logLevel"`
 
 	CACertFile      string `json:"caCertFile"`
 	CAKeyFile       string `json:"caKeyFile"`
@@ -42,17 +42,17 @@ func Load() *Config {
 
 func defaults() *Config {
 	return &Config{
-		ProxyPort:      8080,
-		ManagementPort: 8081,
-		OllamaEndpoint: "http://localhost:11434",
-		OllamaModel:    "qwen2.5:3b",
+		ProxyPort:           8080,
+		ManagementPort:      8081,
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "qwen2.5:3b",
 		UseAIDetection:      true,
 		AIConfidence:        0.7,
 		OllamaMaxConcurrent: 1,
 		LogLevel:            "info",
-		CACertFile:     "ca-cert.pem",
-		CAKeyFile:      "ca-key.pem",
-		BindAddress:    "127.0.0.1",
+		CACertFile:          "ca-cert.pem",
+		CAKeyFile:           "ca-key.pem",
+		BindAddress:         "127.0.0.1",
 		AIAPIDomains: []string{
 			"api.anthropic.com",
 			"api.openai.com",
