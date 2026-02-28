@@ -9,7 +9,11 @@ import (
 // newTestS3FIFO creates a small S3-FIFO wrapping an in-memory backing cache
 // for tests that do not need bbolt.
 func newTestS3FIFO(capacity int) *s3fifoCache {
-	return newS3FIFOCache(newMemoryCache(), capacity).(*s3fifoCache)
+	c, ok := newS3FIFOCache(newMemoryCache(), capacity).(*s3fifoCache)
+	if !ok {
+		panic("newS3FIFOCache did not return *s3fifoCache")
+	}
+	return c
 }
 
 // ── Basic contract ───────────────────────────────────────────────────────────
@@ -181,7 +185,10 @@ func TestS3FIFOColdReadRewarmsMemory(t *testing.T) {
 	// Pre-populate the backing store (simulates data written by a previous process).
 	backing.Set("cold-key", "tok-cold")
 
-	c := newS3FIFOCache(backing, 10).(*s3fifoCache)
+	c, ok := newS3FIFOCache(backing, 10).(*s3fifoCache)
+	if !ok {
+		t.Fatal("newS3FIFOCache did not return *s3fifoCache")
+	}
 	defer c.Close() //nolint:errcheck
 
 	// Key is not in S3-FIFO memory yet.

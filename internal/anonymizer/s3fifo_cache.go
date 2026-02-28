@@ -208,7 +208,11 @@ func (c *s3fifoCache) evictFromS() {
 	if front == nil {
 		return
 	}
-	key := front.Value.(string)
+	key, ok := front.Value.(string)
+	if !ok {
+		c.sQueue.Remove(front) // corrupted element; discard
+		return
+	}
 	c.sQueue.Remove(front)
 
 	e, ok := c.entries[key]
@@ -241,7 +245,11 @@ func (c *s3fifoCache) evictFromM() {
 	if front == nil {
 		return
 	}
-	key := front.Value.(string)
+	key, ok := front.Value.(string)
+	if !ok {
+		c.mQueue.Remove(front) // corrupted element; discard
+		return
+	}
 	c.mQueue.Remove(front)
 	delete(c.entries, key)
 	go c.backing.Delete(key) // async: avoid blocking the hot path
