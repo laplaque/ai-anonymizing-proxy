@@ -33,5 +33,10 @@
     "/auth", "/login", "/signin", "/signup", "/register",
     "/token", "/oauth", "/authenticate", "/session",
     "/v1/auth", "/api/auth", "/api/login", "/api/token"
-  ]
+  ],
+  "piiInstructions": {
+    "claude": "PRIVACY TOKENS: This request contains privacy-preserving placeholders matching the pattern [PII_XXXXXXXX] (8 hex characters). You MUST reproduce every such token EXACTLY as written in your response. Do NOT replace them with example values, email addresses, phone numbers, names, or any other substitutes. Treat [PII_*] tokens as opaque identifiers that must pass through unchanged.",
+    "gpt": "PRIVACY TOKENS: This request contains privacy-preserving placeholders matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such token verbatim in your response. Do not substitute them with example values.",
+    "default": "PRIVACY TOKENS: This request contains privacy-preserving placeholders matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such token verbatim in your response. Do not substitute them with example values."
+  }
 }

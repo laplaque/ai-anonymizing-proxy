@@ -81,6 +81,8 @@ type Anonymizer struct {
 
 	sessionMu sync.RWMutex
 	sessions  map[string]map[string]string // sessionID → token → original
+
+	piiInstructions map[string]string // model family prefix → system instruction
 }
 
 // New creates an Anonymizer with the given options.
@@ -130,6 +132,13 @@ func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold fl
 // Must be called when the anonymizer is shut down.
 func (a *Anonymizer) Close() error {
 	return a.cache.Close()
+}
+
+// SetPIIInstructions configures the per-model-family system instructions injected
+// when PII tokens are present. Keys are model family prefixes (e.g. "claude", "gpt");
+// the special key "default" is used when no prefix matches.
+func (a *Anonymizer) SetPIIInstructions(instructions map[string]string) {
+	a.piiInstructions = instructions
 }
 
 func (a *Anonymizer) compilePatterns() {
@@ -263,16 +272,30 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 	}()
 }
 
-// piiSystemInstruction is appended to the LLM's system prompt whenever PII
-// tokens are injected into a request. It instructs the model to reproduce the
-// opaque [PII_<hex>] tokens verbatim rather than substituting plausible-looking
-// values — the failure mode where the model writes user<hex>@example.com
-// instead of preserving the token.
-const piiSystemInstruction = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
+// defaultPIIInstruction is the fallback system instruction used when no
+// model-specific entry is configured via SetPIIInstructions.
+const defaultPIIInstruction = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
 	" matching the pattern [PII_XXXXXXXX] (8 hex characters). You MUST reproduce" +
 	" every such token EXACTLY as written in your response. Do NOT replace them with" +
 	" example values, email addresses, phone numbers, names, or any other substitutes." +
 	" Treat [PII_*] tokens as opaque identifiers that must pass through unchanged."
+
+// resolvePIIInstruction returns the configured instruction for the given model
+// string using prefix matching, falling back to defaultPIIInstruction.
+func (a *Anonymizer) resolvePIIInstruction(model string) string {
+	for key, instruction := range a.piiInstructions {
+		if key == "default" {
+			continue
+		}
+		if len(model) >= len(key) && model[:len(key)] == key {
+			return instruction
+		}
+	}
+	if fallback, ok := a.piiInstructions["default"]; ok {
+		return fallback
+	}
+	return defaultPIIInstruction
+}
 
 // AnonymizeJSON parses the body as JSON, walks the string values, and
 // anonymizes them. Non-JSON bodies are treated as plain text.
@@ -285,6 +308,14 @@ func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
 		// Not JSON — treat as plain text
 		return []byte(a.AnonymizeText(string(body), requestID))
 	}
+	// Extract model name before walking (walkValue may modify the map).
+	model := ""
+	if m, ok := doc.(map[string]any); ok {
+		if v, ok := m["model"].(string); ok {
+			model = v
+		}
+	}
+
 	anonymized := a.walkValue(doc, requestID)
 
 	// If any tokens were recorded for this request, inject a system instruction
@@ -294,7 +325,7 @@ func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
 		tokenCount := len(a.sessions[requestID])
 		a.sessionMu.RUnlock()
 		if tokenCount > 0 {
-			a.injectPIIInstruction(m)
+			a.injectPIIInstruction(m, a.resolvePIIInstruction(model))
 		}
 	}
 
@@ -305,7 +336,7 @@ func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
 	return out
 }
 
-// injectPIIInstruction appends piiSystemInstruction to the request's system
+// injectPIIInstruction appends the given instruction to the request's system
 // prompt. It handles two API shapes:
 //
 //   - Anthropic messages API: top-level "system" field (string or content-block array)
@@ -313,21 +344,24 @@ func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
 //
 // If neither shape is found, the function is a no-op — non-chat endpoints
 // (embeddings, completions) don't carry a system prompt to inject into.
-func (a *Anonymizer) injectPIIInstruction(doc map[string]any) {
+func (a *Anonymizer) injectPIIInstruction(doc map[string]any, instruction string) {
+	if instruction == "" {
+		return
+	}
 	// Anthropic API: system is a top-level string or [{type:"text",text:"..."}]
 	if sys, ok := doc["system"]; ok {
 		switch s := sys.(type) {
 		case string:
 			if s == "" {
-				doc["system"] = piiSystemInstruction
+				doc["system"] = instruction
 			} else {
-				doc["system"] = s + "\n\n" + piiSystemInstruction
+				doc["system"] = s + "\n\n" + instruction
 			}
 			return
 		case []any:
 			doc["system"] = append(s, map[string]any{
 				"type": "text",
-				"text": piiSystemInstruction,
+				"text": instruction,
 			})
 			return
 		}
@@ -339,9 +373,9 @@ func (a *Anonymizer) injectPIIInstruction(doc map[string]any) {
 			if msg, ok := m.(map[string]any); ok && msg["role"] == "system" {
 				if content, ok := msg["content"].(string); ok {
 					if content == "" {
-						msg["content"] = piiSystemInstruction
+						msg["content"] = instruction
 					} else {
-						msg["content"] = content + "\n\n" + piiSystemInstruction
+						msg["content"] = content + "\n\n" + instruction
 					}
 				}
 				return
@@ -350,7 +384,7 @@ func (a *Anonymizer) injectPIIInstruction(doc map[string]any) {
 		// No system message — prepend one
 		systemMsg := map[string]any{
 			"role":    "system",
-			"content": piiSystemInstruction,
+			"content": instruction,
 		}
 		doc["messages"] = append([]any{systemMsg}, msgs...)
 	}
