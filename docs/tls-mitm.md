@@ -10,7 +10,7 @@ Non-AI domains are tunneled transparently without inspection.
 sequenceDiagram
     participant C as Client (trusts proxy CA)
     participant P as Proxy
-    participant CA as mitm/cert.go
+    participant CA as cert.go
     participant API as AI API (real TLS)
 
     C->>P: CONNECT api.openai.com:443
@@ -22,7 +22,7 @@ sequenceDiagram
     P->>CA: CertFor("api.openai.com")
     CA-->>P: leaf cert signed by proxy CA
     P->>C: ServerHello (proxy-signed cert)
-    Note over C,P: Client verifies cert against trusted proxy CA ✓
+    Note over C,P: Client verifies cert against trusted proxy CA (ok)
 
     Note over P,API: Proxy opens its own TLS to the real API
     P->>API: TLS handshake (real api.openai.com cert)
