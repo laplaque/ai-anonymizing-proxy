@@ -214,11 +214,7 @@ func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
 	// Cache miss: apply fallback token immediately so PII is never unmasked,
 	// then dispatch Ollama async to warm the cache.
 	token := a.replacement(p.piiType, match)
-	preview := match
-	if len(preview) > 8 {
-		preview = preview[:8] + "..."
-	}
-	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s match=%q", p.piiType, preview)
+	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s", p.piiType)
 	a.dispatchOllamaAsync(match)
 	return token
 }
@@ -431,7 +427,6 @@ func (a *Anonymizer) recordMapping(sessionID, token, original string) {
 	}
 	a.sessions[sessionID][token] = original
 	a.sessionMu.Unlock()
-	log.Printf("[ANON] recorded: %q → %q (session=%s)", token, original, sessionID)
 	if a.m != nil {
 		a.m.TokensReplaced.Add(1)
 	}
