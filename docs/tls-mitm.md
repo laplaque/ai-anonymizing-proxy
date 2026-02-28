@@ -52,7 +52,7 @@ self-transition captures the key behaviour: multiple requests share one hijacked
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Received : CONNECT host:443
+    [*] --> Received
 
     Received --> MITMPath : AI domain + CA loaded
     Received --> OpaquePath : not AI domain
