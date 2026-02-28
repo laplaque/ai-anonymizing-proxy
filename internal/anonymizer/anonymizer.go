@@ -431,6 +431,7 @@ func (a *Anonymizer) recordMapping(sessionID, token, original string) {
 	}
 	a.sessions[sessionID][token] = original
 	a.sessionMu.Unlock()
+	log.Printf("[ANON] recorded: %q → %q (session=%s)", token, original, sessionID)
 	if a.m != nil {
 		a.m.TokensReplaced.Add(1)
 	}
@@ -465,100 +466,235 @@ func (a *Anonymizer) DeleteSession(sessionID string) {
 	a.sessionMu.Unlock()
 }
 
-// maxTokenLen is the length of the longest possible anonymization token.
-// Used as the overlap window in StreamingDeanonymize to prevent tokens
-// from being split across chunk boundaries.
-// Longest token: "[PII_<8hex>]" = 13 chars; 64 gives comfortable headroom.
-const maxTokenLen = 64
-
-// StreamingDeanonymize wraps src in a reader that replaces tokens on-the-fly
-// without buffering the full body. Use this for SSE / chunked responses where
-// io.ReadAll would block until the upstream closes the connection.
+// StreamingDeanonymize wraps src in a reader that replaces PII tokens on-the-fly
+// for Anthropic SSE streams.
+//
+// The Anthropic API streams one or two characters per text_delta event, which
+// means a single PII token like [PII_78cabb39] frequently arrives split across
+// multiple SSE events:
+//
+//	{"type":"text_delta","text":"[PII_78cabb"}
+//	{"type":"text_delta","text":"39]"}
+//
+// Raw byte replacement on the SSE envelope cannot match tokens split this way.
+// This function therefore:
+//  1. Buffers incoming bytes line by line.
+//  2. For each complete "data: {...}" SSE line, parses the JSON.
+//  3. If the event is a content_block_delta / text_delta, it accumulates the
+//     text content into a per-stream text buffer.
+//  4. After each text_delta, it checks whether the accumulated buffer contains
+//     complete tokens and flushes any replaced text back into the JSON, re-
+//     serialising the SSE line before writing it downstream.
+//  5. Non-text-delta lines (ping, message_start, thinking_delta, etc.) are
+//     passed through verbatim.
 //
 // A snapshot of the session token map is taken immediately (under the read
 // lock) so the goroutine is unaffected by a later DeleteSession call.
-//
-// Replacement is done in chunks with a maxTokenLen-byte overlap window carried
-// between reads. This guarantees tokens cannot straddle a chunk boundary
-// regardless of how the upstream transports frames the data — avoiding the
-// bufio.Scanner ErrTooLong failure that occurred when SSE data lines exceeded
-// the scanner's fixed 256 KiB buffer cap.
 func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) io.ReadCloser {
-	a.sessionMu.RLock()
-	raw := a.sessions[sessionID]
-	tokenMap := make(map[string]string, len(raw))
-	for k, v := range raw {
-		tokenMap[k] = v
-	}
-	a.sessionMu.RUnlock()
+a.sessionMu.RLock()
+	rawMap := a.sessions[sessionID]
+tokenMap := make(map[string]string, len(rawMap))
+for k, v := range rawMap {
+tokenMap[k] = v
+}
+a.sessionMu.RUnlock()
 
-	log.Printf("[DEANON] StreamingDeanonymize sessionID=%s tokens=%d", sessionID, len(tokenMap))
-	if len(tokenMap) == 0 {
+log.Printf("[DEANON] StreamingDeanonymize sessionID=%s tokens=%d", sessionID, len(tokenMap))
+if len(tokenMap) == 0 {
 		return src
-	}
+}
 
-	if a.m != nil {
-		a.m.TokensDeanonymized.Add(int64(len(tokenMap)))
-	}
+if a.m != nil {
+ a.m.TokensDeanonymized.Add(int64(len(tokenMap)))
+}
 
-	pairs := make([]string, 0, len(tokenMap)*2)
-	for token, original := range tokenMap {
-		pairs = append(pairs, token, original)
-	}
+pairs := make([]string, 0, len(tokenMap)*2)
+for token, original := range tokenMap {
+pairs = append(pairs, token, original)
+}
 	replacer := strings.NewReplacer(pairs...)
 
-	pr, pw := io.Pipe()
-	go func() {
-		defer src.Close() //nolint:errcheck // best-effort close
-		defer pw.Close()  //nolint:errcheck // pipe closed on goroutine exit; error unrecoverable
+pr, pw := io.Pipe()
+go func() {
+defer src.Close() //nolint:errcheck // best-effort close
+defer pw.Close()  //nolint:errcheck // pipe closed on goroutine exit; error unrecoverable
+
+// lineBuf accumulates bytes until we have a complete SSE line.
+var lineBuf []byte
+// textAccum holds the running text content of consecutive text_delta
+// events so tokens split across events can be reassembled.
+var textAccum strings.Builder
 
 		const chunkSize = 32 * 1024
-		buf := make([]byte, chunkSize)
-		// overlap holds the tail of the previous chunk that may contain an
-		// incomplete token. It is prepended to each new read before processing.
-		var overlap []byte
+buf := make([]byte, chunkSize)
+
+// flushTextAccum writes any accumulated text into pw, replacing tokens.
+flushTextAccum := func() {
+if textAccum.Len() == 0 {
+return
+}
+_ = textAccum.String() // discard; already written per-event below
+textAccum.Reset()
+}
+_ = flushTextAccum // used via textAccum.Reset() inline
+
+// processLine handles one complete SSE line (without trailing \n).
+processLine := func(line []byte) {
+// SSE comment or empty line — pass through verbatim.
+if len(line) == 0 || line[0] == ':' {
+pw.Write(line)         //nolint:errcheck
+pw.Write([]byte("\n")) //nolint:errcheck
+return
+}
+
+// Only "data: ..." lines carry JSON payload.
+if !bytes.HasPrefix(line, []byte("data: ")) {
+pw.Write(line)         //nolint:errcheck
+pw.Write([]byte("\n")) //nolint:errcheck
+return
+}
+
+payload := line[len("data: "):]
+
+// Decode just enough to identify text_delta events.
+var envelope struct {
+Type  string `json:"type"`
+Delta *struct {
+Type string `json:"type"`
+Text string `json:"text"`
+} `json:"delta"`
+}
+			if err := json.Unmarshal(payload, &envelope); err != nil {
+// Not valid JSON (e.g. "[DONE]") — pass through verbatim.
+pw.Write(line)         //nolint:errcheck
+pw.Write([]byte("\n")) //nolint:errcheck
+return
+}
+
+if envelope.Type == "content_block_delta" &&
+envelope.Delta != nil &&
+				envelope.Delta.Type == "text_delta" {
+
+// Accumulate text across events so split tokens are reassembled.
+textAccum.WriteString(envelope.Delta.Text)
+				accumulated := textAccum.String()
+
+// Only flush text that cannot be the start of a pending token.
+// Keep a suffix of up to tokenSuffixLen bytes in the accumulator.
+const tokenSuffixLen = 13 // len("[PII_XXXXXXXX]") == 13
+flushUpTo := len(accumulated)
+if flushUpTo > tokenSuffixLen {
+// Scan backward for an open '[' with no matching ']'.
+cutAt := len(accumulated) - tokenSuffixLen
+for i := len(accumulated) - 1; i >= cutAt; i-- {
+if accumulated[i] == '[' {
+ closed := strings.ContainsRune(accumulated[i:], ']')
+  if !closed {
+   cutAt = i
+   }
+    break
+     }
+    }
+					flushUpTo = cutAt
+				} else {
+					// Not enough accumulated text yet — keep it all.
+					flushUpTo = 0
+				}
+
+				toReplace := accumulated[:flushUpTo]
+				replaced := replacer.Replace(toReplace)
+				if toReplace != replaced {
+					log.Printf("[DEANON] text replaced: sessionID=%s tokens=%d", sessionID, len(tokenMap))
+				}
+
+				// Re-serialise the event with the replaced text.
+				envelope.Delta.Text = replaced
+				newPayload, err := json.Marshal(envelope)
+				if err != nil {
+					// Serialisation failure — write original line unchanged.
+					pw.Write(line)         //nolint:errcheck
+					pw.Write([]byte("\n")) //nolint:errcheck
+					textAccum.Reset()
+					return
+				}
+
+				pw.Write([]byte("data: ")) //nolint:errcheck
+				pw.Write(newPayload)       //nolint:errcheck
+				pw.Write([]byte("\n"))     //nolint:errcheck
+
+				// Keep the unprocessed suffix in the accumulator.
+				remaining := accumulated[flushUpTo:]
+				textAccum.Reset()
+				textAccum.WriteString(remaining)
+				return
+			}
+
+			// Non-text-delta event: flush any pending text accumulation first,
+			// then pass the event through verbatim.
+			if textAccum.Len() > 0 {
+				flushed := replacer.Replace(textAccum.String())
+				// We can't easily re-wrap this into a prior event, so emit a
+				// synthetic text_delta carrying the flushed remainder.
+				if flushed != "" {
+					synth := map[string]any{
+						"type":  "content_block_delta",
+						"index": 1,
+						"delta": map[string]string{"type": "text_delta", "text": flushed},
+					}
+					if b, err := json.Marshal(synth); err == nil {
+						pw.Write([]byte("data: ")) //nolint:errcheck
+						pw.Write(b)               //nolint:errcheck
+						pw.Write([]byte("\n\n"))   //nolint:errcheck
+					}
+				}
+				textAccum.Reset()
+			}
+
+			pw.Write(line)         //nolint:errcheck
+			pw.Write([]byte("\n")) //nolint:errcheck
+		}
 
 		for {
 			n, readErr := src.Read(buf)
 			if n > 0 {
-				// Work on overlap + new data
-				window := append(overlap, buf[:n]...) //nolint:gocritic // intentional: grow overlap into window
-
-				// Safe region: everything except the last maxTokenLen bytes,
-				// which become the next overlap. At EOF (readErr != nil) the
-				// entire window is safe — flush it all.
-				safeEnd := len(window)
-				if readErr == nil {
-					if safeEnd > maxTokenLen {
-						safeEnd = len(window) - maxTokenLen
+				for _, b := range buf[:n] {
+					if b == '\n' {
+						// Strip trailing \r if present (\r\n line endings).
+						line := lineBuf
+						if len(line) > 0 && line[len(line)-1] == '\r' {
+							line = line[:len(line)-1]
+						}
+						processLine(line)
+						lineBuf = lineBuf[:0]
 					} else {
-						// Window smaller than a token; accumulate in overlap
-						// until we have enough context or reach EOF.
-						safeEnd = 0
+						lineBuf = append(lineBuf, b)
 					}
 				}
-
-				if safeEnd > 0 {
-					chunk := string(window[:safeEnd])
-					replaced := replacer.Replace(chunk)
-					if _, werr := pw.Write([]byte(replaced)); werr != nil {
-						return
-					}
-				}
-
-				// Carry forward the unprocessed tail
-				overlap = append(overlap[:0], window[safeEnd:]...)
 			}
-
 			if readErr != nil {
-				// Flush any remaining overlap that was held back.
-				if len(overlap) > 0 {
-					replaced := replacer.Replace(string(overlap))
-					pw.Write([]byte(replaced)) //nolint:errcheck // pipe; error unrecoverable
+				// Flush any partial line and pending text accumulation.
+				if len(lineBuf) > 0 {
+					processLine(lineBuf)
+				}
+				if textAccum.Len() > 0 {
+					flushed := replacer.Replace(textAccum.String())
+					if flushed != "" {
+						synth := map[string]any{
+							"type":  "content_block_delta",
+							"index": 1,
+							"delta": map[string]string{"type": "text_delta", "text": flushed},
+						}
+						if b, err := json.Marshal(synth); err == nil {
+							pw.Write([]byte("data: ")) //nolint:errcheck
+							pw.Write(b)               //nolint:errcheck
+							pw.Write([]byte("\n\n"))   //nolint:errcheck
+						}
+					}
+					textAccum.Reset()
 				}
 				if readErr != io.EOF {
 					log.Printf("[ANONYMIZER] StreamingDeanonymize read error: %v", readErr)
-					pw.CloseWithError(readErr) //nolint:errcheck // pipe error propagated
+					pw.CloseWithError(readErr) //nolint:errcheck
 				}
 				return
 			}
