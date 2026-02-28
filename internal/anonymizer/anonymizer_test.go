@@ -396,6 +396,30 @@ func TestAnonymizeJSONNoInjectionWhenNoPII(t *testing.T) {
 // TestTokenFormatNonRetriggering verifies that no token produced by replacement()
 // matches any compiled regex pattern. A failure here means the proxy would
 // re-tokenize its own output in future sessions ("proxy eats itself").
+func TestAnonymizeIPv6(t *testing.T) {
+	a := newTestAnonymizer()
+	sessionID := "sess-ipv6-1"
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"loopback", "connect to ::1"},
+		{"ula prefix", "network fc00::/7 is private"},
+		{"link-local", "interface fe80::/10 assigned"},
+		{"full address", "server at 2001:0db8:85a3:0000:0000:8a2e:0370:7334"},
+		{"compressed", "host 2001:db8::1 responded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := a.AnonymizeText(tc.input, sessionID)
+			if result == tc.input {
+				t.Errorf("IPv6 address not anonymized in %q", tc.input)
+			}
+		})
+	}
+}
+
 func TestTokenFormatNonRetriggering(t *testing.T) {
 	a := newTestAnonymizer()
 	piiTypes := []PIIType{
