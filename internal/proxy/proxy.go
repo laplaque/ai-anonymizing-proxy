@@ -15,6 +15,8 @@ package proxy
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -129,8 +131,12 @@ type Server struct {
 // New creates and configures a new proxy server.
 func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
-		cfg:         cfg,
-		anon:        anonymizer.New(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m),
+		cfg: cfg,
+		anon: func() *anonymizer.Anonymizer {
+			a := anonymizer.NewWithCache(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m, cfg.OllamaCacheFile)
+			a.SetPIIInstructions(cfg.PIIInstructions)
+			return a
+		}(),
 		m:           m,
 		aiDomains:   domains,
 		authDomains: toSet(cfg.AuthDomains),
@@ -170,6 +176,12 @@ func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metr
 	}
 
 	return s
+}
+
+// Close releases resources held by the proxy server, including the persistent
+// Ollama cache. Must be called on shutdown.
+func (s *Server) Close() error {
+	return s.anon.Close()
 }
 
 // ServeHTTP dispatches incoming proxy requests.
@@ -232,11 +244,6 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		req.RequestURI = ""
 
 		isAuth := s.isAuthRequest(domain, req.URL.Path)
-		tag := "[ANON]"
-		if isAuth {
-			tag = "[AUTH][PASS]"
-		}
-		log.Printf("[MITM] %s %s%s %s", req.Method, domain, req.URL.Path, tag)
 
 		if s.m != nil {
 			s.m.RequestsTotal.Add(1)
@@ -260,6 +267,10 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 			if sessionID != "" {
 				defer s.anon.DeleteSession(sessionID)
 			}
+			log.Printf("[MITM] %s %s%s [ANON] sessionID=%s tokens=%d",
+				req.Method, domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+		} else {
+			log.Printf("[MITM] %s %s%s [AUTH][PASS]", req.Method, domain, req.URL.Path)
 		}
 
 		// Forward to the real destination
@@ -349,15 +360,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	isAuth := s.isAuthRequest(domain, r.URL.Path)
 	isAI := s.aiDomains.Has(domain)
 
-	tag := "[PASS]"
-	if isAuth {
-		tag = "[AUTH][PASS]"
-	} else if isAI {
-		tag = "[ANON]"
-	}
-
-	log.Printf("[HTTP] %s %s%s %s", r.Method, domain, r.URL.Path, tag)
-
 	if s.m != nil {
 		s.m.RequestsTotal.Add(1)
 		switch {
@@ -383,6 +385,12 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		if sessionID != "" {
 			defer s.anon.DeleteSession(sessionID)
 		}
+		log.Printf("[HTTP] %s %s%s [ANON] sessionID=%s tokens=%d",
+			r.Method, domain, r.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+	} else if isAuth {
+		log.Printf("[HTTP] %s %s%s [AUTH][PASS]", r.Method, domain, r.URL.Path)
+	} else {
+		log.Printf("[HTTP] %s %s%s [PASS]", r.Method, domain, r.URL.Path)
 	}
 
 	// Forward the request
@@ -407,7 +415,6 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	// Strip hop-by-hop headers
 	r.RequestURI = ""
 	removeHopByHop(r.Header)
-
 	upstreamStart := time.Now()
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
@@ -471,13 +478,25 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 
 func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) {
 	if sessionID == "" || resp == nil || resp.Body == nil {
+		log.Printf("[DEANON] skipping: sessionID=%q resp=%v bodyNil=%v", sessionID, resp == nil, resp != nil && resp.Body == nil)
 		return
 	}
+
+	// Decompress the body before token replacement. The upstream may have
+	// compressed the response even if we sent Accept-Encoding: identity,
+	// so handle it defensively here.
+	if err := decompressResponse(resp); err != nil {
+		log.Printf("[DEANON] decompression error sessionID=%s: %v", sessionID, err)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	streaming := isStreamingResponse(resp)
+	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v encoding=%q", sessionID, ct, streaming, resp.Header.Get("Content-Encoding"))
 
 	// Streaming responses (SSE or unknown-length chunked) must never be fully
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
 	// Wrap the body in a pipe-based reader that replaces tokens on-the-fly.
-	if isStreamingResponse(resp) {
+	if streaming {
 		resp.Body = s.anon.StreamingDeanonymize(resp.Body, sessionID)
 		resp.ContentLength = -1 // length is unknown; let the client stream
 		return
@@ -490,6 +509,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) 
 		return
 	}
 	deanonymized := s.anon.DeanonymizeText(string(body), sessionID)
+	log.Printf("[DEANON] non-streaming: body=%d bytes, deanon=%d bytes", len(body), len(deanonymized))
 	resp.Body = io.NopCloser(strings.NewReader(deanonymized))
 	resp.ContentLength = int64(len(deanonymized))
 }
@@ -556,6 +576,38 @@ func copyHeader(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+}
+
+// decompressResponse transparently decompresses a gzip or deflate response body
+// and removes the Content-Encoding header so the client receives plain text.
+// If the encoding is unsupported or absent, the body is left unchanged.
+func decompressResponse(resp *http.Response) error {
+	enc := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	switch enc {
+	case "gzip":
+		gr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return fmt.Errorf("gzip reader: %w", err)
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{gr, resp.Body}
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = -1
+	case "deflate":
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{flate.NewReader(resp.Body), resp.Body}
+		resp.Header.Del("Content-Encoding")
+		resp.ContentLength = -1
+	case "", "identity":
+		// nothing to do
+	default:
+		log.Printf("[DEANON] unsupported Content-Encoding %q — token replacement may fail", enc)
+	}
+	return nil
 }
 
 // flushingCopy copies src to dst, flushing after each write if dst supports

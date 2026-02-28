@@ -169,6 +169,80 @@ func TestLatencyStats_Record(t *testing.T) {
 	}
 }
 
+func TestCacheHitCounters(t *testing.T) {
+	m := New()
+	m.RecordCacheHit("email")
+	m.RecordCacheHit("email")
+	m.RecordCacheHit("phone")
+
+	s := m.Snapshot()
+	if s.PIITokens.CacheHits["email"] != 2 {
+		t.Errorf("email hits: got %d, want 2", s.PIITokens.CacheHits["email"])
+	}
+	if s.PIITokens.CacheHits["phone"] != 1 {
+		t.Errorf("phone hits: got %d, want 1", s.PIITokens.CacheHits["phone"])
+	}
+	if _, present := s.PIITokens.CacheHits["ssn"]; present {
+		t.Error("ssn should be absent from snapshot when count is 0")
+	}
+}
+
+func TestCacheMissCounters(t *testing.T) {
+	m := New()
+	m.RecordCacheMiss("phone")
+	m.RecordCacheMiss("phone")
+	m.RecordCacheMiss("ipAddress")
+
+	s := m.Snapshot()
+	if s.PIITokens.CacheMisses["phone"] != 2 {
+		t.Errorf("phone misses: got %d, want 2", s.PIITokens.CacheMisses["phone"])
+	}
+	if s.PIITokens.CacheMisses["ipAddress"] != 1 {
+		t.Errorf("ipAddress misses: got %d, want 1", s.PIITokens.CacheMisses["ipAddress"])
+	}
+}
+
+func TestCacheUnknownTypeIgnored(t *testing.T) {
+	m := New()
+	// Should not panic or create a new entry for an unknown type.
+	m.RecordCacheHit("unknownType")
+	m.RecordCacheMiss("unknownType")
+
+	s := m.Snapshot()
+	if _, present := s.PIITokens.CacheHits["unknownType"]; present {
+		t.Error("unknown type should not appear in snapshot")
+	}
+}
+
+func TestOllamaAndFallbackCounters(t *testing.T) {
+	m := New()
+	m.OllamaDispatches.Add(5)
+	m.OllamaErrors.Add(2)
+	m.CacheFallbacks.Add(3)
+
+	s := m.Snapshot()
+	if s.PIITokens.OllamaDispatches != 5 {
+		t.Errorf("OllamaDispatches: got %d, want 5", s.PIITokens.OllamaDispatches)
+	}
+	if s.PIITokens.OllamaErrors != 2 {
+		t.Errorf("OllamaErrors: got %d, want 2", s.PIITokens.OllamaErrors)
+	}
+	if s.PIITokens.CacheFallbacks != 3 {
+		t.Errorf("CacheFallbacks: got %d, want 3", s.PIITokens.CacheFallbacks)
+	}
+}
+
+func TestCacheCountersZeroValueOmitted(t *testing.T) {
+	m := New()
+	s := m.Snapshot()
+	if len(s.PIITokens.CacheHits) != 0 {
+		t.Errorf("CacheHits should be empty map when all zero, got %v", s.PIITokens.CacheHits)
+	}
+	if len(s.PIITokens.CacheMisses) != 0 {
+		t.Errorf("CacheMisses should be empty map when all zero, got %v", s.PIITokens.CacheMisses)
+	}
+}
+
 func TestLatencyStats_Empty(t *testing.T) {
 	var s latencyStats
 	snap := s.snapshot()

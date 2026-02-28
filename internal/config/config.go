@@ -26,10 +26,17 @@ type Config struct {
 	BindAddress     string `json:"bindAddress"`
 	ManagementToken string `json:"managementToken"`
 	UpstreamProxy   string `json:"upstreamProxy"`
+	OllamaCacheFile string `json:"ollamaCacheFile"` // path to bbolt persistent cache; empty = in-memory only
 
 	AIAPIDomains []string `json:"aiApiDomains"`
 	AuthDomains  []string `json:"authDomains"`
 	AuthPaths    []string `json:"authPaths"`
+
+	// PIIInstructions maps LLM family prefix (e.g. "claude", "gpt") to the
+	// system instruction injected when PII tokens are present in a request.
+	// Lookup is prefix-based: "claude-sonnet-4-6" matches key "claude".
+	// The special key "default" is used when no prefix matches.
+	PIIInstructions map[string]string `json:"piiInstructions"`
 }
 
 // Load returns config with defaults overridden by proxy-config.json and env vars.
@@ -53,6 +60,7 @@ func defaults() *Config {
 		CACertFile:          "ca-cert.pem",
 		CAKeyFile:           "ca-key.pem",
 		BindAddress:         "127.0.0.1",
+		OllamaCacheFile:     "ollama-cache.db",
 		AIAPIDomains: []string{
 			"api.anthropic.com",
 			"api.openai.com",
@@ -75,7 +83,38 @@ func defaults() *Config {
 			"/token", "/oauth", "/authenticate", "/session",
 			"/v1/auth", "/api/auth", "/api/login", "/api/token",
 		},
+		PIIInstructions: map[string]string{
+			"claude": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
+				" matching the pattern [PII_XXXXXXXX] (8 hex characters). You MUST reproduce" +
+				" every such token EXACTLY as written in your response. Do NOT replace them with" +
+				" example values, email addresses, phone numbers, names, or any other substitutes." +
+				" Treat [PII_*] tokens as opaque identifiers that must pass through unchanged.",
+			"gpt": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
+				" matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such" +
+				" token verbatim in your response. Do not substitute them with example values.",
+			"default": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
+				" matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such" +
+				" token verbatim in your response. Do not substitute them with example values.",
+		},
 	}
+}
+
+// ResolvePIIInstruction returns the PII system instruction for the given model
+// string using prefix matching. "claude-sonnet-4-6" matches key "claude".
+// Falls back to the "default" key, then to an empty string if neither exists.
+func (c *Config) ResolvePIIInstruction(model string) string {
+	for key, instruction := range c.PIIInstructions {
+		if key == "default" {
+			continue
+		}
+		if len(model) >= len(key) && model[:len(key)] == key {
+			return instruction
+		}
+	}
+	if fallback, ok := c.PIIInstructions["default"]; ok {
+		return fallback
+	}
+	return ""
 }
 
 func loadFile(cfg *Config, path string) {
@@ -137,5 +176,8 @@ func loadEnv(cfg *Config) {
 	}
 	if v := os.Getenv("UPSTREAM_PROXY"); v != "" {
 		cfg.UpstreamProxy = v
+	}
+	if v := os.Getenv("OLLAMA_CACHE_FILE"); v != "" {
+		cfg.OllamaCacheFile = v
 	}
 }

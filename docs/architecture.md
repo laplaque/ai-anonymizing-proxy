@@ -146,9 +146,9 @@ flowchart TD
     NOCONF --> AI
 
     AI -->|No| OUT
-    AI -->|Yes| CACHE{Cache hit\nfor md5 of text?}
+    AI -->|Yes| CACHE{Cache hit\nfor PII value?}
 
-    CACHE -->|Hit| APPLY[Apply cached\nOllama detections\nimmediately]
+    CACHE -->|Hit| APPLY[Use cached\ntoken immediately]
     APPLY --> OUT
 
     CACHE -->|Miss| ASYNC[Dispatch background\nOllama goroutine\nvia inflight dedup map]
@@ -167,27 +167,34 @@ flowchart TD
 | API key        | `Bearer sk-abc…` (≥ 20 chars)   | 0.90       |
 | SSN            | `123-45-6789`                   | 0.85       |
 | Credit card    | `4111 1111 1111 1111`           | 0.85       |
+| IPv6 address   | `::1`, `2001:db8::1`            | 0.85       |
 | Street address | `123 Main Street`               | 0.75       |
-| IP address     | `192.168.1.1`                   | 0.70       |
+| IPv4 address   | `192.168.1.1`                   | 0.70       |
 | Phone number   | `+1-555-123-4567`               | 0.65       |
 | ZIP code       | `90210`                         | 0.40       |
 
-All tokens are derived from `md5(original)[:8]` — deterministic, so the same value always
-produces the same token within and across requests.
+Tokens are formatted as `[PII_<TYPE>_<8hex>]` — e.g. `[PII_EMAIL_c160f8cc]` — where `<TYPE>`
+is the uppercased PII type name and `<8hex>` is the first 8 hex digits of `md5(original)`.
+The type label gives the LLM semantic context without revealing the original value; the system
+instruction injected into every anonymized request prohibits the LLM from substituting
+plausible-looking values in place of tokens.  The hash is deterministic so the same value
+always produces the same token within and across requests.
 
 ### Ollama cache states
 
-Each content hash (md5 of the raw text) progresses through three states. The self-transition on
-`Inflight` is the in-flight deduplication: a second request for the same content while Ollama is
-still querying reuses the running goroutine rather than spawning a new one.
+Each **PII value** (not the full request body) progresses through three states. The cache is
+keyed by the original value string so a recurring email address or phone number gets a hit
+regardless of which message body it appears in. The self-transition on `Inflight` is the
+in-flight deduplication: a second request containing the same value while Ollama is still
+querying reuses the running goroutine rather than spawning a new one.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Uncached : new content hash
+    [*] --> Uncached : new PII value
 
-    Uncached --> Inflight : cache miss — goroutine dispatched\ncurrent request returns regex-only result
+    Uncached --> Inflight : cache miss — goroutine dispatched\ncurrent request uses fallback token immediately
 
-    Inflight --> Inflight : duplicate request for same hash\ninflight dedup — no second goroutine\ncurrent request returns regex-only result
+    Inflight --> Inflight : duplicate request for same value\ninflight dedup — no second goroutine\ncurrent request uses fallback token immediately
 
     Inflight --> Cached : Ollama query succeeded\ndetections stored in cache
 
@@ -196,9 +203,11 @@ stateDiagram-v2
     Cached --> Cached : cache hit — AI detections\napplied to current request immediately
 
     note right of Cached
-        No eviction.
-        Persists until
-        proxy restart.
+        S3-FIFO eviction when
+        capacity (50 000 entries)
+        is reached. Evicted entries
+        are deleted from bbolt so
+        disk usage stays bounded.
     end note
 ```
 
@@ -208,8 +217,14 @@ Each request gets a random `sessionID`. The token→original map is stored in
 `anonymizer.sessions[sessionID]` during anonymization and deleted after the response is delivered.
 
 For SSE (`Content-Type: text/event-stream`), `StreamingDeanonymize` wraps the response body in a
-pipe-based reader that replaces tokens as data flows through, carrying a `maxTokenLen` (64 byte)
-overlap window between chunks to prevent a token from being split across a read boundary.
+pipe-based reader. Because the Anthropic API delivers one or two characters per `text_delta`
+event, a single token like `[PII_EMAIL_c160f8cc]` frequently arrives split across multiple
+events. The reader therefore accumulates text across consecutive `content_block_delta` /
+`text_delta` and `thinking_delta` events, flushing only the prefix that cannot be the start of
+a pending token. A `tokenSuffixLen` of 26 bytes is retained in the accumulator — enough to
+cover the longest possible token (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars). Non-delta events
+(ping, message_start, etc.) also pass through the replacer so tokens embedded in any part of
+the SSE stream are deanonymized.
 
 ## SSRF protection
 
@@ -290,5 +305,26 @@ are never blocked by disk I/O.
 
 All hot-path counters (`RequestsTotal`, `TokensReplaced`, etc.) are `sync/atomic.Int64` — no
 mutex in the request path. Latency accumulators use one `sync.Mutex` each, updated once per
-request at the call site. The `/metrics` endpoint produces a point-in-time JSON snapshot with
-min/mean/max for anonymization and upstream round-trip latency.
+request at the call site.
+
+### Anonymizer cache counters
+
+The `piiTokens` block in the `/metrics` snapshot includes observability for the low-confidence
+detection path:
+
+| Counter | Where incremented | What it signals |
+|---|---|---|
+| `cacheHits[<type>]` | `tokenForMatch` — cache hit | Cache is warm for this PII type |
+| `cacheMisses[<type>]` | `tokenForMatch` — cache miss | Value not yet seen by Ollama |
+| `cacheFallbacks` | `tokenForMatch` — cache miss | Fallback token used; increments with every miss |
+| `ollamaDispatches` | `dispatchOllamaAsync` — before goroutine launch | Goroutine was spawned |
+| `ollamaErrors` | `dispatchOllamaAsync` — semaphore full or HTTP error | Ollama unavailable or overloaded |
+
+Per-type counters are pre-allocated for all 12 known PII types at startup; zero-count types are
+omitted from the JSON output. Counter maps are written only during initialisation so concurrent
+reads in `Snapshot()` require no additional lock.
+
+**Cache effectiveness signal:** `cacheFallbacks / ollamaDispatches` trending toward 0 after
+warm-up means recurring values are now served from cache. A ratio near 1 after warm-up
+indicates Ollama is unreachable, values are high-cardinality, or `aiConfidenceThreshold` is
+routing too many matches through the low-confidence path.

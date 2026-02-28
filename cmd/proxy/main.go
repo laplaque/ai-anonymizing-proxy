@@ -23,10 +23,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
@@ -58,6 +61,11 @@ func main() {
 
 	// Start proxy server
 	proxyServer := proxy.New(cfg, registry, m)
+	defer func() {
+		if err := proxyServer.Close(); err != nil {
+			log.Printf("[PROXY] Cache close error: %v", err)
+		}
+	}()
 
 	addr := fmt.Sprintf("%s:%d", cfg.BindAddress, cfg.ProxyPort)
 	log.Printf("[PROXY] Listening on %s", addr)
@@ -68,7 +76,20 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil {
+	// Graceful shutdown on SIGINT / SIGTERM
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-quit
+		log.Printf("[PROXY] Shutting down…")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("[PROXY] Shutdown error: %v", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("[PROXY] Fatal: %v", err)
 	}
 }

@@ -13,8 +13,17 @@ import (
 	"time"
 )
 
+// knownPIITypes lists all PII type strings the anonymizer can produce.
+// Used to pre-populate per-type counter maps in New() so Snapshot() can
+// iterate a fixed set without racing on map writes.
+var knownPIITypes = []string{
+	"email", "phone", "ssn", "creditCard", "ipAddress",
+	"apiKey", "name", "address", "medical", "salary",
+	"company", "jobTitle",
+}
+
 // Metrics holds all runtime counters for a running proxy instance.
-// The zero value is valid and ready to use; prefer New() for clarity.
+// The zero value is NOT valid for the anonymizer cache counters — use New().
 type Metrics struct {
 	// Request counters
 	RequestsTotal       atomic.Int64
@@ -30,6 +39,16 @@ type Metrics struct {
 	TokensReplaced     atomic.Int64
 	TokensDeanonymized atomic.Int64
 
+	// Anonymizer cache counters (per PII type)
+	// Maps are written only in New(); concurrent reads are safe without a lock.
+	cacheHits   map[string]*atomic.Int64
+	cacheMisses map[string]*atomic.Int64
+
+	// Ollama dispatch and fallback counters
+	OllamaDispatches atomic.Int64 // background goroutines dispatched
+	OllamaErrors     atomic.Int64 // async Ollama queries that failed
+	CacheFallbacks   atomic.Int64 // low-confidence misses that used a fallback token
+
 	// Latency statistics (mutex-guarded because they accumulate floats)
 	anonMu   sync.Mutex
 	anonStat latencyStats
@@ -40,9 +59,35 @@ type Metrics struct {
 	startTime time.Time
 }
 
-// New returns a new Metrics with the start time recorded.
+// New returns a new Metrics with the start time recorded and per-type cache
+// counter maps pre-populated for all known PII types.
 func New() *Metrics {
-	return &Metrics{startTime: time.Now()}
+	m := &Metrics{
+		startTime:   time.Now(),
+		cacheHits:   make(map[string]*atomic.Int64, len(knownPIITypes)),
+		cacheMisses: make(map[string]*atomic.Int64, len(knownPIITypes)),
+	}
+	for _, t := range knownPIITypes {
+		m.cacheHits[t] = new(atomic.Int64)
+		m.cacheMisses[t] = new(atomic.Int64)
+	}
+	return m
+}
+
+// RecordCacheHit increments the cache-hit counter for the given PII type.
+// Unknown types are silently ignored.
+func (m *Metrics) RecordCacheHit(piiType string) {
+	if c, ok := m.cacheHits[piiType]; ok {
+		c.Add(1)
+	}
+}
+
+// RecordCacheMiss increments the cache-miss counter for the given PII type.
+// Unknown types are silently ignored.
+func (m *Metrics) RecordCacheMiss(piiType string) {
+	if c, ok := m.cacheMisses[piiType]; ok {
+		c.Add(1)
+	}
 }
 
 // RecordAnonLatency records the duration of one anonymization pass.
@@ -69,6 +114,19 @@ func (m *Metrics) Snapshot() Snapshot {
 	upstream := m.upstreamStat.snapshot()
 	m.upstreamMu.Unlock()
 
+	cacheHits := make(map[string]int64, len(m.cacheHits))
+	for t, c := range m.cacheHits {
+		if n := c.Load(); n > 0 {
+			cacheHits[t] = n
+		}
+	}
+	cacheMisses := make(map[string]int64, len(m.cacheMisses))
+	for t, c := range m.cacheMisses {
+		if n := c.Load(); n > 0 {
+			cacheMisses[t] = n
+		}
+	}
+
 	return Snapshot{
 		Requests: RequestSnapshot{
 			Total:       m.RequestsTotal.Load(),
@@ -81,8 +139,13 @@ func (m *Metrics) Snapshot() Snapshot {
 			Anonymize: m.ErrorsAnonymize.Load(),
 		},
 		PIITokens: PIISnapshot{
-			Replaced:     m.TokensReplaced.Load(),
-			Deanonymized: m.TokensDeanonymized.Load(),
+			Replaced:         m.TokensReplaced.Load(),
+			Deanonymized:     m.TokensDeanonymized.Load(),
+			CacheHits:        cacheHits,
+			CacheMisses:      cacheMisses,
+			OllamaDispatches: m.OllamaDispatches.Load(),
+			OllamaErrors:     m.OllamaErrors.Load(),
+			CacheFallbacks:   m.CacheFallbacks.Load(),
 		},
 		Latency: LatencyGroup{
 			AnonymizationMs: anon,
@@ -117,10 +180,19 @@ type ErrorSnapshot struct {
 	Anonymize int64 `json:"anonymize"`
 }
 
-// PIISnapshot holds PII token volume counters.
+// PIISnapshot holds PII token volume and cache effectiveness counters.
 type PIISnapshot struct {
 	Replaced     int64 `json:"replaced"`
 	Deanonymized int64 `json:"deanonymized"`
+
+	// Per-type cache hits/misses (only types with non-zero counts appear).
+	CacheHits   map[string]int64 `json:"cacheHits,omitempty"`
+	CacheMisses map[string]int64 `json:"cacheMisses,omitempty"`
+
+	// Ollama and fallback counters.
+	OllamaDispatches int64 `json:"ollamaDispatches"`
+	OllamaErrors     int64 `json:"ollamaErrors"`
+	CacheFallbacks   int64 `json:"cacheFallbacks"`
 }
 
 // LatencyGroup groups the two latency dimensions.

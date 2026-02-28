@@ -1,5 +1,42 @@
 # Development
 
+## ⚠️  Working on proxy source code with an AI assistant
+
+**Disable the proxy before using any AI coding assistant (Claude Code, Copilot, Cursor, etc.)
+to edit the proxy's own source files.**
+
+The proxy intercepts and anonymizes all traffic to AI API domains. If it is running while
+you work on it:
+
+1. The assistant's requests pass through the proxy, which anonymizes IP addresses, tokens, and
+   other values it finds in the source code.
+2. Anonymized tokens are written back into the source files by the assistant.
+3. The original values are stored only in the ephemeral in-process session map, which is deleted
+   after the response. **They are unrecoverable once the session ends.**
+4. On the next session the proxy re-tokenizes the already-tokenized source, compounding the
+   corruption silently.
+
+This failure mode is not theoretical — it corrupted `internal/proxy/proxy.go` (RFC 1918 CIDR
+ranges replaced with tokens) during early development.
+
+**To disable:**
+
+```bash
+# macOS (launchd)
+launchctl unload ~/Library/LaunchAgents/com.ai-proxy.plist
+
+# Linux (systemd)
+systemctl --user stop ai-proxy
+
+# Direct process
+pkill proxy
+```
+
+Unset `HTTP_PROXY` / `HTTPS_PROXY` in your shell as well, or the AI client will still attempt
+to route through the (now stopped) proxy and fail to connect.
+
+---
+
 ## Building
 
 **Linux / macOS:**
@@ -137,5 +174,7 @@ closes the TOCTOU gap that exists when IP checks are done at request-parse time 
 connection is established later.
 
 **Streaming de-anonymization.** SSE responses are never fully buffered. A pipe-based reader
-replaces tokens on-the-fly using a `maxTokenLen`-byte overlap window carried between chunks,
-ensuring tokens cannot straddle a chunk boundary regardless of upstream framing.
+accumulates text across `text_delta` and `thinking_delta` events and flushes only the prefix
+that cannot be the start of a pending token (`tokenSuffixLen` = 26 bytes), ensuring tokens
+cannot straddle a chunk boundary regardless of upstream framing. See
+[anonymizer.md](anonymizer.md) for the full strategy.
