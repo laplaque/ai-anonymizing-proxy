@@ -27,7 +27,7 @@ sequenceDiagram
     Note over P,API: Proxy opens its own TLS to the real API
     P->>API: TLS handshake (real api.openai.com cert)
 
-    Note over C,P,API: Tunnel established — proxy sees plaintext
+    Note over C,API: Tunnel established — proxy sees plaintext
     C->>P: HTTP request (plaintext inside proxy TLS)
     P->>P: Anonymize PII in body
     P->>API: HTTP request (anonymized, inside real TLS)
@@ -54,15 +54,11 @@ self-transition captures the key behaviour: multiple requests share one hijacked
 stateDiagram-v2
     [*] --> Received : CONNECT host:443
 
-    state domainCheck <<choice>>
-    Received --> domainCheck
-    domainCheck --> MITMPath : AI domain + CA loaded
-    domainCheck --> OpaquePath : not AI domain
+    Received --> MITMPath : AI domain + CA loaded
+    Received --> OpaquePath : not AI domain
 
-    state privateCheck <<choice>>
-    OpaquePath --> privateCheck
-    privateCheck --> Blocked : private IP detected
-    privateCheck --> Tunneling : public IP—bidirectional copy
+    OpaquePath --> Blocked : private IP detected
+    OpaquePath --> Tunneling : public IP—bidirectional copy
 
     Blocked --> [*]
     Tunneling --> Closed : either side closes
@@ -72,10 +68,8 @@ stateDiagram-v2
     TLSHandshake --> Failed : handshake error
     Failed --> [*]
 
-    state alpn <<choice>>
-    TLSHandshake --> alpn : handshake complete
-    alpn --> ServingH2 : ALPN → h2
-    alpn --> ServingH1 : ALPN → http/1.1
+    TLSHandshake --> ServingH2 : ALPN → h2
+    TLSHandshake --> ServingH1 : ALPN → http/1.1
 
     ServingH2 --> RequestActive : stream opened
     ServingH1 --> RequestActive : request received
