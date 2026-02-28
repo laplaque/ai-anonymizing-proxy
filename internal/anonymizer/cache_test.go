@@ -33,6 +33,12 @@ func TestMemoryCacheBasicOperations(t *testing.T) {
 	if !ok || token != "[PII_newtoken0]" {
 		t.Errorf("expected overwritten token, got %q ok=%v", token, ok)
 	}
+
+	// Delete.
+	c.Delete("alice@example.com")
+	if _, ok := c.Get("alice@example.com"); ok {
+		t.Error("expected miss after Delete")
+	}
 }
 
 // TestBboltCacheBasicOperations verifies the bbolt cache satisfies the
@@ -60,6 +66,12 @@ func TestBboltCacheBasicOperations(t *testing.T) {
 	}
 	if token != "[PII_bb3f1c2a]" {
 		t.Errorf("unexpected token: %q", token)
+	}
+
+	// Delete.
+	c.Delete("bob@corp.io")
+	if _, ok := c.Get("bob@corp.io"); ok {
+		t.Error("expected miss after Delete")
 	}
 }
 

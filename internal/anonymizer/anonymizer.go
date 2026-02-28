@@ -93,21 +93,38 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ol
 	return NewWithCache(ollamaEndpoint, ollamaModel, useAI, aiThreshold, ollamaMaxConcurrent, m, "")
 }
 
+// defaultCacheCapacity is the maximum number of PII-value→token entries kept in
+// the S3-FIFO in-memory layer (and on disk via bbolt). Evicted entries are deleted
+// from bbolt so disk usage is bounded to roughly this many entries.
+// Override via NewWithCacheAndCapacity for workloads with different cardinality.
+const defaultCacheCapacity = 50_000
+
 // NewWithCache creates an Anonymizer with an explicit cache path.
-// If cachePath is non-empty, a bbolt persistent cache is opened at that path.
-// If cachePath is empty, an in-memory cache is used.
+// If cachePath is non-empty, a bbolt persistent cache is opened at that path,
+// wrapped with an S3-FIFO in-memory eviction layer (capacity=defaultCacheCapacity).
+// If cachePath is empty, an unbounded in-memory cache is used.
 func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string) *Anonymizer {
+	return NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel, useAI, aiThreshold, ollamaMaxConcurrent, m, cachePath, defaultCacheCapacity)
+}
+
+// NewWithCacheAndCapacity is like NewWithCache but allows explicit control over
+// the S3-FIFO cache capacity (number of entries). Use 0 to disable the S3-FIFO
+// layer and fall back to an unbounded in-memory cache (for testing only).
+func NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string, cacheCapacity int) *Anonymizer {
 	if ollamaMaxConcurrent < 1 {
 		ollamaMaxConcurrent = 1
 	}
 
 	var c PersistentCache
 	if cachePath != "" {
-		var err error
-		c, err = newBboltCache(cachePath)
+		bbolt, err := newBboltCache(cachePath)
 		if err != nil {
 			log.Printf("[ANONYMIZER] failed to open persistent cache at %q, falling back to memory: %v", cachePath, err)
 			c = newMemoryCache()
+		} else if cacheCapacity > 0 {
+			c = newS3FIFOCache(bbolt, cacheCapacity)
+		} else {
+			c = bbolt
 		}
 	} else {
 		c = newMemoryCache()
@@ -162,7 +179,22 @@ func (a *Anonymizer) compilePatterns() {
 		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, PIICreditCard, 0.85},
 		// Street address: requires street-type suffix keyword
 		{`(?i)\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, PIIAddress, 0.75},
-		// IP address: matches version numbers and other numeric quads — moderate
+		// IPv6: all RFC 5952 compressed and uncompressed forms.
+		// The alternation is ordered longest-first so greedy matching picks the
+		// most complete address. Confidence is high because the colon-hex syntax
+		// is structurally unambiguous and never appears in normal prose.
+		{`(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,7}:` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}` +
+			`|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}` +
+			`|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}` +
+			`|:(?::[0-9a-fA-F]{1,4}){1,7}` +
+			`|::`,
+			PIIIPAddress, 0.85},
+		// IPv4: matches version numbers and other numeric quads — moderate
 		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, PIIIPAddress, 0.70},
 		// Phone: very broad — matches many numeric sequences that are not phones
 		{`(\+?1?[\-.\s]?)?\(?([0-9]{3})\)?[\-.\s]?([0-9]{3})[\-.\s]?([0-9]{4})`, PIIPhone, 0.65},
@@ -217,6 +249,9 @@ func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
 
 	// Low-confidence path: check persistent per-value cache.
 	if cached, hit := a.cache.Get(match); hit {
+		if a.m != nil {
+			a.m.RecordCacheHit(string(p.piiType))
+		}
 		return cached
 	}
 
@@ -224,6 +259,10 @@ func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
 	// then dispatch Ollama async to warm the cache.
 	token := a.replacement(p.piiType, match)
 	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s", p.piiType)
+	if a.m != nil {
+		a.m.RecordCacheMiss(string(p.piiType))
+		a.m.CacheFallbacks.Add(1)
+	}
 	a.dispatchOllamaAsync(match)
 	return token
 }
@@ -240,6 +279,10 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 	a.inflight[original] = true
 	a.inflightMu.Unlock()
 
+	if a.m != nil {
+		a.m.OllamaDispatches.Add(1)
+	}
+
 	go func() {
 		defer func() {
 			a.inflightMu.Lock()
@@ -253,12 +296,18 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 			defer func() { <-a.ollamaSem }()
 		default:
 			log.Printf("[ANONYMIZER] Ollama busy, skipping background query for value")
+			if a.m != nil {
+				a.m.OllamaErrors.Add(1)
+			}
 			return
 		}
 
 		detections, err := a.queryOllamaHTTP(original)
 		if err != nil {
 			log.Printf("[ANONYMIZER] async Ollama query failed: %v", err)
+			if a.m != nil {
+				a.m.OllamaErrors.Add(1)
+			}
 			return
 		}
 
@@ -275,9 +324,10 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 // defaultPIIInstruction is the fallback system instruction used when no
 // model-specific entry is configured via SetPIIInstructions.
 const defaultPIIInstruction = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-	" matching the pattern [PII_XXXXXXXX] (8 hex characters). You MUST reproduce" +
-	" every such token EXACTLY as written in your response. Do NOT replace them with" +
-	" example values, email addresses, phone numbers, names, or any other substitutes." +
+	" matching the pattern [PII_TYPE_XXXXXXXX] where TYPE indicates the kind of" +
+	" information (e.g. EMAIL, PHONE, SSN) and XXXXXXXX is an 8-character hex hash." +
+	" You MUST reproduce every such token EXACTLY as written in your response." +
+	" Do NOT replace them with example values or any other substitutes." +
 	" Treat [PII_*] tokens as opaque identifiers that must pass through unchanged."
 
 // resolvePIIInstruction returns the configured instruction for the given model
@@ -417,25 +467,20 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 }
 
 // replacement generates a deterministic anonymised token for a detected value.
-// All tokens use [PII_<8hex>] notation regardless of PII type. This is critical
-// for two reasons:
+// Tokens use [PII_<TYPE>_<8hex>] notation, e.g. [PII_EMAIL_c160f8cc].
 //
-//  1. No token may match any compiled regex pattern, or the proxy will re-tokenize
-//     its own output in future sessions ("proxy eats itself" failure mode).
-//     TestTokenFormatNonRetriggering enforces this.
+// Including the type gives the LLM semantic context ("this was an email") so it
+// can reason about the surrounding text correctly, without ever seeing the
+// original value. The system instruction injected by injectPIIInstruction
+// explicitly prohibits the LLM from substituting plausible-looking values in
+// place of tokens, which was the original concern with type-encoded tokens.
 //
-//  2. The token must not encode the PII type. If the type is visible (e.g.
-//     [EMAIL_<hex>]), the LLM infers the semantic class and renders a plausible
-//     substitute (e.g. user<hex>@example.com) instead of reproducing the token
-//     verbatim. The proxy then cannot find its own token in the response and
-//     deanonymization silently fails — the user sees a fake value, not their real one.
-//
-// The piiType parameter is accepted for interface compatibility but not used in
-// the output. Type information is retained in the session map (token → original)
-// and is sufficient for deanonymization without leaking it to the LLM.
-func (a *Anonymizer) replacement(_ PIIType, original string) string {
+// Invariant: no token may match any compiled regex pattern, or the proxy will
+// re-tokenize its own output in future sessions ("proxy eats itself").
+// TestTokenFormatNonRetriggering enforces this.
+func (a *Anonymizer) replacement(piiType PIIType, original string) string {
 	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8] // #nosec G401 -- deterministic token, not crypto
-	return fmt.Sprintf("[PII_%s]", h)
+	return fmt.Sprintf("[PII_%s_%s]", strings.ToUpper(string(piiType)), h)
 }
 
 // SessionTokenCount returns the number of tokens recorded for sessionID.
@@ -578,8 +623,8 @@ return
 
 // Only "data: ..." lines carry JSON payload.
 if !bytes.HasPrefix(line, []byte("data: ")) {
-pw.Write(line)         //nolint:errcheck
-pw.Write([]byte("\n")) //nolint:errcheck
+pw.Write([]byte(replacer.Replace(string(line)))) //nolint:errcheck
+pw.Write([]byte("\n"))                            //nolint:errcheck
 return
 }
 
@@ -594,15 +639,17 @@ Text string `json:"text"`
 } `json:"delta"`
 }
 			if err := json.Unmarshal(payload, &envelope); err != nil {
-// Not valid JSON (e.g. "[DONE]") — pass through verbatim.
-pw.Write(line)         //nolint:errcheck
-pw.Write([]byte("\n")) //nolint:errcheck
+// Not valid JSON (e.g. "[DONE]") — apply replacer then pass through.
+pw.Write([]byte("data: "))                    //nolint:errcheck
+pw.Write([]byte(replacer.Replace(string(payload)))) //nolint:errcheck
+pw.Write([]byte("\n"))                         //nolint:errcheck
 return
 }
 
-if envelope.Type == "content_block_delta" &&
-envelope.Delta != nil &&
-				envelope.Delta.Type == "text_delta" {
+isDeltaText := envelope.Type == "content_block_delta" &&
+				envelope.Delta != nil &&
+				(envelope.Delta.Type == "text_delta" || envelope.Delta.Type == "thinking_delta")
+			if isDeltaText {
 
 // Accumulate text across events so split tokens are reassembled.
 textAccum.WriteString(envelope.Delta.Text)
@@ -610,7 +657,7 @@ textAccum.WriteString(envelope.Delta.Text)
 
 // Only flush text that cannot be the start of a pending token.
 // Keep a suffix of up to tokenSuffixLen bytes in the accumulator.
-const tokenSuffixLen = 13 // len("[PII_XXXXXXXX]") == 13
+const tokenSuffixLen = 26 // len("[PII_CREDITCARD_XXXXXXXX]") == 25; 26 gives one byte margin
 flushUpTo := len(accumulated)
 if flushUpTo > tokenSuffixLen {
 // Scan backward for an open '[' with no matching ']'.
@@ -659,7 +706,7 @@ if accumulated[i] == '[' {
 			}
 
 			// Non-text-delta event: flush any pending text accumulation first,
-			// then pass the event through verbatim.
+			// then pass the event through with token replacement.
 			if textAccum.Len() > 0 {
 				flushed := replacer.Replace(textAccum.String())
 				// We can't easily re-wrap this into a prior event, so emit a
@@ -679,8 +726,8 @@ if accumulated[i] == '[' {
 				textAccum.Reset()
 			}
 
-			pw.Write(line)         //nolint:errcheck
-			pw.Write([]byte("\n")) //nolint:errcheck
+			pw.Write([]byte(replacer.Replace(string(line)))) //nolint:errcheck
+			pw.Write([]byte("\n"))                            //nolint:errcheck
 		}
 
 		for {
@@ -701,9 +748,10 @@ if accumulated[i] == '[' {
 				}
 			}
 			if readErr != nil {
-				// Flush any partial line and pending text accumulation.
+				// Flush any partial line — write replaced bytes directly without an
+				// appended newline (the source had no trailing newline).
 				if len(lineBuf) > 0 {
-					processLine(lineBuf)
+					pw.Write([]byte(replacer.Replace(string(lineBuf)))) //nolint:errcheck
 				}
 				if textAccum.Len() > 0 {
 					flushed := replacer.Replace(textAccum.String())

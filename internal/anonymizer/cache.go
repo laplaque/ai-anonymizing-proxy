@@ -5,9 +5,11 @@
 // process restarts, so recurring values get a cache hit from the first
 // request of a new session.
 //
-// Two implementations are provided:
-//   - memoryCache  — in-memory only, used in tests and when no path is configured.
-//   - bboltCache   — embedded key-value store (bbolt), used in production.
+// Three implementations are provided:
+//   - memoryCache   — in-memory only, used in tests and when no path is configured.
+//   - bboltCache    — embedded key-value store (bbolt), used in production.
+//   - s3fifoCache   — S3-FIFO in-memory eviction layer wrapping bboltCache,
+//                     used in production when a capacity limit is configured.
 //
 // The interface is intentionally minimal. The anonymizer writes entries one
 // value at a time from async Ollama goroutines; reads are per-value lookups
@@ -30,6 +32,9 @@ type PersistentCache interface {
 
 	// Set stores original → token. Overwrites any existing entry silently.
 	Set(original, token string)
+
+	// Delete removes the entry for original. A no-op if the key does not exist.
+	Delete(original string)
 
 	// Close releases any resources held by the cache (e.g. file handles).
 	// Must be called when the anonymizer is shut down.
@@ -59,6 +64,12 @@ func (c *memoryCache) Get(original string) (string, bool) {
 func (c *memoryCache) Set(original, token string) {
 	c.mu.Lock()
 	c.store[original] = token
+	c.mu.Unlock()
+}
+
+func (c *memoryCache) Delete(original string) {
+	c.mu.Lock()
+	delete(c.store, original)
 	c.mu.Unlock()
 }
 
@@ -125,6 +136,18 @@ func (c *bboltCache) Set(original, token string) {
 		return b.Put([]byte(original), []byte(token))
 	}); err != nil {
 		log.Printf("[ANONYMIZER] bbolt Set error: %v", err)
+	}
+}
+
+func (c *bboltCache) Delete(original string) {
+	if err := c.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(bboltBucket))
+		if b == nil {
+			return nil // bucket gone — nothing to delete
+		}
+		return b.Delete([]byte(original))
+	}); err != nil {
+		log.Printf("[ANONYMIZER] bbolt Delete error: %v", err)
 	}
 }
 
