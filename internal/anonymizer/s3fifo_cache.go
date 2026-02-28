@@ -16,20 +16,20 @@
 //   - G (ghost): a circular-buffer set of keys recently evicted from S,
 //     bounded to 2× sTarget. A key found in G on insert bypasses S and goes
 //     directly to M, providing scan resistance comparable to ARC without
-//     LRU's per-access lock serialisation.
+//     LRU's per-access lock serialization.
 //
 // Per-object state: saturating frequency counter (uint8, max 3).
 // Incremented on every Get hit; reset to 0 on M promotion.
 //
 // # Eviction
 //
-//   S → evict oldest head:
-//     freq > 0 → promote to M tail (reset freq); if M now over target, evict M head.
-//     freq == 0 → remove from memory, add key to G, delete from backing store.
+//	S → evict oldest head:
+//	  freq > 0 → promote to M tail (reset freq); if M now over target, evict M head.
+//	  freq == 0 → remove from memory, add key to G, delete from backing store.
 //
-//   M → evict oldest head:
-//     Remove from memory, delete from backing store.
-//     M evictions do NOT add to G.
+//	M → evict oldest head:
+//	  Remove from memory, delete from backing store.
+//	  M evictions do NOT add to G.
 //
 // Items evicted from either queue are deleted from the bbolt backing store so
 // on-disk size is bounded. On restart the in-memory layer is cold; reads fall
@@ -43,9 +43,9 @@
 //
 // # Sizing
 //
-//   sTarget   = max(1, capacity/10)
-//   mTarget   = capacity − sTarget
-//   ghostCap  = 2 × sTarget   (min 4)
+//	sTarget   = max(1, capacity/10)
+//	mTarget   = capacity − sTarget
+//	ghostCap  = 2 × sTarget   (min 4)
 package anonymizer
 
 import (
@@ -57,7 +57,7 @@ import (
 // s3fifoEntry holds the in-memory state for a single cached item.
 type s3fifoEntry struct {
 	value string
-	freq  uint8        // saturating counter in [0, 3]
+	freq  uint8         // saturating counter in [0, 3]
 	elem  *list.Element // back-pointer into sQueue or mQueue
 	inM   bool          // true → lives in mQueue, false → sQueue
 }
@@ -78,10 +78,10 @@ type s3fifoCache struct {
 	mQueue *list.List
 
 	// Ghost: bounded circular buffer.
-	ghostBuf   []string           // fixed-size ring, length == ghostCap
+	ghostBuf   []string            // fixed-size ring, length == ghostCap
 	ghostSet   map[string]struct{} // O(1) membership test
-	ghostHead  int                // oldest entry index in ghostBuf
-	ghostCount int                // current number of ghost entries
+	ghostHead  int                 // oldest entry index in ghostBuf
+	ghostCount int                 // current number of ghost entries
 
 	backing PersistentCache
 }

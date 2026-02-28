@@ -89,13 +89,13 @@ func TestBboltCacheSurvivesRestart(t *testing.T) {
 	}
 	c1.Set("alice@example.com", "[PII_a3f29c81]")
 	c1.Set("555-867-5309", "[PII_7f4e1b02]")
-	if err := c1.Close(); err != nil {
-		t.Fatalf("close first instance: %v", err)
+	if closeErr := c1.Close(); closeErr != nil {
+		t.Fatalf("close first instance: %v", closeErr)
 	}
 
 	// Verify the file was actually written.
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("cache file missing after close: %v", err)
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("cache file missing after close: %v", statErr)
 	}
 
 	// Reopen and verify entries survive.

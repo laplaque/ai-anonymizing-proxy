@@ -312,7 +312,7 @@ func TestAnonymizeJSONInjectsSystemInstructionAnthropicString(t *testing.T) {
 
 	var doc map[string]any
 	if err := json.Unmarshal(out, &doc); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err);
+		t.Fatalf("output is not valid JSON: %v", err)
 	}
 	sys, _ := doc["system"].(string)
 	if !strings.Contains(sys, "PRIVACY TOKENS") {

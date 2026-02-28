@@ -9,7 +9,7 @@
 //   - memoryCache   — in-memory only, used in tests and when no path is configured.
 //   - bboltCache    — embedded key-value store (bbolt), used in production.
 //   - s3fifoCache   — S3-FIFO in-memory eviction layer wrapping bboltCache,
-//                     used in production when a capacity limit is configured.
+//     used in production when a capacity limit is configured.
 //
 // The interface is intentionally minimal. The anonymizer writes entries one
 // value at a time from async Ollama goroutines; reads are per-value lookups

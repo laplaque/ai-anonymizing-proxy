@@ -131,8 +131,8 @@ type Server struct {
 // New creates and configures a new proxy server.
 func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metrics) *Server {
 	s := &Server{
-		cfg:         cfg,
-		anon:        func() *anonymizer.Anonymizer {
+		cfg: cfg,
+		anon: func() *anonymizer.Anonymizer {
 			a := anonymizer.NewWithCache(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m, cfg.OllamaCacheFile)
 			a.SetPIIInstructions(cfg.PIIInstructions)
 			return a
