@@ -1,9 +1,26 @@
 # AI Anonymizing Proxy
 
-An HTTP/HTTPS forward proxy that intercepts requests to AI API providers and strips personally
-identifiable information (PII) from request bodies before forwarding them. Sits between your
-applications and AI APIs (OpenAI, Anthropic, Cohere, Mistral, etc.) to prevent sensitive data
-from leaking into LLM prompts.
+Privacy-preserving infrastructure for AI-assisted development.
+
+AI tooling is evolving rapidly, but data protection frameworks — particularly GDPR in Europe —
+set a high bar for what can leave your environment. This project started from a belief that you
+should not have to choose between the quality of your AI tools and the privacy of your data.
+
+The proxy sits transparently between your AI clients and upstream APIs — Claude Code, Cursor,
+VS Code extensions, or anything that speaks HTTP — anonymizing personally identifiable
+information before it leaves your machine and restoring it in responses, without compromising
+the quality of the interaction.
+
+It is a local proxy, not a cloud service. Your data does not pass through any intermediary
+beyond your own machine.
+
+Written in Go. Early alpha, single-instance, actively developed.
+
+This is an earnest attempt to make AI tooling safer by default. The goal is to grow it into a
+mature infrastructure component with the help of the community. Contributions, ideas, and
+feedback are welcome.
+
+---
 
 Supports **MITM TLS termination** for HTTPS traffic — the proxy decrypts, anonymizes, and
 re-encrypts requests to AI API domains using a local CA certificate. Non-AI traffic is tunneled

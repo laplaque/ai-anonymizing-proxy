@@ -8,10 +8,10 @@ Non-AI domains are tunneled transparently without inspection.
 
 ```mermaid
 sequenceDiagram
-    participant C as Client<br/>(trusts proxy CA)
+    participant C as Client (trusts proxy CA)
     participant P as Proxy
     participant CA as mitm/cert.go
-    participant API as AI API<br/>(real TLS)
+    participant API as AI API (real TLS)
 
     C->>P: CONNECT api.openai.com:443
     P->>P: domain in aiApiDomains? → Yes
