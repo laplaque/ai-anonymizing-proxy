@@ -83,7 +83,18 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/metrics
   },
   "piiTokens": {
     "replaced": 314,
-    "deanonymized": 314
+    "deanonymized": 314,
+    "cacheHits": {
+      "phone": 42,
+      "ipAddress": 17
+    },
+    "cacheMisses": {
+      "phone": 8,
+      "ipAddress": 3
+    },
+    "ollamaDispatches": 11,
+    "ollamaErrors": 0,
+    "cacheFallbacks": 11
   },
   "latency": {
     "anonymizationMs": {
@@ -102,6 +113,11 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/metrics
   "uptimeSecs": 130.4
 }
 ```
+
+`cacheHits` and `cacheMisses` are keyed by PII type and only include types with non-zero
+counts. `cacheFallbacks` counts requests where a low-confidence match had no cache entry and
+a deterministic fallback token was applied immediately. `ollamaErrors` counts both semaphore-
+full drops and failed Ollama queries.
 
 ---
 

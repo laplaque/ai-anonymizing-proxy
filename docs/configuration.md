@@ -85,10 +85,18 @@ trigger (regex only). Setting it to `1.0` causes Ollama to run on virtually ever
 | API key        | 0.90       |
 | SSN            | 0.85       |
 | Credit card    | 0.85       |
+| IPv6 address   | 0.85       |
 | Street address | 0.75       |
-| IP address     | 0.70       |
+| IPv4 address   | 0.70       |
 | Phone number   | 0.65       |
 | ZIP code       | 0.40       |
+
+## Token format
+
+Detected PII is replaced with deterministic tokens of the form `[PII_<TYPE>_<8hex>]` —
+e.g. `[PII_EMAIL_c160f8cc]`. The type label gives the LLM semantic context; the 8-hex suffix
+is the first 8 characters of `md5(original_value)`. See [anonymizer.md](anonymizer.md) for
+full details.
 
 ## Auth bypass
 
