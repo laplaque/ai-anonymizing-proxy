@@ -22,11 +22,6 @@ feedback are welcome.
 
 ---
 
-An HTTP/HTTPS forward proxy that intercepts requests to AI API providers and strips personally
-identifiable information (PII) from request bodies before forwarding them. Sits between your
-applications and AI APIs (OpenAI, Anthropic, Cohere, Mistral, etc.) to prevent sensitive data
-from leaking into LLM prompts.
-
 Supports **MITM TLS termination** for HTTPS traffic — the proxy decrypts, anonymizes, and
 re-encrypts requests to AI API domains using a local CA certificate. Non-AI traffic is tunneled
 transparently.
