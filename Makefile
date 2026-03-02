@@ -38,6 +38,18 @@ vulncheck:
 check: lint test security vulncheck
 	@echo "All checks passed."
 
+sonar: ## Run full analysis and push to SonarQube
+	@echo "--- Generating coverage report ---"
+	$(GO) test ./... -coverprofile=coverage.out
+	@echo "--- Generating test report ---"
+	$(GO) test ./... -v -json | go-junit-report -set-exit-code > test-report.xml
+	@echo "--- Generating golangci-lint report ---"
+	golangci-lint run --output.checkstyle.path golangci-report.xml ./... || true
+	@echo "--- Running sonar-scanner ---"
+	sonar-scanner
+	@echo "--- Cleaning up ---"
+	rm -f coverage.out test-report.xml golangci-report.xml
+
 clean:
 	rm -rf bin/
 
