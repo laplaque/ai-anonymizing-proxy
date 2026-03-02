@@ -34,6 +34,13 @@ logs/
 # Serena
 .serena/
 
+# Claude Code agent instructions (dev tooling, not product code)
+.claude/
+CLAUDE.md
+
+# Temporary make outputs (benchmarks, coverage scratch, intermediate files)
+.tmp/
+
 # Runtime state
 ai-domains.json
 
