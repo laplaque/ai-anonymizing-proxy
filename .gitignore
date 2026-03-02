@@ -40,3 +40,10 @@ ai-domains.json
 # Environment overrides (may contain secrets)
 .env
 .env.local
+
+# SonarQube
+sonar-project.properties
+coverage.out
+.scannerwork/
+golangci-report.xml
+test-report.xml

@@ -90,6 +90,16 @@ make vulncheck     # Go vulnerability database check
 make check         # lint + test + security + vulncheck
 ```
 
+## Static analysis (SonarQube)
+
+Requires `sonar-scanner` and `go-junit-report` on `$PATH`, and a local SonarQube instance
+(see `infra/sonarqube/`). Create `sonar-project.properties` in the project root (gitignored)
+with your token and run:
+
+```bash
+make sonar
+```
+
 ## Smoke test (requires running proxy)
 
 ```bash
