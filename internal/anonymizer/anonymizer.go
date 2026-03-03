@@ -53,6 +53,9 @@ const (
 	PIIJobTitle   PIIType = "jobTitle"
 )
 
+// sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
+const sseDataPrefix = "data: "
+
 // pattern pairs a compiled regex with its PII type and a base confidence score.
 // Confidence reflects how specifically the regex identifies the target PII type:
 // high scores mean low false-positive risk; low scores indicate ambiguous patterns
@@ -632,13 +635,13 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 			}
 
 			// Only "data: ..." lines carry JSON payload.
-			if !bytes.HasPrefix(line, []byte("data: ")) {
+			if !bytes.HasPrefix(line, []byte(sseDataPrefix)) {
 				pw.Write([]byte(replacer.Replace(string(line)))) //nolint:errcheck
 				pw.Write([]byte("\n"))                           //nolint:errcheck
 				return
 			}
 
-			payload := line[len("data: "):]
+			payload := line[len(sseDataPrefix):]
 
 			// Decode just enough to identify text_delta events.
 			var envelope struct {
@@ -650,7 +653,7 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 			}
 			if err := json.Unmarshal(payload, &envelope); err != nil {
 				// Not valid JSON (e.g. "[DONE]") — apply replacer then pass through.
-				pw.Write([]byte("data: "))                          //nolint:errcheck
+				pw.Write([]byte(sseDataPrefix))                     //nolint:errcheck
 				pw.Write([]byte(replacer.Replace(string(payload)))) //nolint:errcheck
 				pw.Write([]byte("\n"))                              //nolint:errcheck
 				return
@@ -704,9 +707,9 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 					return
 				}
 
-				pw.Write([]byte("data: ")) //nolint:errcheck
-				pw.Write(newPayload)       //nolint:errcheck
-				pw.Write([]byte("\n"))     //nolint:errcheck
+				pw.Write([]byte(sseDataPrefix)) //nolint:errcheck
+				pw.Write(newPayload)            //nolint:errcheck
+				pw.Write([]byte("\n"))          //nolint:errcheck
 
 				// Keep the unprocessed suffix in the accumulator.
 				remaining := accumulated[flushUpTo:]
@@ -728,9 +731,9 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 						"delta": map[string]string{"type": "text_delta", "text": flushed},
 					}
 					if b, err := json.Marshal(synth); err == nil {
-						pw.Write([]byte("data: ")) //nolint:errcheck
-						pw.Write(b)                //nolint:errcheck
-						pw.Write([]byte("\n\n"))   //nolint:errcheck
+						pw.Write([]byte(sseDataPrefix)) //nolint:errcheck
+						pw.Write(b)                     //nolint:errcheck
+						pw.Write([]byte("\n\n"))        //nolint:errcheck
 					}
 				}
 				textAccum.Reset()
@@ -772,9 +775,9 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 							"delta": map[string]string{"type": "text_delta", "text": flushed},
 						}
 						if b, err := json.Marshal(synth); err == nil {
-							pw.Write([]byte("data: ")) //nolint:errcheck
-							pw.Write(b)                //nolint:errcheck
-							pw.Write([]byte("\n\n"))   //nolint:errcheck
+							pw.Write([]byte(sseDataPrefix)) //nolint:errcheck
+							pw.Write(b)                     //nolint:errcheck
+							pw.Write([]byte("\n\n"))        //nolint:errcheck
 						}
 					}
 					textAccum.Reset()
