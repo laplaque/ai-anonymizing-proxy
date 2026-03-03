@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"path"
 	"strings"
 	"time"
 
@@ -522,7 +523,7 @@ func isStreamingResponse(resp *http.Response) bool {
 	return strings.Contains(ct, "text/event-stream")
 }
 
-func (s *Server) isAuthRequest(domain, path string) bool {
+func (s *Server) isAuthRequest(domain, reqPath string) bool {
 	if s.authDomains[domain] {
 		return true
 	}
@@ -533,11 +534,40 @@ func (s *Server) isAuthRequest(domain, path string) bool {
 			return true
 		}
 	}
-	// Check path prefixes
+	// Clean the path to prevent traversal bypasses (e.g., /oauth/../admin)
+	// and normalize double slashes (e.g., //oauth → /oauth).
+	cleanPath := path.Clean(reqPath)
+	if cleanPath == "" || cleanPath[0] != '/' {
+		cleanPath = "/" + cleanPath
+	}
+
+	// Check path prefixes with proper boundary enforcement.
+	// A configured authPath like "/oauth" must match:
+	//   - exactly "/oauth"
+	//   - sub-paths like "/oauth/callback"
+	// but NOT:
+	//   - "/oauthx" (suffix bypass)
+	//   - "/oauth/../secret" (traversal, already handled by path.Clean)
 	for authPath := range s.authPaths {
-		if strings.HasPrefix(path, authPath) {
+		if matchesAuthPath(cleanPath, authPath) {
 			return true
 		}
+	}
+	return false
+}
+
+// matchesAuthPath returns true if cleanPath matches authPath exactly or is a
+// sub-path of authPath. This prevents suffix bypass attacks where "/oauthx"
+// would incorrectly match an authPath of "/oauth".
+func matchesAuthPath(cleanPath, authPath string) bool {
+	// Exact match
+	if cleanPath == authPath {
+		return true
+	}
+	// Sub-path match: authPath must be a prefix followed by "/"
+	// e.g., authPath="/oauth" matches cleanPath="/oauth/callback"
+	if strings.HasPrefix(cleanPath, authPath) && len(cleanPath) > len(authPath) && cleanPath[len(authPath)] == '/' {
+		return true
 	}
 	return false
 }

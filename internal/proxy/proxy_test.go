@@ -9,7 +9,130 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/management"
 )
+
+// TestIsAuthRequest_PathBypasses verifies that the auth path matching logic
+// cannot be bypassed via common path manipulation techniques.
+// This is a security-critical test covering issue #18.
+func TestIsAuthRequest_PathBypasses(t *testing.T) {
+	// Set up a server with /oauth as an auth path
+	cfg := &config.Config{
+		AuthDomains: []string{"auth.example.com"},
+		AuthPaths:   []string{"/oauth", "/login", "/v1/auth"},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+
+	tests := []struct {
+		name   string
+		domain string
+		path   string
+		want   bool
+	}{
+		// Exact matches — should be auth
+		{"exact /oauth", "api.example.com", "/oauth", true},
+		{"exact /login", "api.example.com", "/login", true},
+		{"exact /v1/auth", "api.example.com", "/v1/auth", true},
+
+		// Sub-paths — should be auth
+		{"subpath /oauth/callback", "api.example.com", "/oauth/callback", true},
+		{"subpath /oauth/token", "api.example.com", "/oauth/token", true},
+		{"subpath /login/sso", "api.example.com", "/login/sso", true},
+		{"subpath /v1/auth/token", "api.example.com", "/v1/auth/token", true},
+
+		// Suffix bypass attempts — must NOT be auth
+		{"suffix bypass /oauthx", "api.example.com", "/oauthx", false},
+		{"suffix bypass /oauth2", "api.example.com", "/oauth2", false},
+		{"suffix bypass /loginx", "api.example.com", "/loginx", false},
+		{"suffix bypass /v1/authz", "api.example.com", "/v1/authz", false},
+
+		// Path traversal attempts — must NOT be auth (path.Clean normalizes these)
+		{"traversal /oauth/../secret", "api.example.com", "/oauth/../secret", false},
+		{"traversal /oauth/./callback", "api.example.com", "/oauth/./callback", true}, // normalizes to /oauth/callback
+		{"traversal /oauth/../oauth", "api.example.com", "/oauth/../oauth", true},     // normalizes to /oauth
+
+		// Double-slash normalization
+		{"double slash //oauth", "api.example.com", "//oauth", true},                   // normalizes to /oauth
+		{"double slash /oauth//callback", "api.example.com", "/oauth//callback", true}, // normalizes to /oauth/callback
+
+		// URL-encoded paths (these come URL-decoded from net/http)
+		// The path "/oauth%2Fx" would be delivered as "/oauth/x" by net/http
+		{"encoded subpath", "api.example.com", "/oauth/x", true},
+
+		// Trailing slash
+		{"trailing slash /oauth/", "api.example.com", "/oauth/", true},
+		{"trailing slash /login/", "api.example.com", "/login/", true},
+
+		// Non-auth paths
+		{"non-auth /api/v1", "api.example.com", "/api/v1", false},
+		{"non-auth /status", "api.example.com", "/status", false},
+		{"non-auth /", "api.example.com", "/", false},
+		{"non-auth empty", "api.example.com", "", false},
+
+		// Auth domains — always auth regardless of path
+		{"auth domain any path", "auth.example.com", "/anything", true},
+		{"auth domain non-auth path", "auth.example.com", "/api/v1", true},
+
+		// Auth subdomain prefixes
+		{"auth subdomain auth.", "auth.openai.com", "/v1/chat", true},
+		{"auth subdomain login.", "login.example.com", "/callback", true},
+		{"auth subdomain accounts.", "accounts.google.com", "/oauth2", true},
+		{"auth subdomain sso.", "sso.company.com", "/saml", true},
+		{"auth subdomain oauth.", "oauth.service.com", "/token", true},
+
+		// Non-auth subdomains (should not match just because they contain "auth")
+		{"not auth subdomain api.auth", "api.auth.example.com", "/v1", false},
+		{"not auth subdomain myauth.", "myauth.example.com", "/callback", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := srv.isAuthRequest(tt.domain, tt.path)
+			if got != tt.want {
+				t.Errorf("isAuthRequest(%q, %q) = %v, want %v", tt.domain, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchesAuthPath tests the matchesAuthPath helper function directly.
+func TestMatchesAuthPath(t *testing.T) {
+	tests := []struct {
+		cleanPath string
+		authPath  string
+		want      bool
+	}{
+		// Exact matches
+		{"/oauth", "/oauth", true},
+		{"/login", "/login", true},
+
+		// Sub-path matches
+		{"/oauth/callback", "/oauth", true},
+		{"/oauth/token/refresh", "/oauth", true},
+
+		// Non-matches (suffix bypass)
+		{"/oauthx", "/oauth", false},
+		{"/oauth2", "/oauth", false},
+
+		// Edge cases
+		{"/", "/", true},
+		{"/oauth", "/", false},    // "/" only matches exactly "/" (safer default)
+		{"/oau", "/oauth", false}, // shorter path
+		{"", "/oauth", false},     // empty path
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.cleanPath+"_vs_"+tt.authPath, func(t *testing.T) {
+			got := matchesAuthPath(tt.cleanPath, tt.authPath)
+			if got != tt.want {
+				t.Errorf("matchesAuthPath(%q, %q) = %v, want %v", tt.cleanPath, tt.authPath, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestIsPrivateIP(t *testing.T) {
 	tests := []struct {
