@@ -133,55 +133,60 @@ func loadFile(cfg *Config, path string) {
 	}
 }
 
-func loadEnv(cfg *Config) {
-	if v := os.Getenv("PROXY_PORT"); v != "" {
+// loadEnvString sets *dst to the value of the named env var if it is non-empty.
+func loadEnvString(name string, dst *string) {
+	if v := os.Getenv(name); v != "" {
+		*dst = v
+	}
+}
+
+// loadEnvInt sets *dst to the parsed integer value of the named env var if valid.
+func loadEnvInt(name string, dst *int) {
+	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			cfg.ProxyPort = n
+			*dst = n
 		}
 	}
-	if v := os.Getenv("MANAGEMENT_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.ManagementPort = n
-		}
-	}
-	if v := os.Getenv("OLLAMA_ENDPOINT"); v != "" {
-		cfg.OllamaEndpoint = v
-	}
-	if v := os.Getenv("OLLAMA_MODEL"); v != "" {
-		cfg.OllamaModel = v
-	}
-	if v := os.Getenv("USE_AI_DETECTION"); v == "false" {
-		cfg.UseAIDetection = false
-	}
-	if v := os.Getenv("AI_CONFIDENCE_THRESHOLD"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.AIConfidence = f
-		}
-	}
-	if v := os.Getenv("OLLAMA_MAX_CONCURRENT"); v != "" {
+}
+
+// loadEnvIntPositive sets *dst to the parsed integer if valid and > 0.
+func loadEnvIntPositive(name string, dst *int) {
+	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.OllamaMaxConcurrent = n
+			*dst = n
 		}
 	}
-	if v := os.Getenv("LOG_LEVEL"); v != "" {
-		cfg.LogLevel = v
+}
+
+// loadEnvFloat sets *dst to the parsed float value of the named env var if valid.
+func loadEnvFloat(name string, dst *float64) {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			*dst = f
+		}
 	}
-	if v := os.Getenv("CA_CERT_FILE"); v != "" {
-		cfg.CACertFile = v
+}
+
+// loadEnvBoolFalse sets *dst to false if the named env var equals "false".
+func loadEnvBoolFalse(name string, dst *bool) {
+	if os.Getenv(name) == "false" {
+		*dst = false
 	}
-	if v := os.Getenv("CA_KEY_FILE"); v != "" {
-		cfg.CAKeyFile = v
-	}
-	if v := os.Getenv("BIND_ADDRESS"); v != "" {
-		cfg.BindAddress = v
-	}
-	if v := os.Getenv("MANAGEMENT_TOKEN"); v != "" {
-		cfg.ManagementToken = v
-	}
-	if v := os.Getenv("UPSTREAM_PROXY"); v != "" {
-		cfg.UpstreamProxy = v
-	}
-	if v := os.Getenv("OLLAMA_CACHE_FILE"); v != "" {
-		cfg.OllamaCacheFile = v
-	}
+}
+
+func loadEnv(cfg *Config) {
+	loadEnvInt("PROXY_PORT", &cfg.ProxyPort)
+	loadEnvInt("MANAGEMENT_PORT", &cfg.ManagementPort)
+	loadEnvString("OLLAMA_ENDPOINT", &cfg.OllamaEndpoint)
+	loadEnvString("OLLAMA_MODEL", &cfg.OllamaModel)
+	loadEnvBoolFalse("USE_AI_DETECTION", &cfg.UseAIDetection)
+	loadEnvFloat("AI_CONFIDENCE_THRESHOLD", &cfg.AIConfidence)
+	loadEnvIntPositive("OLLAMA_MAX_CONCURRENT", &cfg.OllamaMaxConcurrent)
+	loadEnvString("LOG_LEVEL", &cfg.LogLevel)
+	loadEnvString("CA_CERT_FILE", &cfg.CACertFile)
+	loadEnvString("CA_KEY_FILE", &cfg.CAKeyFile)
+	loadEnvString("BIND_ADDRESS", &cfg.BindAddress)
+	loadEnvString("MANAGEMENT_TOKEN", &cfg.ManagementToken)
+	loadEnvString("UPSTREAM_PROXY", &cfg.UpstreamProxy)
+	loadEnvString("OLLAMA_CACHE_FILE", &cfg.OllamaCacheFile)
 }
