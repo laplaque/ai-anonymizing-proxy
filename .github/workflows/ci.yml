@@ -74,7 +74,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, test, security]
+    needs: [lint, test, security, benchmark]
     steps:
       - name: Checkout code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -93,3 +93,88 @@ jobs:
         with:
           name: proxy-binary
           path: bin/proxy
+
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run benchmarks
+        run: |
+          mkdir -p .tmp
+          go test -run='^$' -bench=. -benchmem -benchtime=1s -count=1 \
+            ./internal/anonymizer/... | tee .tmp/benchmark-ci.txt
+
+      - name: Check benchmark thresholds
+        run: |
+          #!/bin/bash
+          set -e
+
+          # Thresholds based on 500ms baseline:
+          # - regex/cache-hit: < 0.5% = 2.5ms = 2,500,000 ns
+          # - streaming: < 4% = 20ms = 20,000,000 ns
+          REGEX_CACHE_THRESHOLD=2500000
+          STREAMING_THRESHOLD=20000000
+
+          failed=0
+
+          echo "=== Benchmark Threshold Check ==="
+          echo "Regex/Cache-hit budget: ${REGEX_CACHE_THRESHOLD} ns (2.5ms)"
+          echo "Streaming budget: ${STREAMING_THRESHOLD} ns (20ms)"
+          echo ""
+
+          # Parse benchmark results and check thresholds
+          while IFS= read -r line; do
+            # Match benchmark lines: BenchmarkName-N <iterations> <ns/op> ns/op ...
+            if [[ $line =~ ^(Benchmark[A-Za-z]+)-[0-9]+[[:space:]]+[0-9]+[[:space:]]+([0-9]+) ]]; then
+              name="${BASH_REMATCH[1]}"
+              ns_op="${BASH_REMATCH[2]}"
+
+              # Determine threshold based on benchmark type
+              case "$name" in
+                BenchmarkRegexPass*|BenchmarkAnonymizeCache*|BenchmarkTokenGeneration)
+                  threshold=$REGEX_CACHE_THRESHOLD
+                  category="regex/cache"
+                  ;;
+                BenchmarkStreaming*)
+                  threshold=$STREAMING_THRESHOLD
+                  category="streaming"
+                  ;;
+                *)
+                  # Other benchmarks use regex/cache threshold
+                  threshold=$REGEX_CACHE_THRESHOLD
+                  category="general"
+                  ;;
+              esac
+
+              if [ "$ns_op" -gt "$threshold" ]; then
+                echo "FAIL: $name = ${ns_op} ns/op (budget: ${threshold} ns, category: ${category})"
+                failed=1
+              else
+                echo "PASS: $name = ${ns_op} ns/op (budget: ${threshold} ns)"
+              fi
+            fi
+          done < .tmp/benchmark-ci.txt
+
+          echo ""
+          if [ "$failed" -eq 1 ]; then
+            echo "ERROR: One or more benchmarks exceeded their latency budget!"
+            exit 1
+          else
+            echo "SUCCESS: All benchmarks within latency budgets."
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: benchmark-results
+          path: .tmp/benchmark-ci.txt

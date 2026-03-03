@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint security vulncheck check gen-ca import-ca-macos import-ca-linux import-ca-windows deploy
+.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows deploy
 
 all: build
 
@@ -37,6 +37,14 @@ vulncheck:
 
 check: lint test security vulncheck
 	@echo "All checks passed."
+
+benchmark: ## Run latency benchmarks for all proxy gates
+	@mkdir -p .tmp
+	$(GO) test -run=^$$ -bench=. -benchmem -benchtime=3s -count=3 \
+		./internal/anonymizer/... \
+		| tee .tmp/benchmark-latest.txt
+	@echo ""
+	@echo "Benchmark results written to .tmp/benchmark-latest.txt"
 
 sonar: ## Run full analysis and push to SonarQube
 	@echo "--- Generating coverage report ---"
