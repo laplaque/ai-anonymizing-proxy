@@ -229,15 +229,23 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	s.handleOpaqueTunnel(w, r, host)
 }
 
+// mitmContext holds context for processing a MITM-intercepted request.
+type mitmContext struct {
+	host       string
+	domain     string
+	remoteHash string
+}
+
 // handleMITMTunnel intercepts HTTPS connections to AI API domains.
 // It performs TLS termination with a dynamically generated certificate,
 // reads the plaintext HTTP request, anonymizes it, and forwards upstream.
 func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, domain string) {
-	log.Printf("[MITM] %s Intercepting CONNECT %s", hashRemoteAddr(r.RemoteAddr), host)
+	remoteHash := hashRemoteAddr(r.RemoteAddr)
+	log.Printf("[MITM] %s Intercepting CONNECT %s", remoteHash, host)
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Printf("[MITM] %s Hijacking not supported for %s", hashRemoteAddr(r.RemoteAddr), host)
+		log.Printf("[MITM] %s Hijacking not supported for %s", remoteHash, host)
 		s.handleOpaqueTunnel(w, r, host)
 		return
 	}
@@ -247,75 +255,100 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[MITM] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
+		log.Printf("[MITM] %s Hijack error for %s: %v", remoteHash, host, err)
 		return
 	}
 	defer clientConn.Close() //nolint:errcheck // best-effort close
 
 	// Build a handler that anonymizes and forwards requests
+	ctx := mitmContext{host: host, domain: domain, remoteHash: remoteHash}
 	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// Fix up the request URL to be absolute for the transport
-		req.URL.Scheme = "https"
-		req.URL.Host = host
-		req.RequestURI = ""
-
-		isAuth := s.isAuthRequest(domain, req.URL.Path)
-
-		if s.m != nil {
-			s.m.RequestsTotal.Add(1)
-			if isAuth {
-				s.m.RequestsAuth.Add(1)
-			} else {
-				s.m.RequestsAnonymized.Add(1)
-			}
-		}
-
-		// Anonymize body for non-auth requests
-		var sessionID string
-		if !isAuth {
-			var err error
-			sessionID, err = s.anonymizeRequestBody(req)
-			if err != nil {
-				log.Printf("[MITM] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
-				http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			if sessionID != "" {
-				defer s.anon.DeleteSession(sessionID)
-			}
-			log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
-				hashRemoteAddr(r.RemoteAddr), req.Method, domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
-		} else {
-			log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", hashRemoteAddr(r.RemoteAddr), req.Method, domain, req.URL.Path)
-		}
-
-		// Forward to the real destination
-		removeHopByHop(req.Header)
-		upstreamStart := time.Now()
-		resp, err := s.transport.RoundTrip(req)
-		if err != nil {
-			if s.m != nil {
-				s.m.ErrorsUpstream.Add(1)
-			}
-			http.Error(rw, errBadGateway, http.StatusBadGateway)
-			return
-		}
-		if s.m != nil {
-			s.m.RecordUpstreamLatency(time.Since(upstreamStart))
-		}
-		defer resp.Body.Close() //nolint:errcheck // best-effort close
-
-		// De-anonymize response before returning to client
-		s.deanonymizeResponseBody(resp, sessionID)
-
-		removeHopByHop(resp.Header)
-		copyHeader(rw.Header(), resp.Header)
-		rw.WriteHeader(resp.StatusCode)
-		flushingCopy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+		s.serveMITMRequest(rw, req, ctx)
 	})
 
 	// Perform TLS handshake and serve HTTP/1.1 or HTTP/2
 	mitm.HandleConn(clientConn, domain, s.ca, handler)
+}
+
+// serveMITMRequest handles a single HTTP request inside a MITM-intercepted TLS connection.
+func (s *Server) serveMITMRequest(rw http.ResponseWriter, req *http.Request, ctx mitmContext) {
+	// Fix up the request URL to be absolute for the transport
+	req.URL.Scheme = "https"
+	req.URL.Host = ctx.host
+	req.RequestURI = ""
+
+	isAuth := s.isAuthRequest(ctx.domain, req.URL.Path)
+	s.recordMITMMetrics(isAuth)
+
+	sessionID, ok := s.processMITMRequestBody(rw, req, ctx, isAuth)
+	if !ok {
+		return // error already sent to client
+	}
+	if sessionID != "" {
+		defer s.anon.DeleteSession(sessionID)
+	}
+
+	s.forwardMITMRequest(rw, req, sessionID)
+}
+
+// recordMITMMetrics records metrics for a MITM request.
+func (s *Server) recordMITMMetrics(isAuth bool) {
+	if s.m == nil {
+		return
+	}
+	s.m.RequestsTotal.Add(1)
+	if isAuth {
+		s.m.RequestsAuth.Add(1)
+	} else {
+		s.m.RequestsAnonymized.Add(1)
+	}
+}
+
+// processMITMRequestBody anonymizes the request body for non-auth requests.
+// Returns (sessionID, true) on success, ("", true) for auth pass-through,
+// or ("", false) on error (error response already sent to client).
+func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) (string, bool) {
+	if isAuth {
+		log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", ctx.remoteHash, req.Method, ctx.domain, req.URL.Path)
+		return "", true
+	}
+
+	sessionID, err := s.anonymizeRequestBody(req)
+	if err != nil {
+		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
+		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+		return "", false
+	}
+
+	log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
+		ctx.remoteHash, req.Method, ctx.domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+	return sessionID, true
+}
+
+// forwardMITMRequest forwards the request upstream and writes the response.
+func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, sessionID string) {
+	removeHopByHop(req.Header)
+	upstreamStart := time.Now()
+	resp, err := s.transport.RoundTrip(req)
+	if err != nil {
+		if s.m != nil {
+			s.m.ErrorsUpstream.Add(1)
+		}
+		http.Error(rw, errBadGateway, http.StatusBadGateway)
+		return
+	}
+	if s.m != nil {
+		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+
+	// De-anonymize response before returning to client
+	s.deanonymizeResponseBody(resp, sessionID)
+
+	removeHopByHop(resp.Header)
+	copyHeader(rw.Header(), resp.Header)
+	rw.WriteHeader(resp.StatusCode)
+	flushingCopy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
