@@ -19,6 +19,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -58,6 +59,14 @@ func init() {
 		}
 		privateNetworks = append(privateNetworks, network)
 	}
+}
+
+// hashRemoteAddr returns the first 8 hex characters of sha256(addr).
+// This provides a linkable identifier within a session without exposing
+// the actual client IP address in logs.
+func hashRemoteAddr(addr string) string {
+	h := sha256.Sum256([]byte(addr))
+	return hex.EncodeToString(h[:4])
 }
 
 // isPrivateHost checks literal IP addresses only. It does not perform DNS
@@ -218,11 +227,11 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 // It performs TLS termination with a dynamically generated certificate,
 // reads the plaintext HTTP request, anonymizes it, and forwards upstream.
 func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, domain string) {
-	log.Printf("[MITM] %s Intercepting CONNECT %s", r.RemoteAddr, host)
+	log.Printf("[MITM] %s Intercepting CONNECT %s", hashRemoteAddr(r.RemoteAddr), host)
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Printf("[MITM] %s Hijacking not supported for %s", r.RemoteAddr, host)
+		log.Printf("[MITM] %s Hijacking not supported for %s", hashRemoteAddr(r.RemoteAddr), host)
 		s.handleOpaqueTunnel(w, r, host)
 		return
 	}
@@ -232,7 +241,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[MITM] %s Hijack error for %s: %v", r.RemoteAddr, host, err)
+		log.Printf("[MITM] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
 		return
 	}
 	defer clientConn.Close() //nolint:errcheck // best-effort close
@@ -261,7 +270,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 			var err error
 			sessionID, err = s.anonymizeRequestBody(req)
 			if err != nil {
-				log.Printf("[MITM] %s Anonymization error for %s: %v", r.RemoteAddr, domain, err)
+				log.Printf("[MITM] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
 				http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -269,9 +278,9 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 				defer s.anon.DeleteSession(sessionID)
 			}
 			log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
-				r.RemoteAddr, req.Method, domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+				hashRemoteAddr(r.RemoteAddr), req.Method, domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
 		} else {
-			log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", r.RemoteAddr, req.Method, domain, req.URL.Path)
+			log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", hashRemoteAddr(r.RemoteAddr), req.Method, domain, req.URL.Path)
 		}
 
 		// Forward to the real destination
@@ -305,10 +314,10 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
 func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
-	log.Printf("[TUNNEL] %s CONNECT %s", r.RemoteAddr, host)
+	log.Printf("[TUNNEL] %s CONNECT %s", hashRemoteAddr(r.RemoteAddr), host)
 
 	if isPrivateHost(host) {
-		log.Printf("[TUNNEL] %s Blocked CONNECT to private address: %s", r.RemoteAddr, host)
+		log.Printf("[TUNNEL] %s Blocked CONNECT to private address: %s", hashRemoteAddr(r.RemoteAddr), host)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -318,7 +327,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 	defer cancel()
 	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
-		log.Printf("[TUNNEL] %s Connection failed for %s: %v", r.RemoteAddr, host, err)
+		log.Printf("[TUNNEL] %s Connection failed for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -334,7 +343,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[TUNNEL] %s Hijack error for %s: %v", r.RemoteAddr, host, err)
+		log.Printf("[TUNNEL] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
 		return
 	}
 	defer clientConn.Close() //nolint:errcheck // best-effort close
@@ -379,7 +388,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		sessionID, err = s.anonymizeRequestBody(r)
 		if err != nil {
-			log.Printf("[HTTP] %s Anonymization error for %s: %v", r.RemoteAddr, domain, err)
+			log.Printf("[HTTP] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -387,11 +396,11 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			defer s.anon.DeleteSession(sessionID)
 		}
 		log.Printf("[HTTP] %s %s %s%s [ANON] sessionID=%s tokens=%d",
-			r.RemoteAddr, r.Method, domain, r.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+			hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
 	} else if isAuth {
-		log.Printf("[HTTP] %s %s %s%s [AUTH][PASS]", r.RemoteAddr, r.Method, domain, r.URL.Path)
+		log.Printf("[HTTP] %s %s %s%s [AUTH][PASS]", hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path)
 	} else {
-		log.Printf("[HTTP] %s %s %s%s [PASS]", r.RemoteAddr, r.Method, domain, r.URL.Path)
+		log.Printf("[HTTP] %s %s %s%s [PASS]", hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path)
 	}
 
 	// Forward the request
@@ -408,7 +417,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	}
 
 	if isPrivateHost(r.URL.Host) {
-		log.Printf("[HTTP] %s Blocked request to private address: %s", r.RemoteAddr, r.URL.Host)
+		log.Printf("[HTTP] %s Blocked request to private address: %s", hashRemoteAddr(r.RemoteAddr), r.URL.Host)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
