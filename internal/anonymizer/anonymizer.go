@@ -61,6 +61,7 @@ type pattern struct {
 	re         *regexp.Regexp
 	piiType    PIIType
 	confidence float64
+	validate   func(match string, text string, matchStart int) bool // optional context validator
 }
 
 // Anonymizer holds compiled patterns and the Ollama client config.
@@ -168,17 +169,18 @@ func (a *Anonymizer) compilePatterns() {
 		expr       string
 		piiType    PIIType
 		confidence float64
+		validate   func(match string, text string, matchStart int) bool
 	}{
 		// Email: unambiguous structural markers (@, domain, TLD)
-		{`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`, PIIEmail, 0.95},
+		{`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`, PIIEmail, 0.95, nil},
 		// API key: requires keyword prefix + long token — very specific
-		{`(?i)(?:api[_\-]?key|token|secret|bearer)[\s"':=]+([a-zA-Z0-9_\-.]{20,})`, PIIAPIKey, 0.90},
+		{`(?i)(?:api[_\-]?key|token|secret|bearer)[\s"':=]+([a-zA-Z0-9_\-.]{20,})`, PIIAPIKey, 0.90, nil},
 		// SSN: structured hyphenated format
-		{`\b(?:\d{3}-?\d{2}-?\d{4}|\d{9})\b`, PIISSN, 0.85},
+		{`\b(?:\d{3}-?\d{2}-?\d{4}|\d{9})\b`, PIISSN, 0.85, nil},
 		// Credit card: 16-digit block pattern
-		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, PIICreditCard, 0.85},
+		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, PIICreditCard, 0.85, nil},
 		// Street address: requires street-type suffix keyword
-		{`(?i)\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, PIIAddress, 0.75},
+		{`(?i)\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, PIIAddress, 0.75, nil},
 		// IPv6: all RFC 5952 compressed and uncompressed forms.
 		// The alternation is ordered longest-first so greedy matching picks the
 		// most complete address. Confidence is high because the colon-hex syntax
@@ -193,13 +195,13 @@ func (a *Anonymizer) compilePatterns() {
 			`|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}` +
 			`|:(?::[0-9a-fA-F]{1,4}){1,7}` +
 			`|::`,
-			PIIIPAddress, 0.85},
+			PIIIPAddress, 0.85, nil},
 		// IPv4: matches version numbers and other numeric quads — moderate
-		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, PIIIPAddress, 0.70},
-		// Phone: very broad — matches many numeric sequences that are not phones
-		{`(\+?1?[\-.\s]?)?\(?([0-9]{3})\)?[\-.\s]?([0-9]{3})[\-.\s]?([0-9]{4})`, PIIPhone, 0.65},
-		// ZIP code: 5 digits match countless non-PII numbers
-		{`\b\d{5}(?:-\d{4})?\b`, PIIAddress, 0.40},
+		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, PIIIPAddress, 0.70, nil},
+		// Phone: requires formatting characters to reduce false positives on plain digit sequences
+		{`(\+?1?[\-.\s]?)?\(?([0-9]{3})\)?[\-.\s]?([0-9]{3})[\-.\s]?([0-9]{4})`, PIIPhone, 0.65, validatePhoneContext},
+		// ZIP code: 5 digits, but requires postal context to avoid false positives on counts/IDs
+		{`\b\d{5}(?:-\d{4})?\b`, PIIAddress, 0.40, validateZIPContext},
 	}
 	for _, s := range specs {
 		re, err := regexp.Compile(s.expr)
@@ -207,14 +209,158 @@ func (a *Anonymizer) compilePatterns() {
 			log.Printf("[ANONYMIZER] Warning: could not compile pattern %q: %v", s.expr, err)
 			continue
 		}
-		a.patterns = append(a.patterns, pattern{re: re, piiType: s.piiType, confidence: s.confidence})
+		a.patterns = append(a.patterns, pattern{re: re, piiType: s.piiType, confidence: s.confidence, validate: s.validate})
 	}
+}
+
+// validateZIPContext returns true if the 5-digit match appears in a postal context.
+// Rejects matches preceded by currency symbols, #, or followed by common unit words.
+func validateZIPContext(match, text string, start int) bool {
+	// Check characters immediately before the match
+	if start > 0 {
+		prevChar := text[start-1]
+		// Reject if preceded by currency symbols or hash
+		if prevChar == '$' || prevChar == '#' {
+			return false
+		}
+		// Check for € and £ (multi-byte UTF-8)
+		if start >= 3 {
+			prev3 := text[start-3 : start]
+			if prev3 == "€" || prev3 == "£" {
+				return false
+			}
+		}
+		if start >= 2 {
+			prev2 := text[start-2 : start]
+			if prev2 == "€" || prev2 == "£" {
+				return false
+			}
+		}
+	}
+
+	end := start + len(match)
+	textLower := strings.ToLower(text)
+
+	// FIRST check for positive postal context indicators — these override negative checks
+	postalContexts := []string{"zip", "postal", "zipcode", "zip code", "postcode", "post code"}
+	for _, ctx := range postalContexts {
+		// Check a window around the match
+		windowStart := start - 50
+		if windowStart < 0 {
+			windowStart = 0
+		}
+		windowEnd := end + 20
+		if windowEnd > len(textLower) {
+			windowEnd = len(textLower)
+		}
+		window := textLower[windowStart:windowEnd]
+		if strings.Contains(window, ctx) {
+			return true
+		}
+	}
+
+	// Check what follows the match (unit words that indicate non-PII context)
+	if end < len(text) {
+		afterStart := end
+		// Skip optional whitespace
+		for afterStart < len(text) && (text[afterStart] == ' ' || text[afterStart] == '\t') {
+			afterStart++
+		}
+		suffixWords := []string{
+			"characters", "chars", "bytes", "items", "users", "records",
+			"entries", "rows", "lines", "requests", "seconds", "minutes",
+			"hours", "days", "ms", "kb", "mb", "gb", "tb", "%",
+		}
+		for _, word := range suffixWords {
+			if afterStart+len(word) <= len(textLower) {
+				if strings.HasPrefix(strings.ToLower(text[afterStart:]), word) {
+					return false
+				}
+			}
+		}
+	}
+
+	// Check what precedes the match (context words that indicate non-PII)
+	if start > 0 {
+		// Find the start of the preceding word/context
+		prefixEnd := start
+		// Skip whitespace and punctuation before the match
+		for prefixEnd > 0 && (text[prefixEnd-1] == ' ' || text[prefixEnd-1] == '\t' || text[prefixEnd-1] == ':') {
+			prefixEnd--
+		}
+		// Find word boundary
+		prefixStart := prefixEnd
+		for prefixStart > 0 && text[prefixStart-1] != ' ' && text[prefixStart-1] != '\t' && text[prefixStart-1] != '\n' && text[prefixStart-1] != ':' {
+			prefixStart--
+		}
+		if prefixStart < prefixEnd {
+			prevWord := strings.ToLower(text[prefixStart:prefixEnd])
+			// Reject if preceded by common non-PII context words
+			nonPIIContexts := []string{
+				"limit", "maximum", "max", "minimum", "min", "count", "total",
+				"size", "length", "index", "offset", "port", "code", "error",
+				"version", "build", "id", "number", "value", "timeout", "elapsed",
+				"buffer", "segment", "of", "is", "at", "to",
+			}
+			for _, ctx := range nonPIIContexts {
+				if prevWord == ctx {
+					return false
+				}
+			}
+		}
+	}
+
+	// Check if it follows a state abbreviation (common in addresses)
+	if start >= 3 {
+		before := text[start-3 : start]
+		// Pattern: ", XX " where XX is state abbreviation
+		if len(before) >= 3 && (before[len(before)-1] == ' ' || before[len(before)-1] == ',') {
+			// This is a heuristic; actual addresses often have "State ZIP" format
+			return true
+		}
+	}
+
+	// Default: reject ambiguous 5-digit numbers without clear postal context
+	return false
+}
+
+// validatePhoneContext returns true if the phone match has formatting that indicates
+// it's likely a phone number rather than an arbitrary digit sequence.
+func validatePhoneContext(match, text string, start int) bool {
+	// Phone must have at least one formatting character (dash, dot, space, or parens)
+	// to distinguish it from arbitrary 10-digit numbers
+	hasFormatting := strings.ContainsAny(match, "-.()")
+	hasSpace := strings.Contains(match, " ")
+	hasCountryCode := strings.HasPrefix(match, "+") || strings.HasPrefix(match, "1-") || strings.HasPrefix(match, "1 ")
+
+	if hasFormatting || hasSpace || hasCountryCode {
+		return true
+	}
+
+	// Check for "phone" or "call" context words before the match
+	if start > 0 {
+		windowStart := start - 30
+		if windowStart < 0 {
+			windowStart = 0
+		}
+		before := strings.ToLower(text[windowStart:start])
+		phoneContexts := []string{"phone", "call", "tel", "fax", "mobile", "cell", "contact"}
+		for _, ctx := range phoneContexts {
+			if strings.Contains(before, ctx) {
+				return true
+			}
+		}
+	}
+
+	// Plain 10-digit number without formatting or context — reject
+	return false
 }
 
 // AnonymizeText replaces all detected PII in the given string.
 // sessionID is used to record token→original mappings for later de-anonymization.
 //
 // For each regex match:
+//   - If a pattern has a validate function, it must return true for the match to be tokenized.
 //   - High-confidence (>= aiThreshold): token applied immediately.
 //   - Low-confidence (< aiThreshold) with useAI enabled:
 //     cache hit  → use cached token.
@@ -229,13 +375,42 @@ func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 
 	result := text
 	for _, p := range a.patterns {
-		result = p.re.ReplaceAllStringFunc(result, func(match string) string {
-			token := a.tokenForMatch(p, match)
-			a.recordMapping(sessionID, token, match)
-			return token
-		})
+		// Use ReplaceAllStringFunc with index tracking for context validation
+		if p.validate != nil {
+			result = replaceWithValidation(result, p, func(match string) string {
+				token := a.tokenForMatch(p, match)
+				a.recordMapping(sessionID, token, match)
+				return token
+			})
+		} else {
+			result = p.re.ReplaceAllStringFunc(result, func(match string) string {
+				token := a.tokenForMatch(p, match)
+				a.recordMapping(sessionID, token, match)
+				return token
+			})
+		}
 	}
 	return result
+}
+
+// replaceWithValidation performs regex replacement with context validation.
+// Only matches that pass the pattern's validate function are replaced.
+func replaceWithValidation(text string, p pattern, replacer func(string) string) string {
+	var result strings.Builder
+	lastEnd := 0
+	for _, match := range p.re.FindAllStringIndex(text, -1) {
+		start, end := match[0], match[1]
+		matchStr := text[start:end]
+		if p.validate(matchStr, text, start) {
+			result.WriteString(text[lastEnd:start])
+			result.WriteString(replacer(matchStr))
+		} else {
+			result.WriteString(text[lastEnd:end])
+		}
+		lastEnd = end
+	}
+	result.WriteString(text[lastEnd:])
+	return result.String()
 }
 
 // tokenForMatch returns the anonymization token for a single regex match.

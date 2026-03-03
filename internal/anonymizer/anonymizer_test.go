@@ -464,3 +464,139 @@ func TestStreamingDeanonymizeChunkBoundary(t *testing.T) {
 		t.Errorf("chunk-boundary round-trip failed\n  want: %q\n   got: %q", input, string(got))
 	}
 }
+
+// TestFalsePositiveNumericContexts verifies that common numeric sequences in
+// non-PII contexts are NOT matched by the ZIP or phone patterns. Issue #7.
+func TestFalsePositiveNumericContexts(t *testing.T) {
+	a := newTestAnonymizer()
+	sessionID := "sess-fp-1"
+
+	// Construct numbers programmatically to avoid tokenization in source.
+	// These represent common non-PII numeric contexts.
+	n5 := "1" + "0" + "0" + "0" + "0"  // 5-digit count (10000)
+	n5b := "2" + "0" + "0" + "0" + "0" // another 5-digit (20000)
+	n5c := "5" + "0" + "0" + "0" + "0" // 50000
+	n5d := "1" + "2" + "3" + "4" + "5" // 12345
+	n5e := "9" + "9" + "9" + "9" + "9" // 99999
+	n5f := "6" + "5" + "5" + "3" + "6" // 65536 (power of 2)
+	n5g := "3" + "2" + "7" + "6" + "8" // 32768 (power of 2)
+	n4 := "8" + "0" + "8" + "0"        // 4-digit port
+	yr := "2" + "0" + "2" + "4"        // year
+
+	// These strings contain numbers that should NOT be matched as PII.
+	// If any of these are changed by AnonymizeText, the test fails.
+	falsePositives := []struct {
+		name  string
+		input string
+	}{
+		// Counts and limits — common in technical text
+		{"count suffix", "The limit is " + n5 + " characters"},
+		{"count prefix", "Maximum of " + n5b + " items allowed"},
+		{"byte count", "File size is " + n5c + " bytes"},
+		{"user count", "We have " + n5d + " users"},
+		{"max tokens", "Set max_tokens to " + n5e},
+
+		// Currency amounts
+		{"dollar amount", "The price is $" + n5},
+		{"euro amount", "Budget: €" + n5b},
+		{"pound amount", "Cost: £" + n5c},
+
+		// Version numbers and IDs
+		{"build number", "Build #" + n5d + " deployed"},
+		{"version number", "Version " + n5 + " released"},
+		{"error code", "Error code " + n5e},
+		{"port number", "Listening on port " + n4},
+
+		// Array indices and offsets
+		{"array index", "Element at index " + n5},
+		{"offset value", "Starting at offset " + n5b},
+
+		// Percentages and rates
+		{"large percentage", "Growth of " + n5 + "%"},
+
+		// Date-like numbers that aren't ZIP codes
+		{"year standalone", "In the year " + yr},
+
+		// Technical measurements
+		{"milliseconds", "Timeout: " + n5c + "ms"},
+		{"seconds value", "Elapsed: " + n5 + " seconds"},
+
+		// Common programming values
+		{"power of two 64k", "Buffer size: " + n5f},
+		{"power of two 32k", "Segment size: " + n5g},
+	}
+
+	for _, tc := range falsePositives {
+		t.Run(tc.name, func(t *testing.T) {
+			result := a.AnonymizeText(tc.input, sessionID)
+			if result != tc.input {
+				t.Errorf("false positive detected:\n  input:  %q\n  output: %q", tc.input, result)
+			}
+		})
+	}
+}
+
+// TestTruePositiveZIPCodes verifies that legitimate ZIP codes are still matched.
+func TestTruePositiveZIPCodes(t *testing.T) {
+	a := newTestAnonymizer()
+	sessionID := "sess-zip-1"
+
+	// Construct ZIP codes programmatically
+	zip1 := "9" + "0" + "2" + "1" + "0" // LA area
+	zip2 := "6" + "2" + "7" + "0" + "1" // Springfield IL
+	zipPlus4 := "9" + "0" + "2" + "1" + "0" + "-" + "1" + "2" + "3" + "4"
+
+	// These should be anonymized (true positives)
+	truePositives := []struct {
+		name  string
+		input string
+	}{
+		{"zip in address context", "123 Main St, Springfield, IL " + zip2},
+		{"zip plus four", "Mailing address: " + zipPlus4},
+		{"standalone zip with label", "ZIP code: " + zip1},
+		{"postal code label", "Postal code " + zip2},
+	}
+
+	for _, tc := range truePositives {
+		t.Run(tc.name, func(t *testing.T) {
+			result := a.AnonymizeText(tc.input, sessionID)
+			if result == tc.input {
+				t.Errorf("true positive not detected:\n  input: %q\n  output: %q", tc.input, result)
+			}
+		})
+	}
+}
+
+// TestTruePositivePhoneNumbers verifies that legitimate phone numbers are still matched.
+func TestTruePositivePhoneNumbers(t *testing.T) {
+	a := newTestAnonymizer()
+	sessionID := "sess-phone-1"
+
+	// Construct phone numbers programmatically
+	phone1 := "5" + "5" + "5" + "-" + "1" + "2" + "3" + "-" + "4" + "5" + "6" + "7"
+	phone2 := "5" + "5" + "5" + "." + "1" + "2" + "3" + "." + "4" + "5" + "6" + "7"
+	phone3 := "(" + "5" + "5" + "5" + ")" + " " + "1" + "2" + "3" + "-" + "4" + "5" + "6" + "7"
+	phone4 := "+" + "1" + "-" + "5" + "5" + "5" + "-" + "1" + "2" + "3" + "-" + "4" + "5" + "6" + "7"
+	phone5 := "5" + "5" + "5" + " " + "1" + "2" + "3" + " " + "4" + "5" + "6" + "7"
+
+	// These should be anonymized (true positives)
+	truePositives := []struct {
+		name  string
+		input string
+	}{
+		{"formatted with dashes", "Call me at " + phone1},
+		{"formatted with dots", "Phone: " + phone2},
+		{"formatted with parens", "Reach me at " + phone3},
+		{"with country code", "International: " + phone4},
+		{"with spaces", "My number is " + phone5},
+	}
+
+	for _, tc := range truePositives {
+		t.Run(tc.name, func(t *testing.T) {
+			result := a.AnonymizeText(tc.input, sessionID)
+			if result == tc.input {
+				t.Errorf("true positive not detected:\n  input: %q\n  output: %q", tc.input, result)
+			}
+		})
+	}
+}
