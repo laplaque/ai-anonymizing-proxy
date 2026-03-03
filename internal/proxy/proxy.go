@@ -38,6 +38,12 @@ import (
 	"ai-anonymizing-proxy/internal/mitm"
 )
 
+// HTTP header and error message constants.
+const (
+	headerContentEncoding = "Content-Encoding"
+	errBadGateway         = "bad gateway"
+)
+
 // privateNetworks lists CIDR ranges that must never be reachable via CONNECT
 // or plain-HTTP forwarding (SSRF protection).
 var privateNetworks []*net.IPNet
@@ -291,7 +297,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 			if s.m != nil {
 				s.m.ErrorsUpstream.Add(1)
 			}
-			http.Error(rw, "bad gateway", http.StatusBadGateway)
+			http.Error(rw, errBadGateway, http.StatusBadGateway)
 			return
 		}
 		if s.m != nil {
@@ -328,7 +334,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
 		log.Printf("[TUNNEL] %s Connection failed for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
 	defer destConn.Close() //nolint:errcheck // best-effort close
@@ -431,7 +437,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 		if s.m != nil {
 			s.m.ErrorsUpstream.Add(1)
 		}
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
 	if s.m != nil {
@@ -501,7 +507,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) 
 
 	ct := resp.Header.Get("Content-Type")
 	streaming := isStreamingResponse(resp)
-	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v encoding=%q", sessionID, ct, streaming, resp.Header.Get("Content-Encoding"))
+	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v encoding=%q", sessionID, ct, streaming, resp.Header.Get(headerContentEncoding))
 
 	// Streaming responses (SSE or unknown-length chunked) must never be fully
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
@@ -621,7 +627,7 @@ func copyHeader(dst, src http.Header) {
 // and removes the Content-Encoding header so the client receives plain text.
 // If the encoding is unsupported or absent, the body is left unchanged.
 func decompressResponse(resp *http.Response) error {
-	enc := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	enc := strings.ToLower(resp.Header.Get(headerContentEncoding))
 	switch enc {
 	case "gzip":
 		gr, err := gzip.NewReader(resp.Body)
@@ -632,14 +638,14 @@ func decompressResponse(resp *http.Response) error {
 			io.Reader
 			io.Closer
 		}{gr, resp.Body}
-		resp.Header.Del("Content-Encoding")
+		resp.Header.Del(headerContentEncoding)
 		resp.ContentLength = -1
 	case "deflate":
 		resp.Body = struct {
 			io.Reader
 			io.Closer
 		}{flate.NewReader(resp.Body), resp.Body}
-		resp.Header.Del("Content-Encoding")
+		resp.Header.Del(headerContentEncoding)
 		resp.ContentLength = -1
 	case "", "identity":
 		// nothing to do
