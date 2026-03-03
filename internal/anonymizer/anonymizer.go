@@ -89,6 +89,18 @@ type Anonymizer struct {
 	piiInstructions map[string]string // model family prefix → system instruction
 }
 
+// Options configures the Anonymizer constructor.
+type Options struct {
+	OllamaEndpoint      string           // Ollama API base URL (e.g. "http://localhost:11434")
+	OllamaModel         string           // Ollama model name (e.g. "llama3")
+	UseAI               bool             // enable AI-based PII verification
+	AIThreshold         float64          // confidence threshold for AI verification (0.0-1.0)
+	OllamaMaxConcurrent int              // max concurrent Ollama requests (≥1)
+	Metrics             *metrics.Metrics // optional metrics collector; nil disables metrics
+	CachePath           string           // path to bbolt cache file; empty = in-memory only
+	CacheCapacity       int              // S3-FIFO cache capacity; 0 = unbounded (testing only)
+}
+
 // New creates an Anonymizer with the given options.
 // Pass a non-nil m to collect performance metrics; pass nil to disable.
 // cachePath is the path to the bbolt persistent cache file. If empty, an
@@ -108,25 +120,34 @@ const defaultCacheCapacity = 50_000
 // wrapped with an S3-FIFO in-memory eviction layer (capacity=defaultCacheCapacity).
 // If cachePath is empty, an unbounded in-memory cache is used.
 func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string) *Anonymizer {
-	return NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel, useAI, aiThreshold, ollamaMaxConcurrent, m, cachePath, defaultCacheCapacity)
+	return NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      ollamaEndpoint,
+		OllamaModel:         ollamaModel,
+		UseAI:               useAI,
+		AIThreshold:         aiThreshold,
+		OllamaMaxConcurrent: ollamaMaxConcurrent,
+		Metrics:             m,
+		CachePath:           cachePath,
+		CacheCapacity:       defaultCacheCapacity,
+	})
 }
 
 // NewWithCacheAndCapacity is like NewWithCache but allows explicit control over
 // the S3-FIFO cache capacity (number of entries). Use 0 to disable the S3-FIFO
 // layer and fall back to an unbounded in-memory cache (for testing only).
-func NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string, cacheCapacity int) *Anonymizer {
-	if ollamaMaxConcurrent < 1 {
-		ollamaMaxConcurrent = 1
+func NewWithCacheAndCapacity(opts Options) *Anonymizer {
+	if opts.OllamaMaxConcurrent < 1 {
+		opts.OllamaMaxConcurrent = 1
 	}
 
 	var c PersistentCache
-	if cachePath != "" {
-		bbolt, err := newBboltCache(cachePath)
+	if opts.CachePath != "" {
+		bbolt, err := newBboltCache(opts.CachePath)
 		if err != nil {
-			log.Printf("[ANONYMIZER] failed to open persistent cache at %q, falling back to memory: %v", cachePath, err)
+			log.Printf("[ANONYMIZER] failed to open persistent cache at %q, falling back to memory: %v", opts.CachePath, err)
 			c = newMemoryCache()
-		} else if cacheCapacity > 0 {
-			c = newS3FIFOCache(bbolt, cacheCapacity)
+		} else if opts.CacheCapacity > 0 {
+			c = newS3FIFOCache(bbolt, opts.CacheCapacity)
 		} else {
 			c = bbolt
 		}
@@ -135,15 +156,15 @@ func NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel string, useAI bool, aiT
 	}
 
 	a := &Anonymizer{
-		ollamaURL:   ollamaEndpoint + "/api/generate",
-		ollamaModel: ollamaModel,
-		useAI:       useAI,
-		aiThreshold: aiThreshold,
-		m:           m,
+		ollamaURL:   opts.OllamaEndpoint + "/api/generate",
+		ollamaModel: opts.OllamaModel,
+		useAI:       opts.UseAI,
+		aiThreshold: opts.AIThreshold,
+		m:           opts.Metrics,
 		verbose:     true, // default to verbose for production
 		cache:       c,
 		inflight:    make(map[string]bool),
-		ollamaSem:   make(chan struct{}, ollamaMaxConcurrent),
+		ollamaSem:   make(chan struct{}, opts.OllamaMaxConcurrent),
 		sessions:    make(map[string]map[string]string),
 	}
 	a.compilePatterns()
