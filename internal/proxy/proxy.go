@@ -280,8 +280,8 @@ func (s *Server) serveMITMRequest(rw http.ResponseWriter, req *http.Request, ctx
 	isAuth := s.isAuthRequest(ctx.domain, req.URL.Path)
 	s.recordMITMMetrics(isAuth)
 
-	sessionID := s.processMITMRequestBody(rw, req, ctx, isAuth)
-	if sessionID == "" && !isAuth {
+	sessionID, ok := s.processMITMRequestBody(rw, req, ctx, isAuth)
+	if !ok {
 		return // error already sent to client
 	}
 	if sessionID != "" {
@@ -305,23 +305,24 @@ func (s *Server) recordMITMMetrics(isAuth bool) {
 }
 
 // processMITMRequestBody anonymizes the request body for non-auth requests.
-// Returns the session ID, or empty string on error (error response already sent).
-func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) string {
+// Returns (sessionID, true) on success, ("", true) for auth pass-through,
+// or ("", false) on error (error response already sent to client).
+func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) (string, bool) {
 	if isAuth {
 		log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", ctx.remoteHash, req.Method, ctx.domain, req.URL.Path)
-		return ""
+		return "", true
 	}
 
 	sessionID, err := s.anonymizeRequestBody(req)
 	if err != nil {
 		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
 		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
-		return ""
+		return "", false
 	}
 
 	log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
 		ctx.remoteHash, req.Method, ctx.domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
-	return sessionID
+	return sessionID, true
 }
 
 // forwardMITMRequest forwards the request upstream and writes the response.
