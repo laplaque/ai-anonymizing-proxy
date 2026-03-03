@@ -310,16 +310,6 @@ func validateZIPContext(match, text string, start int) bool {
 		}
 	}
 
-	// Check if it follows a state abbreviation (common in addresses)
-	if start >= 3 {
-		before := text[start-3 : start]
-		// Pattern: ", XX " where XX is state abbreviation
-		if len(before) >= 3 && (before[len(before)-1] == ' ' || before[len(before)-1] == ',') {
-			// This is a heuristic; actual addresses often have "State ZIP" format
-			return true
-		}
-	}
-
 	// Default: reject ambiguous 5-digit numbers without clear postal context
 	return false
 }
