@@ -281,18 +281,27 @@ func (a *Anonymizer) tokenForMatch(p pattern, match string) string {
 
 	// Low-confidence path: check persistent per-value cache.
 	if cached, hit := a.cache.Get(match); hit {
-		if a.m != nil {
-			a.m.RecordCacheHit(string(p.piiType))
-		}
-		return cached
+		return a.handleCacheHit(p.piiType, cached)
 	}
 
-	// Cache miss: apply fallback token immediately so PII is never unmasked,
-	// then dispatch Ollama async to warm the cache.
-	token := a.replacement(p.piiType, match)
-	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s", p.piiType)
+	return a.handleCacheMiss(p.piiType, match)
+}
+
+// handleCacheHit records metrics and returns the cached token.
+func (a *Anonymizer) handleCacheHit(piiType PIIType, cached string) string {
 	if a.m != nil {
-		a.m.RecordCacheMiss(string(p.piiType))
+		a.m.RecordCacheHit(string(piiType))
+	}
+	return cached
+}
+
+// handleCacheMiss generates a fallback token, logs the miss, records metrics,
+// and dispatches an async Ollama query to warm the cache.
+func (a *Anonymizer) handleCacheMiss(piiType PIIType, match string) string {
+	token := a.replacement(piiType, match)
+	log.Printf("[ANONYMIZER] low-confidence cache miss piiType=%s", piiType)
+	if a.m != nil {
+		a.m.RecordCacheMiss(string(piiType))
 		a.m.CacheFallbacks.Add(1)
 	}
 	a.dispatchOllamaAsync(match)

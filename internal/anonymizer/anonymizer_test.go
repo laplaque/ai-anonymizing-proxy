@@ -244,6 +244,65 @@ func TestLowConfidenceCacheHit(t *testing.T) {
 	}
 }
 
+// TestLowConfidenceCacheHitWithMetrics verifies that cache hit metrics are
+// recorded when the metrics collector is present.
+func TestLowConfidenceCacheHitWithMetrics(t *testing.T) {
+	m := metrics.New()
+
+	// First pass to discover the exact regex match.
+	discovery := New("http://localhost:11434", "test-model", false, 0.80, 1, nil)
+	input := "555-867-5309 is my number"
+	discovery.AnonymizeText(input, "discover")
+	discovery.sessionMu.RLock()
+	var matchedValue string
+	for _, orig := range discovery.sessions["discover"] {
+		matchedValue = orig
+		break
+	}
+	discovery.sessionMu.RUnlock()
+	if matchedValue == "" {
+		t.Fatal("discovery pass produced no session mappings")
+	}
+
+	// Now test cache hit with metrics.
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, m)
+	a.cache.Set(matchedValue, "[PII_cached01]")
+
+	a.AnonymizeText(input, "sess-metrics-hit")
+
+	snap := m.Snapshot()
+	totalHits := int64(0)
+	for _, v := range snap.PIITokens.CacheHits {
+		totalHits += v
+	}
+	if totalHits == 0 {
+		t.Error("expected CacheHits > 0 after cache hit with metrics")
+	}
+}
+
+// TestLowConfidenceCacheMissWithMetrics verifies that cache miss metrics are
+// recorded when the metrics collector is present.
+func TestLowConfidenceCacheMissWithMetrics(t *testing.T) {
+	m := metrics.New()
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, m)
+
+	// Phone has confidence 0.65, below the 0.80 threshold — triggers cache miss.
+	input := "555-867-5309 is my number"
+	a.AnonymizeText(input, "sess-metrics-miss")
+
+	snap := m.Snapshot()
+	totalMisses := int64(0)
+	for _, v := range snap.PIITokens.CacheMisses {
+		totalMisses += v
+	}
+	if totalMisses == 0 {
+		t.Error("expected CacheMisses > 0 after cache miss with metrics")
+	}
+	if snap.PIITokens.CacheFallbacks == 0 {
+		t.Error("expected CacheFallbacks > 0 after cache miss with metrics")
+	}
+}
+
 // TestOllamaCacheKeyedByValue verifies that the same PII value appearing in
 // two different messages produces the same token — proving the cache is keyed
 // by value, not by surrounding text. Uses useAI=false (high-confidence email)
