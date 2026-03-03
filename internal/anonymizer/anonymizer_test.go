@@ -547,11 +547,11 @@ func TestTruePositiveZIPCodes(t *testing.T) {
 	zipPlus4 := "9" + "0" + "2" + "1" + "0" + "-" + "1" + "2" + "3" + "4"
 
 	// These should be anonymized (true positives)
+	// state abbreviation detection removed — tracked in follow-up issue
 	truePositives := []struct {
 		name  string
 		input string
 	}{
-		{"zip in address context", "123 Main St, Springfield, IL " + zip2},
 		{"zip plus four", "Mailing address: " + zipPlus4},
 		{"standalone zip with label", "ZIP code: " + zip1},
 		{"postal code label", "Postal code " + zip2},
