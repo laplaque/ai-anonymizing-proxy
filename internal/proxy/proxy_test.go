@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -288,4 +289,126 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	n := copy(p, r.data[r.offset:end])
 	r.offset += n
 	return n, nil
+}
+
+// errorReader always returns an error on Read.
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("simulated read error")
+}
+
+func (errorReader) Close() error { return nil }
+
+// responseRecorder captures HTTP responses for testing.
+type responseRecorder struct {
+	code   int
+	body   bytes.Buffer
+	header http.Header
+}
+
+func newResponseRecorder() *responseRecorder {
+	return &responseRecorder{header: http.Header{}}
+}
+
+func (r *responseRecorder) Header() http.Header         { return r.header }
+func (r *responseRecorder) WriteHeader(code int)        { r.code = code }
+func (r *responseRecorder) Write(p []byte) (int, error) { return r.body.Write(p) }
+
+func TestProcessMITMRequestBody_AuthPassthrough(t *testing.T) {
+	// Set up a minimal server
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AuthDomains:    []string{},
+		AuthPaths:      []string{},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+	defer func() { _ = srv.Close() }()
+
+	// Create a request (body doesn't matter for auth passthrough)
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "https://api.example.com/v1/chat", strings.NewReader(`{"test": "data"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rw := newResponseRecorder()
+	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
+
+	// Call with isAuth=true
+	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, true)
+
+	if !ok {
+		t.Errorf("expected ok=true for auth passthrough, got false")
+	}
+	if sessionID != "" {
+		t.Errorf("expected empty sessionID for auth passthrough, got %q", sessionID)
+	}
+}
+
+func TestProcessMITMRequestBody_AnonymizationError(t *testing.T) {
+	// Set up a minimal server
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AuthDomains:    []string{},
+		AuthPaths:      []string{},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+	defer func() { _ = srv.Close() }()
+
+	// Create a request with an errorReader body to trigger read error
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "https://api.example.com/v1/chat", errorReader{})
+	req.ContentLength = 100 // non-zero to trigger body read
+
+	rw := newResponseRecorder()
+	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
+
+	// Call with isAuth=false to trigger anonymization
+	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, false)
+
+	if ok {
+		t.Errorf("expected ok=false for anonymization error, got true")
+	}
+	if sessionID != "" {
+		t.Errorf("expected empty sessionID on error, got %q", sessionID)
+	}
+	if rw.code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rw.code)
+	}
+}
+
+func TestProcessMITMRequestBody_SuccessfulAnonymization(t *testing.T) {
+	// Set up a minimal server
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AuthDomains:    []string{},
+		AuthPaths:      []string{},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+	defer func() { _ = srv.Close() }()
+
+	// Create a request with valid JSON body
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "https://api.example.com/v1/chat", strings.NewReader(`{"message": "hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{"message": "hello"}`))
+
+	rw := newResponseRecorder()
+	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
+
+	// Call with isAuth=false to trigger anonymization
+	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, false)
+
+	if !ok {
+		t.Errorf("expected ok=true for successful anonymization, got false")
+	}
+	if sessionID == "" {
+		t.Errorf("expected non-empty sessionID for successful anonymization")
+	}
+	// Clean up the session
+	if sessionID != "" {
+		srv.anon.DeleteSession(sessionID)
+	}
 }
