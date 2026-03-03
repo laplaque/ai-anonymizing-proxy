@@ -71,6 +71,7 @@ type Anonymizer struct {
 	useAI       bool
 	aiThreshold float64
 	m           *metrics.Metrics // nil = no metrics collection
+	verbose     bool             // enables [DEANON] logging; defaults to true
 
 	cache PersistentCache // cross-session Ollama value cache; keyed by original PII value
 
@@ -136,6 +137,7 @@ func NewWithCacheAndCapacity(ollamaEndpoint, ollamaModel string, useAI bool, aiT
 		useAI:       useAI,
 		aiThreshold: aiThreshold,
 		m:           m,
+		verbose:     true, // default to verbose for production
 		cache:       c,
 		inflight:    make(map[string]bool),
 		ollamaSem:   make(chan struct{}, ollamaMaxConcurrent),
@@ -156,6 +158,12 @@ func (a *Anonymizer) Close() error {
 // the special key "default" is used when no prefix matches.
 func (a *Anonymizer) SetPIIInstructions(instructions map[string]string) {
 	a.piiInstructions = instructions
+}
+
+// SetVerbose enables or disables [DEANON] logging. The default is true (verbose).
+// Set to false during benchmarks to avoid flooding stdout.
+func (a *Anonymizer) SetVerbose(v bool) {
+	a.verbose = v
 }
 
 func (a *Anonymizer) compilePatterns() {
@@ -573,7 +581,9 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 	}
 	a.sessionMu.RUnlock()
 
-	log.Printf("[DEANON] StreamingDeanonymize sessionID=%s tokens=%d", sessionID, len(tokenMap))
+	if a.verbose {
+		log.Printf("[DEANON] StreamingDeanonymize sessionID=%s tokens=%d", sessionID, len(tokenMap))
+	}
 	if len(tokenMap) == 0 {
 		return src
 	}
@@ -679,7 +689,7 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 
 				toReplace := accumulated[:flushUpTo]
 				replaced := replacer.Replace(toReplace)
-				if toReplace != replaced {
+				if toReplace != replaced && a.verbose {
 					log.Printf("[DEANON] text replaced: sessionID=%s tokens=%d", sessionID, len(tokenMap))
 				}
 
