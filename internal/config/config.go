@@ -10,6 +10,15 @@ import (
 	"strconv"
 )
 
+// piiInstructionPrefix is the common prefix for all PII instruction strings.
+const piiInstructionPrefix = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
+	" matching the pattern [PII_XXXXXXXX] (8 hex characters). "
+
+// piiInstructionDefault is the standard PII instruction used for models without a
+// specialized instruction (gpt, default, and other non-Claude models).
+const piiInstructionDefault = piiInstructionPrefix +
+	"Reproduce every such token verbatim in your response. Do not substitute them with example values."
+
 // Config holds the full proxy configuration.
 type Config struct {
 	ProxyPort           int     `json:"proxyPort"`
@@ -84,17 +93,12 @@ func defaults() *Config {
 			"/v1/auth", "/api/auth", "/api/login", "/api/token",
 		},
 		PIIInstructions: map[string]string{
-			"claude": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-				" matching the pattern [PII_XXXXXXXX] (8 hex characters). You MUST reproduce" +
-				" every such token EXACTLY as written in your response. Do NOT replace them with" +
+			"claude": piiInstructionPrefix +
+				"You MUST reproduce every such token EXACTLY as written in your response. Do NOT replace them with" +
 				" example values, email addresses, phone numbers, names, or any other substitutes." +
 				" Treat [PII_*] tokens as opaque identifiers that must pass through unchanged.",
-			"gpt": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-				" matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such" +
-				" token verbatim in your response. Do not substitute them with example values.",
-			"default": "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-				" matching the pattern [PII_XXXXXXXX] (8 hex characters). Reproduce every such" +
-				" token verbatim in your response. Do not substitute them with example values.",
+			"gpt":     piiInstructionDefault,
+			"default": piiInstructionDefault,
 		},
 	}
 }
