@@ -159,8 +159,8 @@ curl http://localhost:8081/metrics
   proxy is restarted. The cert cache is capped at 10 000 entries and is cleared in full when the
   limit is reached.
 - **Streaming responses use on-the-fly de-anonymization.** SSE / chunked responses are never
-  fully buffered; a sliding window approach replaces tokens as data flows through, with a 64-byte
-  overlap to prevent tokens from straddling chunk boundaries.
+  fully buffered; text is accumulated across consecutive `text_delta` events and flushed only
+  when a 26-byte suffix guard confirms no partial token straddles the boundary.
 - **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token
   auth. Without it, anyone with network access to port 8081 can add or remove domains.
 

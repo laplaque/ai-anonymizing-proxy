@@ -160,17 +160,31 @@ token like `[PII_EMAIL_c160f8cc]` frequently arrives split across multiple event
 {"type":"text_delta","text":"IL_c160f8cc]"}
 ```
 
-Raw byte replacement cannot match tokens split this way. `StreamingDeanonymize` handles this by:
+Raw byte replacement cannot match tokens split this way. `StreamingDeanonymize` delegates to a
+pipeline of small helper functions (in `streaming.go`) that each handle one concern:
 
-1. Buffering incoming bytes line by line.
-2. Parsing each `data: {...}` SSE line as JSON.
-3. Accumulating text content across consecutive `content_block_delta` / `text_delta` **and**
-   `thinking_delta` events.
-4. Flushing only the prefix that cannot be the start of a pending token. A `tokenSuffixLen` of
-   26 bytes is retained in the accumulator — enough to cover the longest possible token
+1. **Line assembly** (`readLoop` → `assembleLines`) — reads raw bytes from the source, splits
+   on newlines, strips `\r`, and dispatches complete lines.
+2. **Line classification** (`processLine`) — routes each SSE line: comments and empty lines
+   pass through verbatim; non-`data:` lines go through the replacer; `data:` lines are parsed
+   as JSON.
+3. **Text accumulation** (`processTextDelta`) — accumulates text across consecutive
+   `content_block_delta` / `text_delta` **and** `thinking_delta` events, tracks the content
+   block index, and flushes safe prefixes.
+4. **Safe flush boundary** (`safeCutPoint`) — calculates how many accumulated bytes can be
+   flushed without splitting a partial token. A `tokenSuffixLen` of 26 bytes is retained in
+   the accumulator — enough to cover the longest possible token
    (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars).
-5. Applying the replacer to **all** passthrough paths (non-JSON lines, non-delta events, etc.)
-   so tokens embedded anywhere in the SSE stream are deanonymized.
+5. **Remainder flush** (`flushRemainder`) — when a non-text-delta event arrives or the stream
+   ends, any text still in the accumulator is emitted as a synthetic `content_block_delta`
+   targeting the correct content block index.
+6. **Stream end** (`handleStreamEnd`) — flushes partial lines and accumulated text at EOF or on
+   read error.
+
+A `streamContext` struct holds the shared mutable state for a single invocation: the pipe
+writer, replacer, text accumulator, last-seen content block index, and logging configuration.
+The replacer is applied on **all** passthrough paths (non-JSON lines, non-delta events, etc.)
+so tokens embedded anywhere in the SSE stream are deanonymized.
 
 ---
 

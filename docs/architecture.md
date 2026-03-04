@@ -219,12 +219,29 @@ Each request gets a random `sessionID`. The token→original map is stored in
 For SSE (`Content-Type: text/event-stream`), `StreamingDeanonymize` wraps the response body in a
 pipe-based reader. Because the Anthropic API delivers one or two characters per `text_delta`
 event, a single token like `[PII_EMAIL_c160f8cc]` frequently arrives split across multiple
-events. The reader therefore accumulates text across consecutive `content_block_delta` /
-`text_delta` and `thinking_delta` events, flushing only the prefix that cannot be the start of
-a pending token. A `tokenSuffixLen` of 26 bytes is retained in the accumulator — enough to
-cover the longest possible token (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars). Non-delta events
-(ping, message_start, etc.) also pass through the replacer so tokens embedded in any part of
-the SSE stream are deanonymized.
+events.
+
+The streaming logic is decomposed into small, independently testable helpers in
+`internal/anonymizer/streaming.go`:
+
+| Helper | Responsibility |
+|---|---|
+| `readLoop` | Top-level goroutine: reads chunks from the source and dispatches complete lines |
+| `assembleLines` | Splits raw bytes on newlines, strips `\r`, dispatches to `processLine` |
+| `processLine` | Classifies each SSE line (comment, non-data, JSON data) and routes accordingly |
+| `processTextDelta` | Accumulates text across `text_delta` / `thinking_delta` events, flushes safe prefixes |
+| `safeCutPoint` | Calculates how many accumulated bytes can be flushed without splitting a partial token |
+| `flushRemainder` | Emits a synthetic `content_block_delta` carrying any text still in the accumulator |
+| `handleStreamEnd` | Flushes partial lines and accumulated text at EOF or on read error |
+
+A `streamContext` struct holds the mutable state shared across these helpers for a single
+streaming invocation, including the `lastIndex` field that tracks the most recently seen
+content block index so that flush events target the correct block (thinking vs. text).
+
+The 26-byte suffix guard (`tokenSuffixLen`) is retained in the accumulator — enough to cover
+the longest possible token (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars). Non-delta events (ping,
+message_start, etc.) also pass through the replacer so tokens embedded in any part of the SSE
+stream are deanonymized.
 
 ## SSRF protection
 
