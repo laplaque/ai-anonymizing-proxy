@@ -1,0 +1,210 @@
+package anonymizer
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log"
+	"strings"
+)
+
+// sseEnvelope is the minimal structure needed to identify text_delta events
+// in an Anthropic SSE stream.
+type sseEnvelope struct {
+	Type  string    `json:"type"`
+	Delta *sseDelta `json:"delta"`
+	Index int       `json:"index"`
+}
+
+type sseDelta struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// tokenSuffixLen is the number of bytes kept unflushed in the streaming
+// accumulator to guard against partial token splits. The longest possible
+// token is [PII_CREDITCARD_XXXXXXXX] at 25 bytes; 26 gives one byte margin.
+const tokenSuffixLen = 26
+
+// safeCutPoint returns the byte index up to which accumulated text can be
+// safely flushed without splitting a partial PII token. It scans backward
+// from the suffix guard boundary looking for an unmatched '['.
+// Returns 0 if all text should be held in the accumulator.
+func safeCutPoint(accumulated string) int {
+	if len(accumulated) <= tokenSuffixLen {
+		return 0
+	}
+
+	cutAt := len(accumulated) - tokenSuffixLen
+	for i := len(accumulated) - 1; i >= cutAt; i-- {
+		if accumulated[i] == '[' {
+			if !strings.ContainsRune(accumulated[i:], ']') {
+				cutAt = i
+			}
+			break
+		}
+	}
+	return cutAt
+}
+
+// streamContext holds the mutable state shared by the streaming helper
+// functions during a single StreamingDeanonymize invocation.
+type streamContext struct {
+	pw         *io.PipeWriter
+	replacer   *strings.Replacer
+	textAccum  strings.Builder
+	sessionID  string
+	verbose    bool
+	tokenCount int
+}
+
+// processTextDelta handles a text_delta or thinking_delta SSE event by
+// accumulating text and flushing safe prefixes with token replacement.
+func processTextDelta(ctx *streamContext, envelope *sseEnvelope) error {
+	ctx.textAccum.WriteString(envelope.Delta.Text)
+	accumulated := ctx.textAccum.String()
+
+	flushUpTo := safeCutPoint(accumulated)
+
+	toReplace := accumulated[:flushUpTo]
+	replaced := ctx.replacer.Replace(toReplace)
+	if toReplace != replaced && ctx.verbose {
+		log.Printf("[DEANON] text replaced: sessionID=%s tokens=%d", ctx.sessionID, ctx.tokenCount)
+	}
+
+	envelope.Delta.Text = replaced
+	newPayload, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+
+	ctx.pw.Write([]byte(sseDataPrefix)) //nolint:errcheck
+	ctx.pw.Write(newPayload)            //nolint:errcheck
+	ctx.pw.Write([]byte("\n"))          //nolint:errcheck
+
+	remaining := accumulated[flushUpTo:]
+	ctx.textAccum.Reset()
+	ctx.textAccum.WriteString(remaining)
+	return nil
+}
+
+// flushRemainder emits a synthetic content_block_delta carrying any text
+// still held in the accumulator, with token replacement applied.
+func flushRemainder(ctx *streamContext) {
+	if ctx.textAccum.Len() == 0 {
+		return
+	}
+	flushed := ctx.replacer.Replace(ctx.textAccum.String())
+	if flushed != "" {
+		synth := map[string]any{
+			"type":  "content_block_delta",
+			"index": 1,
+			"delta": map[string]string{"type": "text_delta", "text": flushed},
+		}
+		if b, err := json.Marshal(synth); err == nil {
+			ctx.pw.Write([]byte(sseDataPrefix)) //nolint:errcheck
+			ctx.pw.Write(b)                     //nolint:errcheck
+			ctx.pw.Write([]byte("\n\n"))        //nolint:errcheck
+		}
+	}
+	ctx.textAccum.Reset()
+}
+
+// processLine handles one complete SSE line (without trailing newline).
+// It dispatches text_delta events to processTextDelta, flushes accumulated
+// text on non-text-delta events, and passes through non-data lines.
+func processLine(ctx *streamContext, line []byte) {
+	if len(line) == 0 || line[0] == ':' {
+		ctx.pw.Write(line)         //nolint:errcheck
+		ctx.pw.Write([]byte("\n")) //nolint:errcheck
+		return
+	}
+
+	if !bytes.HasPrefix(line, []byte(sseDataPrefix)) {
+		ctx.pw.Write([]byte(ctx.replacer.Replace(string(line)))) //nolint:errcheck
+		ctx.pw.Write([]byte("\n"))                               //nolint:errcheck
+		return
+	}
+
+	payload := line[len(sseDataPrefix):]
+
+	var envelope sseEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		ctx.pw.Write([]byte(sseDataPrefix))                          //nolint:errcheck
+		ctx.pw.Write([]byte(ctx.replacer.Replace(string(payload)))) //nolint:errcheck
+		ctx.pw.Write([]byte("\n"))                                  //nolint:errcheck
+		return
+	}
+
+	isDeltaText := envelope.Type == "content_block_delta" &&
+		envelope.Delta != nil &&
+		(envelope.Delta.Type == "text_delta" || envelope.Delta.Type == "thinking_delta")
+
+	if isDeltaText {
+		if err := processTextDelta(ctx, &envelope); err != nil {
+			ctx.pw.Write(line)         //nolint:errcheck
+			ctx.pw.Write([]byte("\n")) //nolint:errcheck
+			ctx.textAccum.Reset()
+		}
+		return
+	}
+
+	flushRemainder(ctx)
+	ctx.pw.Write([]byte(ctx.replacer.Replace(string(line)))) //nolint:errcheck
+	ctx.pw.Write([]byte("\n"))                               //nolint:errcheck
+}
+
+// assembleLines processes raw bytes from a read chunk, appending them to
+// lineBuf. Each time a newline is encountered the complete line (with \r
+// stripped) is dispatched to processLine and lineBuf is reset.
+func assembleLines(chunk []byte, lineBuf []byte, ctx *streamContext) []byte {
+	for _, b := range chunk {
+		if b == '\n' {
+			line := lineBuf
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			processLine(ctx, line)
+			lineBuf = lineBuf[:0]
+		} else {
+			lineBuf = append(lineBuf, b)
+		}
+	}
+	return lineBuf
+}
+
+// handleStreamEnd flushes any partial line and accumulated text when the
+// source reader returns an error (including io.EOF).
+func handleStreamEnd(lineBuf []byte, readErr error, ctx *streamContext) {
+	if len(lineBuf) > 0 {
+		ctx.pw.Write([]byte(ctx.replacer.Replace(string(lineBuf)))) //nolint:errcheck
+	}
+	flushRemainder(ctx)
+	if readErr != io.EOF {
+		log.Printf("[ANONYMIZER] StreamingDeanonymize read error: %v", readErr)
+		ctx.pw.CloseWithError(readErr) //nolint:errcheck
+	}
+}
+
+// readLoop reads from src, assembling complete lines and dispatching them
+// to processLine. At EOF it flushes any remaining partial line and
+// accumulated text via handleStreamEnd.
+func readLoop(src io.ReadCloser, ctx *streamContext) {
+	defer src.Close()    //nolint:errcheck
+	defer ctx.pw.Close() //nolint:errcheck
+
+	var lineBuf []byte
+	const chunkSize = 32 * 1024
+	buf := make([]byte, chunkSize)
+
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			lineBuf = assembleLines(buf[:n], lineBuf, ctx)
+		}
+		if readErr != nil {
+			handleStreamEnd(lineBuf, readErr, ctx)
+			return
+		}
+	}
+}
