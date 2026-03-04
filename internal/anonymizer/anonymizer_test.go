@@ -3,6 +3,9 @@ package anonymizer
 import (
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -521,5 +524,370 @@ func TestStreamingDeanonymizeChunkBoundary(t *testing.T) {
 	}
 	if string(got) != input {
 		t.Errorf("chunk-boundary round-trip failed\n  want: %q\n   got: %q", input, string(got))
+	}
+}
+
+// --- Coverage gap tests ---
+
+// TestAnonymizeTextEmpty verifies the early return for empty input.
+func TestAnonymizeTextEmpty(t *testing.T) {
+	a := newTestAnonymizer()
+	if got := a.AnonymizeText("", "s"); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// TestInjectPIIInstructionEmptyInstruction covers the empty-instruction guard.
+func TestInjectPIIInstructionEmptyInstruction(t *testing.T) {
+	a := newTestAnonymizer()
+	doc := map[string]any{"system": "original prompt"}
+	a.injectPIIInstruction(doc, "")
+	if doc["system"] != "original prompt" {
+		t.Errorf("empty instruction modified doc: %v", doc["system"])
+	}
+}
+
+// TestInjectPIIInstructionEmptySystemString covers the empty system string path.
+func TestInjectPIIInstructionEmptySystemString(t *testing.T) {
+	a := newTestAnonymizer()
+	doc := map[string]any{
+		"system":   "",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	a.injectPIIInstruction(doc, "injected")
+	if doc["system"] != "injected" {
+		t.Errorf("expected 'injected', got %v", doc["system"])
+	}
+}
+
+// TestInjectPIIInstructionOpenAIEmptyContent covers the OpenAI empty system content path.
+func TestInjectPIIInstructionOpenAIEmptyContent(t *testing.T) {
+	a := newTestAnonymizer()
+	doc := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "system", "content": ""},
+			map[string]any{"role": "user", "content": "hi"},
+		},
+	}
+	a.injectPIIInstruction(doc, "injected")
+	msgs := doc["messages"].([]any)
+	sysMsg := msgs[0].(map[string]any)
+	if sysMsg["content"] != "injected" {
+		t.Errorf("expected 'injected', got %v", sysMsg["content"])
+	}
+}
+
+// TestInjectPIIInstructionOpenAINoSystemMessage covers prepending a system message
+// when none exists in the messages array.
+func TestInjectPIIInstructionOpenAINoSystemMessage(t *testing.T) {
+	a := newTestAnonymizer()
+	doc := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	a.injectPIIInstruction(doc, "injected")
+	msgs := doc["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	first := msgs[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != "injected" {
+		t.Errorf("system message not prepended: %v", first)
+	}
+}
+
+// TestWalkValuePrimitiveTypes covers the default case in walkValue for
+// non-string/non-container JSON types (numbers, booleans, nil).
+func TestWalkValuePrimitiveTypes(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Email alice@example.com"}],"temperature":0.7,"stream":true,"max_tokens":100}`)
+	out := a.AnonymizeJSON(body, "sess-walk-prim")
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	// Verify primitive values survived unchanged.
+	if doc["temperature"] != 0.7 {
+		t.Errorf("temperature changed: %v", doc["temperature"])
+	}
+	if doc["stream"] != true {
+		t.Errorf("stream changed: %v", doc["stream"])
+	}
+	if doc["max_tokens"] != float64(100) {
+		t.Errorf("max_tokens changed: %v", doc["max_tokens"])
+	}
+}
+
+// TestNewWithCacheAndCapacityBboltS3FIFO covers the bbolt+S3FIFO cache path.
+func TestNewWithCacheAndCapacityBboltS3FIFO(t *testing.T) {
+	dir := t.TempDir()
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "test-model",
+		UseAI:               false,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+		CachePath:           dir + "/test.db",
+		CacheCapacity:       100,
+	})
+	defer a.Close() //nolint:errcheck
+
+	// Verify the cache works through the S3FIFO layer.
+	a.cache.Set("test@example.com", "[PII_EMAIL_test1234]")
+	tok, ok := a.cache.Get("test@example.com")
+	if !ok || tok != "[PII_EMAIL_test1234]" {
+		t.Errorf("S3FIFO cache round-trip failed: ok=%v tok=%q", ok, tok)
+	}
+	a.cache.Delete("test@example.com")
+	_, ok = a.cache.Get("test@example.com")
+	if ok {
+		t.Error("entry not deleted from S3FIFO cache")
+	}
+}
+
+// TestNewWithCacheAndCapacityBboltBare covers the bare bbolt path (capacity=0).
+func TestNewWithCacheAndCapacityBboltBare(t *testing.T) {
+	dir := t.TempDir()
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "test-model",
+		UseAI:               false,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+		CachePath:           dir + "/bare.db",
+		CacheCapacity:       0,
+	})
+	defer a.Close() //nolint:errcheck
+
+	a.cache.Set("val", "tok")
+	tok, ok := a.cache.Get("val")
+	if !ok || tok != "tok" {
+		t.Errorf("bare bbolt cache round-trip failed: ok=%v tok=%q", ok, tok)
+	}
+}
+
+// TestNewWithCacheAndCapacityInvalidPath covers the bbolt open error fallback.
+func TestNewWithCacheAndCapacityInvalidPath(t *testing.T) {
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "test-model",
+		UseAI:               false,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+		CachePath:           "/nonexistent/dir/cache.db",
+		CacheCapacity:       100,
+	})
+	// Should fall back to memory cache without panicking.
+	a.cache.Set("val", "tok")
+	tok, ok := a.cache.Get("val")
+	if !ok || tok != "tok" {
+		t.Errorf("memory fallback cache failed: ok=%v tok=%q", ok, tok)
+	}
+}
+
+// TestDispatchOllamaAsyncSemaphoreFull covers the semaphore-full default branch
+// by using a synchronous approach: we fill the semaphore, dispatch, then wait
+// for the inflight map to clear (proving the goroutine ran and returned via
+// the default path without acquiring the semaphore).
+func TestDispatchOllamaAsyncSemaphoreFull(t *testing.T) {
+	m := metrics.New()
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, m)
+
+	// Fill the semaphore so the goroutine cannot acquire it.
+	a.ollamaSem <- struct{}{}
+
+	a.dispatchOllamaAsync("test-value")
+
+	// Wait for inflight to clear — this means the goroutine has completed.
+	for range 10000 {
+		runtime.Gosched()
+		a.inflightMu.Lock()
+		done := !a.inflight["test-value"]
+		a.inflightMu.Unlock()
+		if done {
+			break
+		}
+	}
+
+	// Now drain semaphore (it was never consumed by the goroutine).
+	<-a.ollamaSem
+
+	errs := m.OllamaErrors.Load()
+	if errs == 0 {
+		t.Error("expected OllamaErrors > 0 when semaphore is full")
+	}
+}
+
+// TestDispatchOllamaAsyncInflightDedup covers the in-flight dedup guard.
+func TestDispatchOllamaAsyncInflightDedup(t *testing.T) {
+	m := metrics.New()
+	a := New("http://localhost:11434", "test-model", true, 0.80, 1, m)
+
+	// Mark the value as in-flight manually so dispatch is deduplicated.
+	a.inflightMu.Lock()
+	a.inflight["same-value"] = true
+	a.inflightMu.Unlock()
+
+	before := m.OllamaDispatches.Load()
+	a.dispatchOllamaAsync("same-value")
+	after := m.OllamaDispatches.Load()
+
+	// Clean up.
+	a.inflightMu.Lock()
+	delete(a.inflight, "same-value")
+	a.inflightMu.Unlock()
+
+	if after != before {
+		t.Errorf("expected dedup: dispatches went from %d to %d", before, after)
+	}
+}
+
+// TestRecordMappingEmptySessionID covers the empty-sessionID guard.
+func TestRecordMappingEmptySessionID(t *testing.T) {
+	a := newTestAnonymizer()
+	// Should be a no-op, not panic.
+	a.recordMapping("", "[PII_EMAIL_test]", "test@example.com")
+	a.sessionMu.RLock()
+	if len(a.sessions) != 0 {
+		t.Error("empty sessionID should not create session entry")
+	}
+	a.sessionMu.RUnlock()
+}
+
+// TestAnonymizeJSONInvalidJSON covers the non-JSON fallback in AnonymizeJSON.
+func TestAnonymizeJSONInvalidJSON(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`not json at all, email alice@example.com`)
+	out := a.AnonymizeJSON(body, "sess-bad-json")
+	if strings.Contains(string(out), "alice@example.com") {
+		t.Errorf("PII not anonymized in plain-text fallback: %s", out)
+	}
+}
+
+// TestDeanonymizeTextEmptyText covers the empty-text guard in DeanonymizeText.
+func TestDeanonymizeTextEmptyText(t *testing.T) {
+	a := newTestAnonymizer()
+	if got := a.DeanonymizeText("", "some-session"); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// TestQueryOllamaHTTPSuccess covers the happy path of queryOllamaHTTP.
+func TestQueryOllamaHTTPSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"response":"[{\"original\":\"alice@example.com\",\"type\":\"email\",\"confidence\":0.95}]"}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      srv.URL,
+		OllamaModel:         "test",
+		UseAI:               true,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+	})
+	// Fix the URL — New appends "/api/generate" but httptest handles all paths.
+	a.ollamaURL = srv.URL
+
+	detections, err := a.queryOllamaHTTP("contact alice@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(detections) != 1 {
+		t.Fatalf("expected 1 detection, got %d", len(detections))
+	}
+	if detections[0].Original != "alice@example.com" {
+		t.Errorf("unexpected original: %q", detections[0].Original)
+	}
+}
+
+// TestQueryOllamaHTTPBadJSON covers the response parse error path.
+func TestQueryOllamaHTTPBadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`not json`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      srv.URL,
+		OllamaModel:         "test",
+		UseAI:               true,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+	})
+	a.ollamaURL = srv.URL
+
+	_, err := a.queryOllamaHTTP("test")
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+// TestQueryOllamaHTTPNoArray covers the "no JSON array" error path.
+func TestQueryOllamaHTTPNoArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"response":"I found no PII in this text."}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      srv.URL,
+		OllamaModel:         "test",
+		UseAI:               true,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+	})
+	a.ollamaURL = srv.URL
+
+	_, err := a.queryOllamaHTTP("test")
+	if err == nil || !strings.Contains(err.Error(), "no JSON array") {
+		t.Fatalf("expected 'no JSON array' error, got: %v", err)
+	}
+}
+
+// TestQueryOllamaHTTPBadArrayJSON covers the detection parse error path.
+func TestQueryOllamaHTTPBadArrayJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := `{"response":"[{bad json}]"}`
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      srv.URL,
+		OllamaModel:         "test",
+		UseAI:               true,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+	})
+	a.ollamaURL = srv.URL
+
+	_, err := a.queryOllamaHTTP("test")
+	if err == nil || !strings.Contains(err.Error(), "detection parse error") {
+		t.Fatalf("expected 'detection parse error', got: %v", err)
+	}
+}
+
+// TestQueryOllamaHTTPConnectionRefused covers the HTTP Do error path.
+func TestQueryOllamaHTTPConnectionRefused(t *testing.T) {
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://127.0.0.1:1",
+		OllamaModel:         "test",
+		UseAI:               true,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+	})
+	a.ollamaURL = "http://127.0.0.1:1"
+
+	_, err := a.queryOllamaHTTP("test")
+	if err == nil {
+		t.Fatal("expected connection error")
 	}
 }

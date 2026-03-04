@@ -491,11 +491,53 @@ func TestFlushRemainderUsesLastIndex(t *testing.T) {
 	}
 }
 
-// TestStreamingDeanonymizeEmptySession verifies behaviour when the session
+// TestStreamingDeanonymizeEmptySession verifies behavior when the session
 // has no tokens — output should pass through unchanged.
 func TestStreamingDeanonymizeEmptySession(t *testing.T) {
 	got := readStreamResult(t, makeSSETextDelta(strings.Repeat("z", tokenSuffixLen+5)+"plain text")+"\n", map[string]string{})
 	if !strings.Contains(got, "plain text") {
 		t.Errorf("plain text not in output:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeThreeChunkSplit verifies that a token whose bytes
+// span three separate text_delta events is correctly reassembled and replaced.
+func TestStreamingDeanonymizeThreeChunkSplit(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// Split token into three parts: first byte, middle, last byte.
+	part1 := token[:1]
+	part2 := token[1 : len(token)-1]
+	part3 := token[len(token)-1:]
+
+	prefix := strings.Repeat("x", tokenSuffixLen+10)
+	sseInput := makeSSETextDelta(prefix+part1) +
+		makeSSETextDelta(part2) +
+		makeSSETextDelta(part3+" tail") + "\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("three-chunk split: token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("three-chunk split: unreplaced token:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeTokenMapMiss verifies that an unknown token (not in
+// the session map) passes through the stream unchanged.
+func TestStreamingDeanonymizeTokenMapMiss(t *testing.T) {
+	knownToken := "[PII_EMAIL_c160f8cc]"
+	unknownToken := "[PII_PHONE_ffffffff]"
+	tokenMap := map[string]string{knownToken: "alice@example.com"}
+
+	prefix := strings.Repeat("u", tokenSuffixLen+10)
+	sseInput := makeSSETextDelta(prefix+unknownToken+" end") + "\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, unknownToken) {
+		t.Errorf("unknown token should pass through unchanged:\n%s", got)
 	}
 }
