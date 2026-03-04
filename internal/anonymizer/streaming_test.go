@@ -2,6 +2,7 @@ package anonymizer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -192,12 +193,18 @@ func TestStreamingDeanonymizeDoneTerminator(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	prefix := strings.Repeat("a", tokenSuffixLen+5)
-	sseInput := makeSSETextDelta(prefix+original) +
+	sseInput := makeSSETextDelta(prefix+token) +
 		"data: [DONE]\n\n"
 
 	got := readStreamResult(t, sseInput, tokenMap)
 	if !strings.Contains(got, "data: [DONE]") {
 		t.Errorf("[DONE] terminator not passed through:\n%s", got)
+	}
+	if !strings.Contains(got, original) {
+		t.Errorf("token not replaced before [DONE]:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("unreplaced token in output:\n%s", got)
 	}
 }
 
@@ -263,5 +270,232 @@ func TestStreamingDeanonymizeMultipleTokensInOneDelta(t *testing.T) {
 	}
 	if strings.Contains(got, token1) || strings.Contains(got, token2) {
 		t.Errorf("unreplaced tokens in output:\n%s", got)
+	}
+}
+
+// --- Coverage gap tests ---
+
+// TestSessionTokenCount covers the 0%-covered SessionTokenCount method.
+func TestSessionTokenCount(t *testing.T) {
+	a := newTestAnonymizer()
+
+	// Empty sessionID returns 0.
+	if n := a.SessionTokenCount(""); n != 0 {
+		t.Errorf("empty sessionID: got %d, want 0", n)
+	}
+	// Unknown sessionID returns 0.
+	if n := a.SessionTokenCount("unknown"); n != 0 {
+		t.Errorf("unknown sessionID: got %d, want 0", n)
+	}
+	// Inject tokens and verify count.
+	a.sessionMu.Lock()
+	a.sessions["s1"] = map[string]string{"[PII_EMAIL_aaa]": "a@b.com", "[PII_PHONE_bbb]": "555-1234"}
+	a.sessionMu.Unlock()
+	if n := a.SessionTokenCount("s1"); n != 2 {
+		t.Errorf("s1: got %d, want 2", n)
+	}
+}
+
+// TestSetPIIInstructions covers the 0%-covered setter.
+func TestSetPIIInstructions(t *testing.T) {
+	a := newTestAnonymizer()
+	custom := map[string]string{
+		"claude": "Custom Claude instruction",
+		"gpt":    "Custom GPT instruction",
+	}
+	a.SetPIIInstructions(custom)
+
+	// Prefix match should return the custom instruction.
+	got := a.resolvePIIInstruction("claude-3-opus")
+	if got != "Custom Claude instruction" {
+		t.Errorf("prefix match failed: got %q", got)
+	}
+}
+
+// TestResolvePIIInstructionFallbacks covers the untested branches of
+// resolvePIIInstruction: default key fallback and hardcoded fallback.
+func TestResolvePIIInstructionFallbacks(t *testing.T) {
+	a := newTestAnonymizer()
+
+	// No piiInstructions set → hardcoded default.
+	got := a.resolvePIIInstruction("some-model")
+	if got != defaultPIIInstruction {
+		t.Errorf("expected hardcoded default, got %q", got)
+	}
+
+	// With "default" key, no prefix match → default key wins.
+	a.SetPIIInstructions(map[string]string{"default": "fallback instruction"})
+	got = a.resolvePIIInstruction("unknown-model")
+	if got != "fallback instruction" {
+		t.Errorf("expected fallback instruction, got %q", got)
+	}
+
+	// Empty map → hardcoded default again.
+	a.SetPIIInstructions(map[string]string{})
+	got = a.resolvePIIInstruction("any")
+	if got != defaultPIIInstruction {
+		t.Errorf("expected hardcoded default with empty map, got %q", got)
+	}
+}
+
+// TestDeleteSessionEmptyID covers the empty-sessionID guard in DeleteSession.
+func TestDeleteSessionEmptyID(t *testing.T) {
+	a := newTestAnonymizer()
+	// Inject a session to confirm it's not accidentally deleted.
+	a.sessionMu.Lock()
+	a.sessions["keep"] = map[string]string{"tok": "val"}
+	a.sessionMu.Unlock()
+
+	a.DeleteSession("") // should be a no-op
+
+	a.sessionMu.RLock()
+	if _, ok := a.sessions["keep"]; !ok {
+		t.Error("DeleteSession('') removed an unrelated session")
+	}
+	a.sessionMu.RUnlock()
+}
+
+// TestProcessLineSSEComment covers the SSE comment passthrough in processLine.
+func TestProcessLineSSEComment(t *testing.T) {
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "alice@example.com"}
+	sseInput := ": this is an SSE comment\n" +
+		makeSSETextDelta(strings.Repeat("x", tokenSuffixLen+5)+"hello") + "\n"
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, ": this is an SSE comment") {
+		t.Errorf("SSE comment not passed through:\n%s", got)
+	}
+}
+
+// TestProcessLineNonDataLine covers the non-"data:" line path (e.g. "event:" lines).
+func TestProcessLineNonDataLine(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	sseInput := "event: content_block_delta\n" +
+		makeSSETextDelta(strings.Repeat("n", tokenSuffixLen+5)+token+" end") + "\n"
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, "event: content_block_delta") {
+		t.Errorf("event line not passed through:\n%s", got)
+	}
+}
+
+// TestProcessLineInvalidJSON covers the JSON parse error fallback in processLine.
+func TestProcessLineInvalidJSON(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	sseInput := "data: {not valid json " + token + "}\n\n"
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("token in malformed JSON not replaced:\n%s", got)
+	}
+}
+
+// errorReader returns an error after delivering n bytes.
+type errorReader struct {
+	data []byte
+	pos  int
+	err  error
+}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	if r.pos >= len(r.data) {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func (r *errorReader) Close() error { return nil }
+
+// TestHandleStreamEndNonEOFError covers the non-EOF error path in handleStreamEnd.
+func TestHandleStreamEndNonEOFError(t *testing.T) {
+	a := newTestAnonymizer()
+	a.SetVerbose(false)
+	sessionID := "err-session"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{}
+	a.sessionMu.Unlock()
+
+	errFail := errors.New("connection reset")
+	src := &errorReader{
+		data: []byte(makeSSETextDelta("hello world")),
+		err:  errFail,
+	}
+
+	rc := a.StreamingDeanonymize(src, sessionID)
+	_, err := io.ReadAll(rc)
+	if err == nil {
+		t.Fatal("expected error from non-EOF read failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("expected 'connection reset' error, got: %v", err)
+	}
+}
+
+// TestStreamingDeanonymizeVerboseLogging covers the verbose logging path in
+// processTextDelta when a token replacement actually occurs.
+func TestStreamingDeanonymizeVerboseLogging(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true) // enable verbose path
+	sessionID := "verbose-session"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = tokenMap
+	a.sessionMu.Unlock()
+
+	prefix := strings.Repeat("v", tokenSuffixLen+10)
+	sseInput := makeSSETextDelta(prefix+token+" end") + "\n"
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID)
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading streaming output: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("verbose path: token not replaced:\n%s", string(got))
+	}
+}
+
+// TestFlushRemainderUsesLastIndex verifies that flushRemainder emits the
+// content block index from the last-seen text_delta, not a hardcoded value.
+func TestFlushRemainderUsesLastIndex(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// Build a thinking_delta at index 0 — the flush should use index 0.
+	env := sseEnvelope{
+		Type:  "content_block_delta",
+		Index: 3,
+		Delta: &sseDelta{Type: "text_delta", Text: "Hello " + token},
+	}
+	b, _ := json.Marshal(env)
+	sseInput := "data: " + string(b) + "\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	// The synthetic flush event should carry "index":3.
+	if !strings.Contains(got, `"index":3`) {
+		t.Errorf("flush did not use lastIndex=3:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeEmptySession verifies behaviour when the session
+// has no tokens — output should pass through unchanged.
+func TestStreamingDeanonymizeEmptySession(t *testing.T) {
+	got := readStreamResult(t, makeSSETextDelta(strings.Repeat("z", tokenSuffixLen+5)+"plain text")+"\n", map[string]string{})
+	if !strings.Contains(got, "plain text") {
+		t.Errorf("plain text not in output:\n%s", got)
 	}
 }

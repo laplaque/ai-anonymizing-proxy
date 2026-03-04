@@ -53,6 +53,7 @@ type streamContext struct {
 	pw         *io.PipeWriter
 	replacer   *strings.Replacer
 	textAccum  strings.Builder
+	lastIndex  int // content block index from the most recent text_delta
 	sessionID  string
 	verbose    bool
 	tokenCount int
@@ -61,6 +62,7 @@ type streamContext struct {
 // processTextDelta handles a text_delta or thinking_delta SSE event by
 // accumulating text and flushing safe prefixes with token replacement.
 func processTextDelta(ctx *streamContext, envelope *sseEnvelope) error {
+	ctx.lastIndex = envelope.Index
 	ctx.textAccum.WriteString(envelope.Delta.Text)
 	accumulated := ctx.textAccum.String()
 
@@ -96,9 +98,11 @@ func flushRemainder(ctx *streamContext) {
 	}
 	flushed := ctx.replacer.Replace(ctx.textAccum.String())
 	if flushed != "" {
+		// Use the last-seen content block index so that thinking (index 0)
+		// and text (index 1) blocks flush to their correct position.
 		synth := map[string]any{
 			"type":  "content_block_delta",
-			"index": 1,
+			"index": ctx.lastIndex,
 			"delta": map[string]string{"type": "text_delta", "text": flushed},
 		}
 		if b, err := json.Marshal(synth); err == nil {
