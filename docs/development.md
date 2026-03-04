@@ -129,7 +129,12 @@ ai-proxy/
 ├── internal/
 │   ├── anonymizer/
 │   │   ├── anonymizer.go          # Two-stage PII detection (regex + Ollama) and de-anonymization
-│   │   └── anonymizer_test.go
+│   │   ├── anonymizer_test.go
+│   │   ├── streaming.go           # Streaming SSE deanonymization helpers (decomposed pipeline)
+│   │   ├── streaming_test.go
+│   │   ├── cache.go               # PersistentCache interface, memoryCache, bboltCache
+│   │   ├── s3fifo_cache.go        # S3-FIFO in-memory eviction layer wrapping bboltCache
+│   │   └── s3fifo_cache_test.go
 │   ├── config/
 │   │   ├── config.go              # Config loading: defaults → proxy-config.json → env vars
 │   │   └── config_test.go
@@ -183,8 +188,10 @@ returned IPs against private/loopback/link-local CIDRs before completing the TCP
 closes the TOCTOU gap that exists when IP checks are done at request-parse time but the
 connection is established later.
 
-**Streaming de-anonymization.** SSE responses are never fully buffered. A pipe-based reader
-accumulates text across `text_delta` and `thinking_delta` events and flushes only the prefix
-that cannot be the start of a pending token (`tokenSuffixLen` = 26 bytes), ensuring tokens
-cannot straddle a chunk boundary regardless of upstream framing. See
-[anonymizer.md](anonymizer.md) for the full strategy.
+**Streaming de-anonymization.** SSE responses are never fully buffered. The streaming pipeline
+in `streaming.go` is decomposed into small helpers (`readLoop`, `assembleLines`, `processLine`,
+`processTextDelta`, `safeCutPoint`, `flushRemainder`, `handleStreamEnd`) sharing a
+`streamContext` struct. Text is accumulated across `text_delta` and `thinking_delta` events and
+flushed only when a 26-byte suffix guard (`tokenSuffixLen`) confirms no partial token straddles
+the boundary. The context tracks the last-seen content block index so flush events target the
+correct block. See [anonymizer.md](anonymizer.md) for the full strategy.
