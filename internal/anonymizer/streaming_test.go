@@ -230,7 +230,7 @@ func TestStreamingDeanonymizeCRLFLineEndings(t *testing.T) {
 
 	prefix := strings.Repeat("c", tokenSuffixLen+10)
 	// Build SSE with \r\n line endings.
-	sseInput := makeSSETextDelta(prefix+token+" end")
+	sseInput := makeSSETextDelta(prefix + token + " end")
 	sseInput = strings.ReplaceAll(sseInput, "\n", "\r\n") + "\r\n"
 
 	got := readStreamResult(t, sseInput, tokenMap)

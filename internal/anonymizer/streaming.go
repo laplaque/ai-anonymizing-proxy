@@ -130,7 +130,7 @@ func processLine(ctx *streamContext, line []byte) {
 
 	var envelope sseEnvelope
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		ctx.pw.Write([]byte(sseDataPrefix))                          //nolint:errcheck
+		ctx.pw.Write([]byte(sseDataPrefix))                         //nolint:errcheck
 		ctx.pw.Write([]byte(ctx.replacer.Replace(string(payload)))) //nolint:errcheck
 		ctx.pw.Write([]byte("\n"))                                  //nolint:errcheck
 		return
