@@ -48,6 +48,9 @@ ai-domains.json
 .env
 .env.local
 
+# MCP server config (written by docker entrypoint, contains token)
+.mcp.json
+
 # SonarQube
 sonar-project.properties
 coverage.out
