@@ -570,8 +570,14 @@ func TestInjectPIIInstructionOpenAIEmptyContent(t *testing.T) {
 		},
 	}
 	a.injectPIIInstruction(doc, "injected")
-	msgs := doc["messages"].([]any)
-	sysMsg := msgs[0].(map[string]any)
+	msgs, ok := doc["messages"].([]any)
+	if !ok {
+		t.Fatal("messages is not []any")
+	}
+	sysMsg, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatal("first message is not map[string]any")
+	}
 	if sysMsg["content"] != "injected" {
 		t.Errorf("expected 'injected', got %v", sysMsg["content"])
 	}
@@ -587,11 +593,17 @@ func TestInjectPIIInstructionOpenAINoSystemMessage(t *testing.T) {
 		},
 	}
 	a.injectPIIInstruction(doc, "injected")
-	msgs := doc["messages"].([]any)
+	msgs, ok := doc["messages"].([]any)
+	if !ok {
+		t.Fatal("messages is not []any")
+	}
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
-	first := msgs[0].(map[string]any)
+	first, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatal("first message is not map[string]any")
+	}
 	if first["role"] != "system" || first["content"] != "injected" {
 		t.Errorf("system message not prepended: %v", first)
 	}
@@ -776,7 +788,7 @@ func TestDeanonymizeTextEmptyText(t *testing.T) {
 
 // TestQueryOllamaHTTPSuccess covers the happy path of queryOllamaHTTP.
 func TestQueryOllamaHTTPSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"[{\"original\":\"alice@example.com\",\"type\":\"email\",\"confidence\":0.95}]"}`
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(resp)) //nolint:errcheck
@@ -807,7 +819,7 @@ func TestQueryOllamaHTTPSuccess(t *testing.T) {
 
 // TestQueryOllamaHTTPBadJSON covers the response parse error path.
 func TestQueryOllamaHTTPBadJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`not json`)) //nolint:errcheck
 	}))
 	defer srv.Close()
@@ -829,7 +841,7 @@ func TestQueryOllamaHTTPBadJSON(t *testing.T) {
 
 // TestQueryOllamaHTTPNoArray covers the "no JSON array" error path.
 func TestQueryOllamaHTTPNoArray(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"I found no PII in this text."}`
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(resp)) //nolint:errcheck
@@ -853,7 +865,7 @@ func TestQueryOllamaHTTPNoArray(t *testing.T) {
 
 // TestQueryOllamaHTTPBadArrayJSON covers the detection parse error path.
 func TestQueryOllamaHTTPBadArrayJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"[{bad json}]"}`
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(resp)) //nolint:errcheck
