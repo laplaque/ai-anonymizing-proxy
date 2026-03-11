@@ -1,4 +1,6 @@
 # AI Anonymizing Proxy
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Flaplaque%2Fai-anonymizing-proxy.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Flaplaque%2Fai-anonymizing-proxy?ref=badge_shield)
+
 
 Privacy-preserving infrastructure for AI-assisted development.
 
@@ -167,3 +169,6 @@ curl http://localhost:8081/metrics
 ## License
 
 MIT
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Flaplaque%2Fai-anonymizing-proxy.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Flaplaque%2Fai-anonymizing-proxy?ref=badge_large)
