@@ -67,6 +67,9 @@ func processTextDelta(ctx *streamContext, envelope *sseEnvelope) error {
 	accumulated := ctx.textAccum.String()
 
 	flushUpTo := safeCutPoint(accumulated)
+	if flushUpTo == 0 {
+		return nil
+	}
 
 	toReplace := accumulated[:flushUpTo]
 	replaced := ctx.replacer.Replace(toReplace)
