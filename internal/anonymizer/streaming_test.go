@@ -273,6 +273,46 @@ func TestStreamingDeanonymizeMultipleTokensInOneDelta(t *testing.T) {
 	}
 }
 
+// --- Issue #55: EOF flush when no tokens matched ---
+
+// TestStreamingDeanonymizeNoTokenMatchShortResponse reproduces issue #55:
+// when a session has tokens but the model response contains none of the
+// replacement placeholders and the total text is shorter than tokenSuffixLen,
+// the client must still receive the full response text.
+func TestStreamingDeanonymizeNoTokenMatchShortResponse(t *testing.T) {
+	// Session has a token, but the response text contains no placeholders.
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "[PII_EMAIL_357a20e8]"}
+
+	sseInput := makeSSETextDelta("Hello world") +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, "Hello world") {
+		t.Errorf("issue #55: short response without token match lost:\n%s", got)
+	}
+	if !strings.Contains(got, "message_stop") {
+		t.Errorf("issue #55: message_stop not forwarded:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeNoTokenMatchMultiDelta reproduces issue #55 with
+// multiple short text_delta events that individually and cumulatively stay
+// under tokenSuffixLen.
+func TestStreamingDeanonymizeNoTokenMatchMultiDelta(t *testing.T) {
+	tokenMap := map[string]string{"[PII_PHONE_deadbeef]": "555-0100"}
+
+	sseInput := makeSSETextDelta("Hi") +
+		makeSSETextDelta(" there") +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, "Hi") || !strings.Contains(got, "there") {
+		t.Errorf("issue #55: multi-delta short response lost:\n%s", got)
+	}
+}
+
 // --- Coverage gap tests ---
 
 // TestSessionTokenCount covers the 0%-covered SessionTokenCount method.
