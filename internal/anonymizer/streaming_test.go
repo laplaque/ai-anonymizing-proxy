@@ -46,6 +46,17 @@ func makeSSETextDelta(text string) string {
 	return "data: " + string(b) + "\n"
 }
 
+// makeSSEJsonDelta builds an SSE line for a content_block_delta input_json_delta event.
+func makeSSEJsonDelta(partialJSON string) string {
+	env := sseEnvelope{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: &sseDelta{Type: "input_json_delta", PartialJSON: partialJSON},
+	}
+	b, _ := json.Marshal(env)
+	return "data: " + string(b) + "\n"
+}
+
 // makeSSEThinkingDelta builds an SSE line for a thinking_delta event.
 func makeSSEThinkingDelta(text string) string {
 	env := sseEnvelope{
@@ -579,5 +590,90 @@ func TestStreamingDeanonymizeTokenMapMiss(t *testing.T) {
 	got := readStreamResult(t, sseInput, tokenMap)
 	if !strings.Contains(got, unknownToken) {
 		t.Errorf("unknown token should pass through unchanged:\n%s", got)
+	}
+}
+
+// --- Issue #58: input_json_delta deanonymization ---
+
+// TestStreamingDeanonymizeJsonDeltaTokenSplit verifies that a PII token split
+// across multiple input_json_delta fragments is reassembled and replaced.
+func TestStreamingDeanonymizeJsonDeltaTokenSplit(t *testing.T) {
+	token := "[PII_PHONE_d4bc1884]"
+	original := "555-0199"
+	tokenMap := map[string]string{token: original}
+
+	// Simulate Anthropic streaming the token across 4 fragments, with enough
+	// leading content to exceed the suffix guard.
+	prefix := strings.Repeat("x", tokenSuffixLen+10)
+	sseInput := makeSSEJsonDelta(prefix+"[PII_") +
+		makeSSEJsonDelta("PHONE") +
+		makeSSEJsonDelta("_d4bc") +
+		makeSSEJsonDelta("1884]") +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("issue #58: token in input_json_delta not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("issue #58: unreplaced token in output:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeJsonDeltaShortNoMatch verifies that short
+// input_json_delta content without tokens is flushed correctly at
+// content_block_stop (same pattern as #55 but for JSON deltas).
+func TestStreamingDeanonymizeJsonDeltaShortNoMatch(t *testing.T) {
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "[PII_EMAIL_357a20e8]"}
+
+	sseInput := makeSSEJsonDelta("{\"key\":") +
+		makeSSEJsonDelta("\"value\"}") +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, "value") {
+		t.Errorf("issue #58: short json delta content lost:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeJsonDeltaEOFFlush verifies that the JSON
+// accumulator is flushed at EOF when no content_block_stop follows.
+func TestStreamingDeanonymizeJsonDeltaEOFFlush(t *testing.T) {
+	token := "[PII_PHONE_d4bc1884]"
+	original := "555-0199"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("j", tokenSuffixLen+10)
+	sseInput := makeSSEJsonDelta(prefix + token)
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("issue #58: json accumulator not flushed at EOF:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeJsonAndTextInterleaved verifies that text_delta
+// and input_json_delta accumulators are independent and don't cross-contaminate.
+func TestStreamingDeanonymizeJsonAndTextInterleaved(t *testing.T) {
+	token1 := "[PII_EMAIL_c160f8cc]"
+	original1 := "[PII_EMAIL_357a20e8]"
+	token2 := "[PII_PHONE_d4bc1884]"
+	original2 := "555-0199"
+	tokenMap := map[string]string{token1: original1, token2: original2}
+
+	prefix := strings.Repeat("a", tokenSuffixLen+10)
+	sseInput := makeSSETextDelta(prefix+token1+" end") +
+		makeSSEJsonDelta(prefix+token2) +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original1) {
+		t.Errorf("text_delta token not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, original2) {
+		t.Errorf("input_json_delta token not replaced:\n%s", got)
 	}
 }
