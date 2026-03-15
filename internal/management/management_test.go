@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -141,7 +142,7 @@ func newTestServer(token string) (*Server, *DomainRegistry) {
 
 func TestStatus_OK(t *testing.T) {
 	srv, _ := newTestServer("")
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -159,7 +160,7 @@ func TestStatus_OK(t *testing.T) {
 
 func TestAuth_NoToken_PassThrough(t *testing.T) {
 	srv, _ := newTestServer("")
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -170,7 +171,7 @@ func TestAuth_NoToken_PassThrough(t *testing.T) {
 
 func TestAuth_ValidToken(t *testing.T) {
 	srv, _ := newTestServer("secret123")
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	req.Header.Set("Authorization", "Bearer secret123")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -182,7 +183,7 @@ func TestAuth_ValidToken(t *testing.T) {
 
 func TestAuth_InvalidToken(t *testing.T) {
 	srv, _ := newTestServer("secret123")
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -194,7 +195,7 @@ func TestAuth_InvalidToken(t *testing.T) {
 
 func TestAuth_MissingToken(t *testing.T) {
 	srv, _ := newTestServer("secret123")
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -206,7 +207,7 @@ func TestAuth_MissingToken(t *testing.T) {
 func TestAddDomain_OK(t *testing.T) {
 	srv, reg := newTestServer("")
 	body := `{"domain":"api.newai.example.com"}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/add", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -222,7 +223,7 @@ func TestAddDomain_OK(t *testing.T) {
 func TestAddDomain_CaseNormalized(t *testing.T) {
 	srv, reg := newTestServer("")
 	body := `{"domain":"API.OpenAI.COM"}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/add", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -238,7 +239,7 @@ func TestAddDomain_CaseNormalized(t *testing.T) {
 func TestAddDomain_InvalidDomain(t *testing.T) {
 	srv, _ := newTestServer("")
 	body := `{"domain":"not a valid domain!"}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/add", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -251,7 +252,7 @@ func TestAddDomain_InvalidDomain(t *testing.T) {
 func TestAddDomain_EmptyDomain(t *testing.T) {
 	srv, _ := newTestServer("")
 	body := `{"domain":""}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/add", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/add", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -263,7 +264,7 @@ func TestAddDomain_EmptyDomain(t *testing.T) {
 
 func TestAddDomain_WrongMethod(t *testing.T) {
 	srv, _ := newTestServer("")
-	req := httptest.NewRequest(http.MethodGet, "/domains/add", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/domains/add", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -275,7 +276,7 @@ func TestAddDomain_WrongMethod(t *testing.T) {
 func TestRemoveDomain_OK(t *testing.T) {
 	srv, reg := newTestServer("")
 	body := `{"domain":"api.openai.com"}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -291,7 +292,7 @@ func TestRemoveDomain_OK(t *testing.T) {
 func TestRemoveDomain_InvalidDomain(t *testing.T) {
 	srv, _ := newTestServer("")
 	body := `{"domain":"bad domain!"}`
-	req := httptest.NewRequest(http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
