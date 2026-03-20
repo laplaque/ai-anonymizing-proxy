@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="Pack-Based PII Detection Pipeline" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="350" y="20" width="340" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="3" value="Request Body" style="rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="440" y="80" width="140" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="4" value="Pack Loader&#xa;(init() self-registration)&#xa;&#xa;Reads packs.All()&#xa;Filters by enabled packs" style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="60" y="160" width="200" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="5" value="Enabled Packs&#xa;&#xa;GLOBAL (pos 1)&#xa;DE (pos 2)&#xa;SECRETS (pos 3)" style="rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="60" y="300" width="200" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="6" value="Regex Pass&#xa;&#xa;For each pattern in enabled packs:&#xa;match = pattern.Re.FindAllString(text)" style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="160" width="260" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="7" value="Validation Layer&#xa;&#xa;if pattern.Validate != nil:&#xa;  validate(match) ?&#xa;  fail = drop + WARN log&#xa;  pass = continue" style="rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="280" width="260" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="8" value="Likelihood Multiplier&#xa;&#xa;effectiveConfidence =&#xa;  base x (1.0 - (pos-1) x decayRate)&#xa;&#xa;Literals: no decay" style="rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="420" width="260" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="9" value="Match Resolution&#xa;&#xa;Highest effectiveConfidence wins&#xa;Equal = first pack in config order&#xa;Validation failure = disqualified" style="rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="560" width="260" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="10" value="Token Generation&#xa;&#xa;[PII_TYPE_16hex]&#xa;md5(original)[:16]" style="rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="680" width="260" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="11" value="Session Map&#xa;&#xa;sessionID to token to original&#xa;(in-memory only)" style="rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="740" y="680" width="200" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="12" value="Custom Patterns&#xa;(customPIIPatterns)&#xa;&#xa;Pack-scoped, user-defined&#xa;Literal or regex" style="rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="740" y="160" width="200" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="20" edge="1" source="3" target="6" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="21" edge="1" source="4" target="5" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="22" edge="1" source="5" target="6" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="23" edge="1" source="6" target="7" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="24" edge="1" source="7" target="8" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="25" edge="1" source="8" target="9" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="26" edge="1" source="9" target="10" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="27" edge="1" source="10" target="11" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="28" edge="1" source="12" target="6" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root>
+</mxGraphModel>
