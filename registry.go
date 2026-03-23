@@ -6,7 +6,10 @@
 // retrieve the full registry.
 package packs
 
-import "regexp"
+import (
+	"regexp"
+	"sync"
+)
 
 // Entry is a pattern registered by a pack.
 type Entry struct {
@@ -20,20 +23,29 @@ type Entry struct {
 	ReplaceGroup int               // 0 = replace full match; >0 = replace only that capture group
 }
 
-var registry []Entry
+var (
+	mu       sync.Mutex
+	registry []Entry
+)
 
 // Register adds entries to the global pack registry.
-// Called from each pack's init() function.
+// Called from each pack's init() function. Thread-safe.
 func Register(entries ...Entry) {
+	mu.Lock()
 	registry = append(registry, entries...)
+	mu.Unlock()
 }
 
-// All returns the full registry. Called by the pack loader in anonymizer.go.
+// All returns the full registry. Called by the pack loader in anonymizer.go. Thread-safe.
 func All() []Entry {
+	mu.Lock()
+	defer mu.Unlock()
 	return registry
 }
 
-// Reset clears the registry. Used only in tests.
+// Reset clears the registry. Used only in tests. Thread-safe.
 func Reset() {
+	mu.Lock()
 	registry = nil
+	mu.Unlock()
 }

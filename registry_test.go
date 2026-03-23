@@ -1,6 +1,9 @@
 package packs
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestRegisterAndAll(t *testing.T) {
 	saved := append([]Entry{}, All()...)
@@ -31,6 +34,29 @@ func TestResetClearsRegistry(t *testing.T) {
 	Reset()
 	if len(All()) != 0 {
 		t.Error("expected empty registry after Reset")
+	}
+}
+
+func TestRegistryConcurrentAccess(t *testing.T) {
+	saved := append([]Entry{}, All()...)
+	t.Cleanup(func() { Reset(); Register(saved...) })
+
+	Reset()
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			Register(Entry{Name: "concurrent", Pack: "TEST", PIIType: "X", Confidence: 0.5})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = All()
+		}()
+	}
+	wg.Wait()
+	if len(All()) != 100 {
+		t.Errorf("expected 100 entries, got %d", len(All()))
 	}
 }
 

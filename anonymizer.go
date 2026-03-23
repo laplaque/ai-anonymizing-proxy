@@ -263,8 +263,8 @@ func (a *Anonymizer) loadLegacyPatterns() {
 		{`\b(?:\d{3}-?\d{2}-?\d{4}|\d{9})\b`, "SSN", 0.85},
 		// Credit card: 16-digit block pattern
 		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, "CREDITCARD", 0.85},
-		// Street address: requires street-type suffix keyword
-		{`(?i)\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, "ADDRESS", 0.75},
+		// Street address: requires street-type suffix keyword, capped middle group
+		{`(?i)\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,4}\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, "ADDRESS", 0.75},
 		// IPv6: all RFC 5952 compressed and uncompressed forms.
 		{`(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}` +
 			`|(?:[0-9a-fA-F]{1,4}:){1,7}:` +

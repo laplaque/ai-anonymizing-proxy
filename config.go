@@ -252,6 +252,8 @@ func loadEnvInt(name string, dst *int) {
 	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			*dst = n
+		} else {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %d: %v", name, v, *dst, err)
 		}
 	}
 }
@@ -259,7 +261,12 @@ func loadEnvInt(name string, dst *int) {
 // loadEnvIntPositive sets *dst to the parsed integer if valid and > 0.
 func loadEnvIntPositive(name string, dst *int) {
 	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %d: %v", name, v, *dst, err)
+		} else if n <= 0 {
+			log.Printf("[CONFIG] Warning: %s %q must be > 0, using default %d", name, v, *dst)
+		} else {
 			*dst = n
 		}
 	}
@@ -270,6 +277,8 @@ func loadEnvFloat(name string, dst *float64) {
 	if v := os.Getenv(name); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			*dst = f
+		} else {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %f: %v", name, v, *dst, err)
 		}
 	}
 }
