@@ -485,9 +485,12 @@ func TestAnonymizeIPv6(t *testing.T) {
 func TestTokenFormatNonRetriggering(t *testing.T) {
 	a := newTestAnonymizer()
 	piiTypes := []PIIType{
-		PIIEmail, PIIPhone, PIISSN, PIICreditCard, PIIIPAddress,
-		PIIAPIKey, PIIName, PIIAddress, PIIMedical, PIISalary,
-		PIICompany, PIIJobTitle,
+		"EMAIL", "PHONE", "SSN", "CREDITCARD", "IPADDRESS",
+		"APIKEY", "NAME", "ADDRESS", "MEDICAL", "SALARY",
+		"COMPANY", "JOBTITLE",
+		// Pack types
+		"STEUERID", "SVNR", "KFZ", "SSHKEY", "JWT",
+		"BEARER", "DBCONN", "AWSKEY", "GHTOKEN",
 	}
 	for _, pt := range piiTypes {
 		token := a.replacement(pt, "test-value-for-"+string(pt))
