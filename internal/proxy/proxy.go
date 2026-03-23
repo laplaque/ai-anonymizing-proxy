@@ -149,7 +149,17 @@ func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metr
 	s := &Server{
 		cfg: cfg,
 		anon: func() *anonymizer.Anonymizer {
-			a := anonymizer.NewWithCache(cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection, cfg.AIConfidence, cfg.OllamaMaxConcurrent, m, cfg.OllamaCacheFile)
+			a := anonymizer.NewWithCacheAndCapacity(anonymizer.Options{
+				OllamaEndpoint:      cfg.OllamaEndpoint,
+				OllamaModel:         cfg.OllamaModel,
+				UseAI:               cfg.UseAIDetection,
+				AIThreshold:         cfg.AIConfidence,
+				OllamaMaxConcurrent: cfg.OllamaMaxConcurrent,
+				Metrics:             m,
+				CachePath:           cfg.OllamaCacheFile,
+				CacheCapacity:       anonymizer.DefaultCacheCapacity,
+				PackConfig:          cfg,
+			})
 			a.SetPIIInstructions(cfg.PIIInstructions)
 			return a
 		}(),
