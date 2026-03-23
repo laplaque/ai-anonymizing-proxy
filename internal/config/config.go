@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 )
 
 // piiInstructionPrefix is the common prefix for all PII instruction strings.
 const piiInstructionPrefix = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-	" matching the pattern [PII_XXXXXXXX] (8 hex characters). "
+	" matching the pattern [PII_TYPE_XXXXXXXXXXXXXXXX] (16 hex characters). "
 
 // piiInstructionDefault is the standard PII instruction used for models without a
 // specialized instruction (gpt, default, and other non-Claude models).
@@ -46,14 +48,108 @@ type Config struct {
 	// Lookup is prefix-based: "claude-sonnet-4-6" matches key "claude".
 	// The special key "default" is used when no prefix matches.
 	PIIInstructions map[string]string `json:"piiInstructions"`
+
+	// Pack-based PII detection configuration.
+	PackDecayRate     float64          `json:"packDecayRate"`
+	PatternPacks      []PatternPack    `json:"patternPacks"`
+	CustomPIIPatterns []CustomPIIPattern `json:"customPIIPatterns"`
+}
+
+// PatternPack declares a named pack and whether it is enabled at startup.
+type PatternPack struct {
+	Pack    string `json:"pack"`
+	Enabled bool   `json:"enabled"`
+}
+
+// CustomPIIPattern is a user-defined pattern scoped to a named pack.
+type CustomPIIPattern struct {
+	Pack       string  `json:"pack"`
+	Pattern    string  `json:"pattern"`
+	Type       string  `json:"type"`
+	Confidence float64 `json:"confidence"`
+	Literal    bool    `json:"literal,omitempty"`
+}
+
+// protectedPIITypes lists built-in type names that custom patterns may not shadow.
+var protectedPIITypes = map[string]bool{
+	"EMAIL": true, "PHONE": true, "SSN": true, "CC": true, "IP": true,
+	"APIKEY": true, "ADDRESS": true, "PERSON": true, "ORG": true,
+	"LOCATION": true, "MISC": true, "SSHKEY": true, "JWT": true,
+	"BEARER": true, "DBCONN": true, "AWSKEY": true, "GHTOKEN": true,
+	"IPADDRESS": true, "CREDITCARD": true, "STEUERID": true, "SVNR": true,
+	"KFZ": true,
 }
 
 // Load returns config with defaults overridden by proxy-config.json and env vars.
+// It validates pack configuration and fatals if zero packs are enabled.
 func Load() *Config {
 	cfg := defaults()
 	loadFile(cfg, "proxy-config.json")
 	loadEnv(cfg)
+	cfg.validatePacks()
 	return cfg
+}
+
+// validatePacks enforces pack-level invariants after all config sources have merged.
+func (c *Config) validatePacks() {
+	// Clamp packDecayRate to [0.0, 1.0].
+	if c.PackDecayRate < 0 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f < 0, clamping to 0", c.PackDecayRate)
+		c.PackDecayRate = 0
+	}
+	if c.PackDecayRate > 1 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f > 1, clamping to 1", c.PackDecayRate)
+		c.PackDecayRate = 1
+	}
+
+	// Count enabled packs; zero = fatal.
+	enabled := 0
+	for _, p := range c.PatternPacks {
+		if p.Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		log.Fatalf("[CONFIG] FATAL: zero pattern packs enabled — proxy cannot start. Enable at least one pack in patternPacks.")
+	}
+
+	// Validate custom patterns: warn + skip invalid entries.
+	valid := make([]CustomPIIPattern, 0, len(c.CustomPIIPatterns))
+	for i, cp := range c.CustomPIIPatterns {
+		typeName := strings.ToUpper(cp.Type)
+		if typeName == "" || len(typeName) > 15 {
+			log.Printf("[CONFIG] Warning: customPIIPatterns[%d] type %q invalid (empty or >15 chars), skipping", i, cp.Type)
+			continue
+		}
+		if protectedPIITypes[typeName] {
+			log.Printf("[CONFIG] Warning: customPIIPatterns[%d] type %q shadows a protected built-in type, skipping", i, cp.Type)
+			continue
+		}
+		if cp.Confidence < 0 || cp.Confidence > 1 {
+			log.Printf("[CONFIG] Warning: customPIIPatterns[%d] confidence %f out of range [0,1], skipping", i, cp.Confidence)
+			continue
+		}
+		if !cp.Literal {
+			if _, err := regexp.Compile(cp.Pattern); err != nil {
+				log.Printf("[CONFIG] Warning: customPIIPatterns[%d] pattern %q is invalid regex: %v, skipping", i, cp.Pattern, err)
+				continue
+			}
+		}
+		// Check that pack name is declared in patternPacks.
+		packDeclared := false
+		for _, pp := range c.PatternPacks {
+			if pp.Pack == cp.Pack {
+				packDeclared = true
+				break
+			}
+		}
+		if !packDeclared {
+			log.Printf("[CONFIG] Warning: customPIIPatterns[%d] references unknown pack %q, skipping", i, cp.Pack)
+			continue
+		}
+		valid = append(valid, cp)
+	}
+	c.CustomPIIPatterns = valid
 }
 
 func defaults() *Config {
@@ -100,6 +196,17 @@ func defaults() *Config {
 			"gpt":     piiInstructionDefault,
 			"default": piiInstructionDefault,
 		},
+		PackDecayRate: 0.05,
+		PatternPacks: []PatternPack{
+			{Pack: "GLOBAL", Enabled: true},
+			{Pack: "DE", Enabled: true},
+			{Pack: "SECRETS", Enabled: true},
+			{Pack: "FR", Enabled: false},
+			{Pack: "NL", Enabled: false},
+			{Pack: "FINANCE_EU", Enabled: false},
+			{Pack: "HEALTHCARE", Enabled: false},
+			{Pack: "US", Enabled: false},
+		},
 	}
 }
 
@@ -145,6 +252,8 @@ func loadEnvInt(name string, dst *int) {
 	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			*dst = n
+		} else {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %d: %v", name, v, *dst, err)
 		}
 	}
 }
@@ -152,7 +261,12 @@ func loadEnvInt(name string, dst *int) {
 // loadEnvIntPositive sets *dst to the parsed integer if valid and > 0.
 func loadEnvIntPositive(name string, dst *int) {
 	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %d: %v", name, v, *dst, err)
+		} else if n <= 0 {
+			log.Printf("[CONFIG] Warning: %s %q must be > 0, using default %d", name, v, *dst)
+		} else {
 			*dst = n
 		}
 	}
@@ -163,6 +277,8 @@ func loadEnvFloat(name string, dst *float64) {
 	if v := os.Getenv(name); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			*dst = f
+		} else {
+			log.Printf("[CONFIG] Warning: invalid %s %q, using default %f: %v", name, v, *dst, err)
 		}
 	}
 }
