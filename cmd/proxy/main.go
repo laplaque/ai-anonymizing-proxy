@@ -81,7 +81,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-quit
-		log.Printf("[PROXY] Shutting down…")
+		log.Printf("[PROXY] Shutting down\u2026")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
@@ -100,19 +100,27 @@ func printBanner(cfg *config.Config) {
 		upstreamProxy = os.Getenv("HTTP_PROXY")
 	}
 	if upstreamProxy == "" {
-		upstreamProxy = "(direct — set HTTP_PROXY or HTTPS_PROXY to chain upstream)"
+		upstreamProxy = "(direct \u2014 set HTTP_PROXY or HTTPS_PROXY to chain upstream)"
+	}
+
+	enabledPacks := 0
+	for _, p := range cfg.PatternPacks {
+		if p.Enabled {
+			enabledPacks++
+		}
 	}
 
 	fmt.Printf(`
-╔══════════════════════════════════════════════════════╗
-║          AI Anonymizing Proxy  (Go)                  ║
-╚══════════════════════════════════════════════════════╝
+\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
+\u2551          AI Anonymizing Proxy  (Go)                  \u2551
+\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
   Proxy port      : %d
   Management port : %d
   Upstream proxy  : %s
   Ollama endpoint : %s
   Ollama model    : %s
   AI detection    : %v
+  Pattern packs   : %d enabled / %d total
 
   Point clients here:
     export HTTP_PROXY=http://localhost:%d
@@ -123,6 +131,7 @@ func printBanner(cfg *config.Config) {
 `, cfg.ProxyPort, cfg.ManagementPort,
 		upstreamProxy,
 		cfg.OllamaEndpoint, cfg.OllamaModel, cfg.UseAIDetection,
+		enabledPacks, len(cfg.PatternPacks),
 		cfg.ProxyPort, cfg.ProxyPort,
 		cfg.ManagementPort)
 }

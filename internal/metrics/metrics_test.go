@@ -171,34 +171,34 @@ func TestLatencyStats_Record(t *testing.T) {
 
 func TestCacheHitCounters(t *testing.T) {
 	m := New()
-	m.RecordCacheHit("email")
-	m.RecordCacheHit("email")
-	m.RecordCacheHit("phone")
+	m.RecordCacheHit("EMAIL")
+	m.RecordCacheHit("EMAIL")
+	m.RecordCacheHit("PHONE")
 
 	s := m.Snapshot()
-	if s.PIITokens.CacheHits["email"] != 2 {
-		t.Errorf("email hits: got %d, want 2", s.PIITokens.CacheHits["email"])
+	if s.PIITokens.CacheHits["EMAIL"] != 2 {
+		t.Errorf("EMAIL hits: got %d, want 2", s.PIITokens.CacheHits["EMAIL"])
 	}
-	if s.PIITokens.CacheHits["phone"] != 1 {
-		t.Errorf("phone hits: got %d, want 1", s.PIITokens.CacheHits["phone"])
+	if s.PIITokens.CacheHits["PHONE"] != 1 {
+		t.Errorf("PHONE hits: got %d, want 1", s.PIITokens.CacheHits["PHONE"])
 	}
-	if _, present := s.PIITokens.CacheHits["ssn"]; present {
-		t.Error("ssn should be absent from snapshot when count is 0")
+	if _, present := s.PIITokens.CacheHits["SSN"]; present {
+		t.Error("SSN should be absent from snapshot when count is 0")
 	}
 }
 
 func TestCacheMissCounters(t *testing.T) {
 	m := New()
-	m.RecordCacheMiss("phone")
-	m.RecordCacheMiss("phone")
-	m.RecordCacheMiss("ipAddress")
+	m.RecordCacheMiss("PHONE")
+	m.RecordCacheMiss("PHONE")
+	m.RecordCacheMiss("IPADDRESS")
 
 	s := m.Snapshot()
-	if s.PIITokens.CacheMisses["phone"] != 2 {
-		t.Errorf("phone misses: got %d, want 2", s.PIITokens.CacheMisses["phone"])
+	if s.PIITokens.CacheMisses["PHONE"] != 2 {
+		t.Errorf("PHONE misses: got %d, want 2", s.PIITokens.CacheMisses["PHONE"])
 	}
-	if s.PIITokens.CacheMisses["ipAddress"] != 1 {
-		t.Errorf("ipAddress misses: got %d, want 1", s.PIITokens.CacheMisses["ipAddress"])
+	if s.PIITokens.CacheMisses["IPADDRESS"] != 1 {
+		t.Errorf("IPADDRESS misses: got %d, want 1", s.PIITokens.CacheMisses["IPADDRESS"])
 	}
 }
 
