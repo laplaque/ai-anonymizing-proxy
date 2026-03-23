@@ -31,27 +31,13 @@ import (
 	"sync"
 	"time"
 
+	"ai-anonymizing-proxy/internal/anonymizer/packs"
+	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/metrics"
 )
 
 // PIIType classifies the kind of sensitive data found.
 type PIIType string
-
-// Supported PII types for detection and anonymization.
-const (
-	PIIEmail      PIIType = "email"
-	PIIPhone      PIIType = "phone"
-	PIISSN        PIIType = "ssn"
-	PIICreditCard PIIType = "creditCard"
-	PIIIPAddress  PIIType = "ipAddress"
-	PIIAPIKey     PIIType = "apiKey"
-	PIIName       PIIType = "name"
-	PIIAddress    PIIType = "address"
-	PIIMedical    PIIType = "medical"
-	PIISalary     PIIType = "salary"
-	PIICompany    PIIType = "company"
-	PIIJobTitle   PIIType = "jobTitle"
-)
 
 // sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
 const sseDataPrefix = "data: "
@@ -61,9 +47,11 @@ const sseDataPrefix = "data: "
 // high scores mean low false-positive risk; low scores indicate ambiguous patterns
 // where AI verification adds meaningful value.
 type pattern struct {
-	re         *regexp.Regexp
-	piiType    PIIType
-	confidence float64
+	re           *regexp.Regexp
+	piiType      PIIType
+	confidence   float64
+	validate     func(string) bool // nil = no validation
+	replaceGroup int               // 0 = full match; >0 = replace only that group
 }
 
 // Anonymizer holds compiled patterns and the Ollama client config.
@@ -87,6 +75,7 @@ type Anonymizer struct {
 	sessions  map[string]map[string]string // sessionID → token → original
 
 	piiInstructions map[string]string // model family prefix → system instruction
+	packConfig      *config.Config    // pack configuration; nil = use legacy patterns
 }
 
 // Options configures the Anonymizer constructor.
@@ -99,6 +88,7 @@ type Options struct {
 	Metrics             *metrics.Metrics // optional metrics collector; nil disables metrics
 	CachePath           string           // path to bbolt cache file; empty = in-memory only
 	CacheCapacity       int              // S3-FIFO cache capacity; 0 = unbounded (testing only)
+	PackConfig          *config.Config   // pack configuration; nil = use legacy patterns
 }
 
 // New creates an Anonymizer with the given options.
@@ -109,15 +99,15 @@ func New(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ol
 	return NewWithCache(ollamaEndpoint, ollamaModel, useAI, aiThreshold, ollamaMaxConcurrent, m, "")
 }
 
-// defaultCacheCapacity is the maximum number of PII-value→token entries kept in
+// DefaultCacheCapacity is the maximum number of PII-value→token entries kept in
 // the S3-FIFO in-memory layer (and on disk via bbolt). Evicted entries are deleted
 // from bbolt so disk usage is bounded to roughly this many entries.
 // Override via NewWithCacheAndCapacity for workloads with different cardinality.
-const defaultCacheCapacity = 50_000
+const DefaultCacheCapacity = 50_000
 
 // NewWithCache creates an Anonymizer with an explicit cache path.
 // If cachePath is non-empty, a bbolt persistent cache is opened at that path,
-// wrapped with an S3-FIFO in-memory eviction layer (capacity=defaultCacheCapacity).
+// wrapped with an S3-FIFO in-memory eviction layer (capacity=DefaultCacheCapacity).
 // If cachePath is empty, an unbounded in-memory cache is used.
 func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold float64, ollamaMaxConcurrent int, m *metrics.Metrics, cachePath string) *Anonymizer {
 	return NewWithCacheAndCapacity(Options{
@@ -128,7 +118,7 @@ func NewWithCache(ollamaEndpoint, ollamaModel string, useAI bool, aiThreshold fl
 		OllamaMaxConcurrent: ollamaMaxConcurrent,
 		Metrics:             m,
 		CachePath:           cachePath,
-		CacheCapacity:       defaultCacheCapacity,
+		CacheCapacity:       DefaultCacheCapacity,
 	})
 }
 
@@ -166,6 +156,7 @@ func NewWithCacheAndCapacity(opts Options) *Anonymizer {
 		inflight:    make(map[string]bool),
 		ollamaSem:   make(chan struct{}, opts.OllamaMaxConcurrent),
 		sessions:    make(map[string]map[string]string),
+		packConfig:  opts.PackConfig,
 	}
 	a.compilePatterns()
 	return a
@@ -191,6 +182,69 @@ func (a *Anonymizer) SetVerbose(v bool) {
 }
 
 func (a *Anonymizer) compilePatterns() {
+	if a.packConfig != nil {
+		a.loadFromPacks()
+		return
+	}
+	a.loadLegacyPatterns()
+}
+
+// enabledPacks returns the set of pack names enabled in config.
+func enabledPacks(cfg *config.Config) map[string]bool {
+	m := make(map[string]bool, len(cfg.PatternPacks))
+	for _, p := range cfg.PatternPacks {
+		if p.Enabled {
+			m[p.Pack] = true
+		}
+	}
+	return m
+}
+
+// loadFromPacks populates patterns from the pack registry filtered by config.
+func (a *Anonymizer) loadFromPacks() {
+	enabled := enabledPacks(a.packConfig)
+	for _, entry := range packs.All() {
+		if !enabled[entry.Pack] {
+			continue
+		}
+		a.patterns = append(a.patterns, pattern{
+			re:           entry.Re,
+			piiType:      PIIType(entry.PIIType),
+			confidence:   entry.Confidence,
+			validate:     entry.Validate,
+			replaceGroup: entry.ReplaceGroup,
+		})
+	}
+
+	// Load custom patterns from config.
+	for _, cp := range a.packConfig.CustomPIIPatterns {
+		if !enabled[cp.Pack] {
+			continue
+		}
+		var re *regexp.Regexp
+		if cp.Literal {
+			re = regexp.MustCompile(regexp.QuoteMeta(cp.Pattern))
+		} else {
+			var err error
+			re, err = regexp.Compile(cp.Pattern)
+			if err != nil {
+				log.Printf("[ANONYMIZER] Warning: custom pattern %q failed to compile: %v", cp.Pattern, err)
+				continue
+			}
+		}
+		a.patterns = append(a.patterns, pattern{
+			re:         re,
+			piiType:    PIIType(cp.Type),
+			confidence: cp.Confidence,
+		})
+	}
+
+	log.Printf("[ANONYMIZER] Loaded %d patterns from %d enabled packs", len(a.patterns), len(enabled))
+}
+
+// loadLegacyPatterns loads the original hardcoded patterns (used when no
+// pack config is provided, e.g. in tests using the simple New() constructor).
+func (a *Anonymizer) loadLegacyPatterns() {
 	// Confidence scores are assigned per Presidio / CHPDA conventions:
 	//   0.90+ → highly specific format; regex false-positive rate is very low
 	//   0.70–0.89 → moderately specific; some ambiguity possible
@@ -202,19 +256,16 @@ func (a *Anonymizer) compilePatterns() {
 		confidence float64
 	}{
 		// Email: unambiguous structural markers (@, domain, TLD)
-		{`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`, PIIEmail, 0.95},
+		{`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`, "EMAIL", 0.95},
 		// API key: requires keyword prefix + long token — very specific
-		{`(?i)(?:api[_\-]?key|token|secret|bearer)[\s"':=]+([a-zA-Z0-9_\-.]{20,})`, PIIAPIKey, 0.90},
+		{`(?i)(?:api[_\-]?key|token|secret|bearer)[\s"':=]+([a-zA-Z0-9_\-.]{20,})`, "APIKEY", 0.90},
 		// SSN: structured hyphenated format
-		{`\b(?:\d{3}-?\d{2}-?\d{4}|\d{9})\b`, PIISSN, 0.85},
+		{`\b(?:\d{3}-?\d{2}-?\d{4}|\d{9})\b`, "SSN", 0.85},
 		// Credit card: 16-digit block pattern
-		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, PIICreditCard, 0.85},
-		// Street address: requires street-type suffix keyword
-		{`(?i)\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, PIIAddress, 0.75},
+		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, "CREDITCARD", 0.85},
+		// Street address: requires street-type suffix keyword, capped middle group
+		{`(?i)\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,4}\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, "ADDRESS", 0.75},
 		// IPv6: all RFC 5952 compressed and uncompressed forms.
-		// The alternation is ordered longest-first so greedy matching picks the
-		// most complete address. Confidence is high because the colon-hex syntax
-		// is structurally unambiguous and never appears in normal prose.
 		{`(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}` +
 			`|(?:[0-9a-fA-F]{1,4}:){1,7}:` +
 			`|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}` +
@@ -225,13 +276,15 @@ func (a *Anonymizer) compilePatterns() {
 			`|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}` +
 			`|:(?::[0-9a-fA-F]{1,4}){1,7}` +
 			`|::`,
-			PIIIPAddress, 0.85},
+			"IPADDRESS", 0.85},
 		// IPv4: matches version numbers and other numeric quads — moderate
-		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, PIIIPAddress, 0.70},
-		// Phone: very broad — matches many numeric sequences that are not phones
-		{`(\+?1?[\-.\s]?)?\(?([0-9]{3})\)?[\-.\s]?([0-9]{3})[\-.\s]?([0-9]{4})`, PIIPhone, 0.65},
+		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, "IPADDRESS", 0.70},
+		// Phone: requires at least one separator between digit groups to avoid
+		// matching raw hex strings inside PII tokens (16-hex tokens can contain
+		// 10+ consecutive digits).
+		{`(\+?1[\-.\s])?\(?([0-9]{3})\)?[\-.\s]([0-9]{3})[\-.\s]?([0-9]{4})`, "PHONE", 0.65},
 		// ZIP code: 5 digits match countless non-PII numbers
-		{`\b\d{5}(?:-\d{4})?\b`, PIIAddress, 0.40},
+		{`\b\d{5}(?:-\d{4})?\b`, "ADDRESS", 0.40},
 	}
 	for _, s := range specs {
 		re, err := regexp.Compile(s.expr)
@@ -247,13 +300,14 @@ func (a *Anonymizer) compilePatterns() {
 // sessionID is used to record token→original mappings for later de-anonymization.
 //
 // For each regex match:
+//   - If the pattern has a validator, the match is discarded on validation failure.
 //   - High-confidence (>= aiThreshold): token applied immediately.
 //   - Low-confidence (< aiThreshold) with useAI enabled:
 //     cache hit  → use cached token.
 //     cache miss → apply fallback token, log miss, dispatch async Ollama.
 //
-// PII is never left unmasked: every match produces a token regardless of
-// cache state or Ollama availability.
+// PII is never left unmasked: every validated match produces a token regardless
+// of cache state or Ollama availability.
 func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 	if text == "" {
 		return text
@@ -261,13 +315,44 @@ func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 
 	result := text
 	for _, p := range a.patterns {
-		result = p.re.ReplaceAllStringFunc(result, func(match string) string {
-			token := a.tokenForMatch(p, match)
-			a.recordMapping(sessionID, token, match)
-			return token
-		})
+		if p.replaceGroup > 0 {
+			result = a.replaceGroup(p, result, sessionID)
+		} else {
+			result = p.re.ReplaceAllStringFunc(result, func(match string) string {
+				if p.validate != nil && !p.validate(match) {
+					return match
+				}
+				token := a.tokenForMatch(p, match)
+				a.recordMapping(sessionID, token, match)
+				return token
+			})
+		}
 	}
 	return result
+}
+
+// replaceGroup handles patterns where only a specific capture group should be
+// replaced with a PII token, preserving the rest of the match (e.g. keeping
+// "Bearer " prefix while redacting the credential).
+func (a *Anonymizer) replaceGroup(p pattern, text, sessionID string) string {
+	return p.re.ReplaceAllStringFunc(text, func(fullMatch string) string {
+		subs := p.re.FindStringSubmatchIndex(fullMatch)
+		if subs == nil || p.replaceGroup*2+1 >= len(subs) {
+			return fullMatch
+		}
+		start := subs[p.replaceGroup*2]
+		end := subs[p.replaceGroup*2+1]
+		if start < 0 || end < 0 {
+			return fullMatch
+		}
+		groupValue := fullMatch[start:end]
+		if p.validate != nil && !p.validate(groupValue) {
+			return fullMatch
+		}
+		token := a.tokenForMatch(p, groupValue)
+		a.recordMapping(sessionID, token, groupValue)
+		return fullMatch[:start] + token + fullMatch[end:]
+	})
 }
 
 // tokenForMatch returns the anonymization token for a single regex match.
@@ -365,8 +450,8 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 // defaultPIIInstruction is the fallback system instruction used when no
 // model-specific entry is configured via SetPIIInstructions.
 const defaultPIIInstruction = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-	" matching the pattern [PII_TYPE_XXXXXXXX] where TYPE indicates the kind of" +
-	" information (e.g. EMAIL, PHONE, SSN) and XXXXXXXX is an 8-character hex hash." +
+	" matching the pattern [PII_TYPE_XXXXXXXXXXXXXXXX] where TYPE indicates the kind of" +
+	" information (e.g. EMAIL, PHONE, SSN) and XXXXXXXXXXXXXXXX is a 16-character hex hash." +
 	" You MUST reproduce every such token EXACTLY as written in your response." +
 	" Do NOT replace them with example values or any other substitutes." +
 	" Treat [PII_*] tokens as opaque identifiers that must pass through unchanged."
@@ -508,7 +593,7 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 }
 
 // replacement generates a deterministic anonymised token for a detected value.
-// Tokens use [PII_<TYPE>_<8hex>] notation, e.g. [PII_EMAIL_c160f8cc].
+// Tokens use [PII_<TYPE>_<16hex>] notation, e.g. [PII_EMAIL_c160f8cc01234567].
 //
 // Including the type gives the LLM semantic context ("this was an email") so it
 // can reason about the surrounding text correctly, without ever seeing the
@@ -520,7 +605,7 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 // re-tokenize its own output in future sessions ("proxy eats itself").
 // TestTokenFormatNonRetriggering enforces this.
 func (a *Anonymizer) replacement(piiType PIIType, original string) string {
-	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:8] // #nosec G401 -- deterministic token, not crypto
+	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:16] // #nosec G401 -- deterministic token, not crypto
 	return fmt.Sprintf("[PII_%s_%s]", strings.ToUpper(string(piiType)), h)
 }
 
