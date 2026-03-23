@@ -229,6 +229,6 @@ func BenchmarkTokenGeneration(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = a.replacement(PIIEmail, fmt.Sprintf("user%d@test.com", i))
+		_ = a.replacement("EMAIL", fmt.Sprintf("user%d@test.com", i))
 	}
 }
