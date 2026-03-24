@@ -73,7 +73,7 @@ func TestUSSSNNegatives(t *testing.T) {
 	}
 	negatives := []string{
 		"123456789",   // unformatted — rejected by design
-		"1234567890", // too many digits
+		"1234567890",  // too many digits
 		"12-34-5678",  // wrong grouping
 		"abc-de-fghi", // letters
 		"123-45-678",  // too few in last group
