@@ -65,6 +65,15 @@ func Load() *Config {
 	cfg := defaults()
 	loadFile(cfg, "proxy-config.json")
 	loadEnv(cfg)
+	// Clamp PackDecayRate to [0, 1].
+	if cfg.PackDecayRate < 0 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f is negative, clamping to 0", cfg.PackDecayRate)
+		cfg.PackDecayRate = 0
+	}
+	if cfg.PackDecayRate > 1 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f exceeds 1.0, clamping to 1.0", cfg.PackDecayRate)
+		cfg.PackDecayRate = 1
+	}
 	return cfg
 }
 

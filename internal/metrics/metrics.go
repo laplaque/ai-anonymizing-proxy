@@ -11,18 +11,29 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ai-anonymizing-proxy/internal/anonymizer/packs"
 )
 
-// knownPIITypes lists all PII type strings the anonymizer can produce.
-// Used to pre-populate per-type counter maps in New() so Snapshot() can
-// iterate a fixed set without racing on map writes.
-var knownPIITypes = []string{
-	"EMAIL", "PHONE", "SSN", "CREDITCARD", "IPADDRESS",
-	"APIKEY", "NAME", "ADDRESS", "MEDICAL", "SALARY",
-	"COMPANY", "JOBTITLE",
-	// Pack-added types
-	"STEUERID", "SVNR", "KFZ",
-	"SSHKEY", "JWT", "BEARER", "DBCONN", "AWSKEY", "GHTOKEN",
+// knownPIITypes returns the list of PII type strings derived from the pack
+// registry. Fallback types that exist only in the legacy compilePatterns path
+// are included as a static baseline so metrics counters are always available.
+func knownPIITypes() []string {
+	// Static baseline — types that may come from the legacy compilePatterns
+	// path and are not registered in any pack.
+	baseline := map[string]bool{
+		"NAME": true, "MEDICAL": true, "SALARY": true,
+		"COMPANY": true, "JOBTITLE": true,
+	}
+	// Merge in all types from the pack registry.
+	for _, t := range packs.PIITypes() {
+		baseline[t] = true
+	}
+	types := make([]string, 0, len(baseline))
+	for t := range baseline {
+		types = append(types, t)
+	}
+	return types
 }
 
 // Metrics holds all runtime counters for a running proxy instance.
@@ -65,12 +76,13 @@ type Metrics struct {
 // New returns a new Metrics with the start time recorded and per-type cache
 // counter maps pre-populated for all known PII types.
 func New() *Metrics {
+	types := knownPIITypes()
 	m := &Metrics{
 		startTime:   time.Now(),
-		cacheHits:   make(map[string]*atomic.Int64, len(knownPIITypes)),
-		cacheMisses: make(map[string]*atomic.Int64, len(knownPIITypes)),
+		cacheHits:   make(map[string]*atomic.Int64, len(types)),
+		cacheMisses: make(map[string]*atomic.Int64, len(types)),
 	}
-	for _, t := range knownPIITypes {
+	for _, t := range types {
 		m.cacheHits[t] = new(atomic.Int64)
 		m.cacheMisses[t] = new(atomic.Int64)
 	}

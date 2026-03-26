@@ -14,7 +14,8 @@ func TestLuhnValid(t *testing.T) {
 		{"visa with spaces", "4111 1111 1111 1111", true},
 		{"visa with dashes", "4111-1111-1111-1111", true},
 		{"mastercard valid", "5500000000000004", true},
-		{"amex valid", "378282246310005", true},
+		{"amex valid 15 digits", "378282246310005", true},
+		{"diners valid 14 digits", "30569309025904", true},
 		// True negatives — random digit sequences that fail Luhn.
 		{"random digits", "1234567890123456", false},
 		{"off by one", "4111111111111112", false},
@@ -26,6 +27,29 @@ func TestLuhnValid(t *testing.T) {
 			got := luhnValid(tc.input)
 			if got != tc.want {
 				t.Errorf("luhnValid(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateEmailLocalPart(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid simple", "alice@example.com", true},
+		{"valid with dots", "user.name@domain.com", true},
+		{"leading dot", ".user@example.com", false},
+		{"trailing dot", "user.@example.com", false},
+		{"consecutive dots", "user..name@example.com", false},
+		{"no local part", "@example.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateEmailLocalPart(tc.input)
+			if got != tc.want {
+				t.Errorf("validateEmailLocalPart(%q) = %v, want %v", tc.input, got, tc.want)
 			}
 		})
 	}
@@ -56,7 +80,7 @@ func TestGlobalEmailPattern(t *testing.T) {
 		t.Fatal("email entry not found in GLOBAL pack")
 	}
 
-	// True positives
+	// True positives (regex + validator)
 	positives := []string{
 		"alice@example.com",
 		"user.name+tag@domain.co.uk",
@@ -66,9 +90,12 @@ func TestGlobalEmailPattern(t *testing.T) {
 		if !entry.Re.MatchString(s) {
 			t.Errorf("email pattern should match %q", s)
 		}
+		if !entry.Validate(s) {
+			t.Errorf("email validator should accept %q", s)
+		}
 	}
 
-	// True negatives
+	// True negatives (regex)
 	negatives := []string{
 		"not-an-email",
 		"@missing-local.com",
@@ -77,6 +104,50 @@ func TestGlobalEmailPattern(t *testing.T) {
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
 			t.Errorf("email pattern should NOT match %q", s)
+		}
+	}
+
+	// Regex matches but validator rejects (invalid local parts)
+	invalidLocal := []string{
+		".leading@example.com",
+		"trailing.@example.com",
+		"double..dot@example.com",
+	}
+	for _, s := range invalidLocal {
+		if entry.Re.MatchString(s) && entry.Validate(s) {
+			t.Errorf("email validator should reject invalid local part %q", s)
+		}
+	}
+}
+
+func TestGlobalAPIKeyPattern(t *testing.T) {
+	entry := findEntry("api_key", "GLOBAL")
+	if entry == nil {
+		t.Fatal("api_key entry not found in GLOBAL pack")
+	}
+
+	// True positives
+	positives := []string{
+		`api_key=abc123def456ghi789jklmno`,
+		`token: sk-abc123def456ghi789jklmno`,
+		`secret="xxxxxxxxxxxxxxxxxxxxxxxx"`,
+		`bearer XYZabc123def456ghi789jk`,
+	}
+	for _, s := range positives {
+		if !entry.Re.MatchString(s) {
+			t.Errorf("api_key pattern should match %q", s)
+		}
+	}
+
+	// True negatives
+	negatives := []string{
+		"random string without keyword prefix",
+		"token: short",
+		"api_key=abc",
+	}
+	for _, s := range negatives {
+		if entry.Re.MatchString(s) {
+			t.Errorf("api_key pattern should NOT match %q", s)
 		}
 	}
 }
@@ -96,6 +167,14 @@ func TestGlobalCreditCardWithLuhn(t *testing.T) {
 	}
 	if !entry.Validate("4111111111111111") {
 		t.Error("validator should accept valid Visa number")
+	}
+
+	// Amex (15 digits) — must match regex AND pass Luhn.
+	if !entry.Re.MatchString("378282246310005") {
+		t.Error("regex should match valid Amex number (15 digits)")
+	}
+	if !entry.Validate("378282246310005") {
+		t.Error("validator should accept valid Amex number")
 	}
 
 	// Number that matches regex but fails Luhn.
