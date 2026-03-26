@@ -241,6 +241,99 @@ func TestLoadFile_InvalidJSON_PreservesDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaults_EnabledPacks(t *testing.T) {
+	cfg := defaults()
+	if len(cfg.EnabledPacks) != 3 {
+		t.Errorf("EnabledPacks length: got %d, want 3", len(cfg.EnabledPacks))
+	}
+	expected := map[string]bool{"GLOBAL": true, "DE": true, "SECRETS": true}
+	for _, p := range cfg.EnabledPacks {
+		if !expected[p] {
+			t.Errorf("unexpected default pack: %q", p)
+		}
+	}
+}
+
+func TestDefaults_PackDecayRate(t *testing.T) {
+	cfg := defaults()
+	if cfg.PackDecayRate != 0.05 {
+		t.Errorf("PackDecayRate: got %f, want 0.05", cfg.PackDecayRate)
+	}
+}
+
+func TestLoadEnv_EnabledPacks(t *testing.T) {
+	t.Setenv("ENABLED_PACKS", "GLOBAL,US,SECRETS")
+	cfg := defaults()
+	loadEnv(cfg)
+	if len(cfg.EnabledPacks) != 3 {
+		t.Fatalf("EnabledPacks length: got %d, want 3", len(cfg.EnabledPacks))
+	}
+	if cfg.EnabledPacks[0] != "GLOBAL" || cfg.EnabledPacks[1] != "US" || cfg.EnabledPacks[2] != "SECRETS" {
+		t.Errorf("EnabledPacks: got %v", cfg.EnabledPacks)
+	}
+}
+
+func TestLoadEnv_PackDecayRate(t *testing.T) {
+	t.Setenv("PACK_DECAY_RATE", "0.10")
+	cfg := defaults()
+	loadEnv(cfg)
+	if cfg.PackDecayRate != 0.10 {
+		t.Errorf("PackDecayRate: got %f, want 0.10", cfg.PackDecayRate)
+	}
+}
+
+func TestLoad_PackDecayRateClampNegative(t *testing.T) {
+	t.Setenv("PACK_DECAY_RATE", "-0.5")
+	cfg := Load()
+	if cfg.PackDecayRate != 0 {
+		t.Errorf("negative decay rate should clamp to 0, got %f", cfg.PackDecayRate)
+	}
+}
+
+func TestLoad_PackDecayRateClampAboveOne(t *testing.T) {
+	t.Setenv("PACK_DECAY_RATE", "2.0")
+	cfg := Load()
+	if cfg.PackDecayRate != 1.0 {
+		t.Errorf("decay rate > 1 should clamp to 1.0, got %f", cfg.PackDecayRate)
+	}
+}
+
+func TestResolvePIIInstruction_PrefixMatch(t *testing.T) {
+	cfg := defaults()
+	instruction := cfg.ResolvePIIInstruction("claude-sonnet-4-6")
+	if instruction == "" {
+		t.Error("expected non-empty instruction for claude prefix")
+	}
+	if instruction == cfg.PIIInstructions["default"] {
+		t.Error("expected claude-specific instruction, got default")
+	}
+}
+
+func TestResolvePIIInstruction_FallbackToDefault(t *testing.T) {
+	cfg := defaults()
+	instruction := cfg.ResolvePIIInstruction("unknown-model")
+	if instruction != cfg.PIIInstructions["default"] {
+		t.Error("expected default instruction for unknown model")
+	}
+}
+
+func TestResolvePIIInstruction_EmptyModel(t *testing.T) {
+	cfg := defaults()
+	instruction := cfg.ResolvePIIInstruction("")
+	if instruction != cfg.PIIInstructions["default"] {
+		t.Error("expected default instruction for empty model")
+	}
+}
+
+func TestResolvePIIInstruction_NoDefault(t *testing.T) {
+	cfg := defaults()
+	cfg.PIIInstructions = map[string]string{"claude": "test"}
+	instruction := cfg.ResolvePIIInstruction("gpt-4")
+	if instruction != "" {
+		t.Errorf("expected empty instruction when no default key, got %q", instruction)
+	}
+}
+
 func TestLoad_ReturnsNonNil(t *testing.T) {
 	cfg := Load()
 	if cfg == nil {

@@ -41,6 +41,11 @@ import (
 func main() {
 	cfg := config.Load()
 
+	// Startup guard: zero enabled packs is a fatal misconfiguration.
+	if len(cfg.EnabledPacks) == 0 {
+		log.Fatalf("[PROXY] Fatal: no PII detection packs enabled. Configure enabledPacks in proxy-config.json or set ENABLED_PACKS env var.")
+	}
+
 	printBanner(cfg)
 
 	// Build the management domain registry so both servers share the same state.

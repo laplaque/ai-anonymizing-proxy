@@ -24,8 +24,8 @@ type sseDelta struct {
 
 // tokenSuffixLen is the number of bytes kept unflushed in the streaming
 // accumulator to guard against partial token splits. The longest possible
-// token is [PII_CREDITCARD_XXXXXXXX] at 25 bytes; 26 gives one byte margin.
-const tokenSuffixLen = 26
+// token is [PII_CREDITCARD_XXXXXXXXXXXXXXXX] at 33 bytes (5 + 10 + 1 + 16 + 1).
+const tokenSuffixLen = 33
 
 // safeCutPoint returns the byte index up to which accumulated text can be
 // safely flushed without splitting a partial PII token. It scans backward
@@ -37,11 +37,22 @@ func safeCutPoint(accumulated string) int {
 	}
 
 	cutAt := len(accumulated) - tokenSuffixLen
-	for i := len(accumulated) - 1; i >= cutAt; i-- {
+	// Scan backward from the end of the string looking for '['.
+	// If an unmatched '[' is found, pull cutAt back to avoid splitting a token.
+	// If a matched '[' ... ']' bracket straddles cutAt (i.e. '[' is before cutAt
+	// but ']' is at or after cutAt), pull cutAt back to the '[' position.
+	// Complete brackets entirely before cutAt are safe to flush.
+	for i := len(accumulated) - 1; i >= 0; i-- {
 		if accumulated[i] == '[' {
-			if !strings.ContainsRune(accumulated[i:], ']') {
+			closeBracket := strings.IndexByte(accumulated[i:], ']')
+			if closeBracket == -1 {
+				// Unmatched '[' — hold everything from here.
+				cutAt = i
+			} else if i < cutAt && i+closeBracket >= cutAt {
+				// Bracket straddles cutAt — hold the whole bracket.
 				cutAt = i
 			}
+			// else: bracket is entirely within the flush zone, cutAt is fine.
 			break
 		}
 	}

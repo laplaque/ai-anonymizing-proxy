@@ -8,11 +8,13 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // piiInstructionPrefix is the common prefix for all PII instruction strings.
 const piiInstructionPrefix = "PRIVACY TOKENS: This request contains privacy-preserving placeholders" +
-	" matching the pattern [PII_XXXXXXXX] (8 hex characters). "
+	" matching the pattern [PII_TYPE_XXXXXXXXXXXXXXXX] where TYPE indicates the kind of" +
+	" information (e.g. EMAIL, PHONE, SSN) and XXXXXXXXXXXXXXXX is a 16-character hex hash. "
 
 // piiInstructionDefault is the standard PII instruction used for models without a
 // specialized instruction (gpt, default, and other non-Claude models).
@@ -41,6 +43,16 @@ type Config struct {
 	AuthDomains  []string `json:"authDomains"`
 	AuthPaths    []string `json:"authPaths"`
 
+	// EnabledPacks lists the PII detection packs that are active at startup.
+	// Defaults: ["GLOBAL", "DE", "SECRETS"]. All patterns must belong to an
+	// enabled pack to participate in detection. Zero enabled packs is fatal.
+	EnabledPacks []string `json:"enabledPacks"`
+
+	// PackDecayRate controls the likelihood multiplier decay per pack position.
+	// effectiveConfidence = baseConfidence * (1.0 - (position-1) * PackDecayRate)
+	// Default: 0.05. Set to 0.0 to disable positional decay.
+	PackDecayRate float64 `json:"packDecayRate"`
+
 	// PIIInstructions maps LLM family prefix (e.g. "claude", "gpt") to the
 	// system instruction injected when PII tokens are present in a request.
 	// Lookup is prefix-based: "claude-sonnet-4-6" matches key "claude".
@@ -53,6 +65,15 @@ func Load() *Config {
 	cfg := defaults()
 	loadFile(cfg, "proxy-config.json")
 	loadEnv(cfg)
+	// Clamp PackDecayRate to [0, 1].
+	if cfg.PackDecayRate < 0 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f is negative, clamping to 0", cfg.PackDecayRate)
+		cfg.PackDecayRate = 0
+	}
+	if cfg.PackDecayRate > 1 {
+		log.Printf("[CONFIG] Warning: packDecayRate %f exceeds 1.0, clamping to 1.0", cfg.PackDecayRate)
+		cfg.PackDecayRate = 1
+	}
 	return cfg
 }
 
@@ -70,6 +91,8 @@ func defaults() *Config {
 		CAKeyFile:           "ca-key.pem",
 		BindAddress:         "127.0.0.1",
 		OllamaCacheFile:     "ollama-cache.db",
+		EnabledPacks:        []string{"GLOBAL", "DE", "SECRETS"},
+		PackDecayRate:       0.05,
 		AIAPIDomains: []string{
 			"api.anthropic.com",
 			"api.openai.com",
@@ -100,6 +123,23 @@ func defaults() *Config {
 			"gpt":     piiInstructionDefault,
 			"default": piiInstructionDefault,
 		},
+	}
+}
+
+// loadEnvStringSlice sets *dst to a comma-separated list from the named env var if non-empty.
+func loadEnvStringSlice(name string, dst *[]string) {
+	if v := os.Getenv(name); v != "" {
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				result = append(result, p)
+			}
+		}
+		if len(result) > 0 {
+			*dst = result
+		}
 	}
 }
 
@@ -189,4 +229,6 @@ func loadEnv(cfg *Config) {
 	loadEnvString("MANAGEMENT_TOKEN", &cfg.ManagementToken)
 	loadEnvString("UPSTREAM_PROXY", &cfg.UpstreamProxy)
 	loadEnvString("OLLAMA_CACHE_FILE", &cfg.OllamaCacheFile)
+	loadEnvStringSlice("ENABLED_PACKS", &cfg.EnabledPacks)
+	loadEnvFloat("PACK_DECAY_RATE", &cfg.PackDecayRate)
 }

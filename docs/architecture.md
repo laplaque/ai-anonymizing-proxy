@@ -134,7 +134,7 @@ flowchart TD
     WALK --> RX
     PLAIN --> RX
 
-    RX[Regex pass\n8 patterns with confidence scores] --> MATCH{Any match?}
+    RX[Pack-based regex pass\npatterns loaded from enabled packs\nwith confidence scores] --> MATCH{Any match?}
 
     MATCH -->|No| NOCONF[effectiveConfidence = 0.0\ntext may still contain\nAI-detectable PII]
     MATCH -->|Yes| MINC[track minConfidence\nacross all matches]
@@ -159,25 +159,43 @@ flowchart TD
     ASYNC -.->|populates cache\nfor next request| CACHE
 ```
 
-**Pattern confidence scores** determine whether Stage 2 triggers:
+### Pack-based pattern loading
 
-| PII type       | Example                         | Confidence |
-|----------------|---------------------------------|------------|
-| Email          | `user@example.com`              | 0.95       |
-| API key        | `Bearer sk-abc…` (≥ 20 chars)   | 0.90       |
-| SSN            | `123-45-6789`                   | 0.85       |
-| Credit card    | `4111 1111 1111 1111`           | 0.85       |
-| IPv6 address   | `::1`, `2001:db8::1`            | 0.85       |
-| Street address | `123 Main Street`               | 0.75       |
-| IPv4 address   | `192.168.1.1`                   | 0.70       |
-| Phone number   | `+1-555-123-4567`               | 0.65       |
-| ZIP code       | `90210`                         | 0.40       |
+Patterns are organized into named **packs** that self-register via `init()` in
+`internal/anonymizer/packs/`. The anonymizer loads patterns only from packs listed
+in the `enabledPacks` configuration. Packs enabled by default: `GLOBAL`, `DE`, `SECRETS`.
 
-Tokens are formatted as `[PII_<TYPE>_<8hex>]` — e.g. `[PII_EMAIL_c160f8cc]` — where `<TYPE>`
-is the uppercased PII type name and `<8hex>` is the first 8 hex digits of `md5(original)`.
+A **positional decay** multiplier reduces confidence for patterns in later packs:
+```
+effectiveConfidence = baseConfidence × (1.0 - (position - 1) × packDecayRate)
+```
+
+Patterns with a `Validate` function (e.g. Luhn for credit cards, ISO 7064 for Steuer-ID)
+reject regex matches that fail checksum validation, reducing false positives.
+
+**Pattern confidence scores** (GLOBAL pack, base values):
+
+| PII type       | Pack   | Example                         | Confidence | Validator |
+|----------------|--------|---------------------------------|------------|-----------|
+| Email          | GLOBAL | `user@example.com`              | 0.95       | —         |
+| API key        | GLOBAL | `Bearer sk-abc…` (≥ 20 chars)   | 0.90       | —         |
+| Credit card    | GLOBAL | `4111 1111 1111 1111`           | 0.85       | Luhn      |
+| Steuer-ID      | DE     | `65929970489`                   | 0.70       | ISO 7064  |
+| SVNR           | DE     | `12150385A123`                  | 0.80       | —         |
+| KFZ            | DE     | `B AB 1234`                     | 0.75       | —         |
+| SSH key        | SECRETS| `-----BEGIN RSA PRIVATE KEY-----`| 0.99      | —         |
+| JWT            | SECRETS| `eyJhbGci...`                   | 0.95       | —         |
+| Bearer token   | SECRETS| `Bearer <token>`                | 0.92       | —         |
+| DB connection  | SECRETS| `postgresql://user:pass@host`    | 0.93       | —         |
+| AWS key        | SECRETS| `AKIAIOSFODNN7EXAMPLE`          | 0.97       | —         |
+| GitHub token   | SECRETS| `ghp_ABC...`                    | 0.97       | —         |
+
+Tokens are formatted as `[PII_<TYPE>_<16hex>]` — e.g. `[PII_EMAIL_c160f8cc4b2e1a3d]` — where
+`<TYPE>` is the uppercased PII type name and `<16hex>` is the first 16 hex digits of
+`md5(original)`. Maximum token length: 33 bytes (`[PII_CREDITCARD_XXXXXXXXXXXXXXXX]`).
 The type label gives the LLM semantic context without revealing the original value; the system
 instruction injected into every anonymized request prohibits the LLM from substituting
-plausible-looking values in place of tokens.  The hash is deterministic so the same value
+plausible-looking values in place of tokens. The hash is deterministic so the same value
 always produces the same token within and across requests.
 
 ### Ollama cache states
@@ -238,8 +256,8 @@ A `streamContext` struct holds the mutable state shared across these helpers for
 streaming invocation, including the `lastIndex` field that tracks the most recently seen
 content block index so that flush events target the correct block (thinking vs. text).
 
-The 26-byte suffix guard (`tokenSuffixLen`) is retained in the accumulator — enough to cover
-the longest possible token (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars). Non-delta events (ping,
+The 33-byte suffix guard (`tokenSuffixLen`) is retained in the accumulator — enough to cover
+the longest possible token (`[PII_CREDITCARD_XXXXXXXXXXXXXXXX]` = 33 chars). Non-delta events (ping,
 message_start, etc.) also pass through the replacer so tokens embedded in any part of the SSE
 stream are deanonymized.
 
@@ -312,6 +330,7 @@ are never blocked by disk I/O.
 | `cmd/proxy`           | Entry point: wires config, shared registry, metrics, both HTTP servers      |
 | `internal/config`     | Layered config loading: defaults → `proxy-config.json` → env vars           |
 | `internal/anonymizer` | Two-stage PII detection, token replacement, session maps, streaming de-anon |
+| `internal/anonymizer/packs` | Self-registering PII detection pattern packs (GLOBAL, DE, US, SECRETS, etc.) |
 | `internal/proxy`      | Request router: MITM tunnel, opaque tunnel, plain-HTTP forwarding, SSRF     |
 | `internal/mitm`       | CA management, per-host leaf cert generation/caching, TLS handshake, ALPN   |
 | `internal/management` | Management HTTP API + persistent `DomainRegistry`                           |
@@ -337,7 +356,7 @@ detection path:
 | `ollamaDispatches` | `dispatchOllamaAsync` — before goroutine launch | Goroutine was spawned |
 | `ollamaErrors` | `dispatchOllamaAsync` — semaphore full or HTTP error | Ollama unavailable or overloaded |
 
-Per-type counters are pre-allocated for all 12 known PII types at startup; zero-count types are
+Per-type counters are pre-allocated for all known PII types (including pack-added types) at startup; zero-count types are
 omitted from the JSON output. Counter maps are written only during initialisation so concurrent
 reads in `Snapshot()` require no additional lock.
 
