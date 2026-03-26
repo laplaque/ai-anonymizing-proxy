@@ -39,16 +39,17 @@ func safeCutPoint(accumulated string) int {
 	cutAt := len(accumulated) - tokenSuffixLen
 	// Scan backward from the end of the string looking for '['.
 	// If an unmatched '[' is found, pull cutAt back to avoid splitting a token.
-	// If a matched '[' ... ']' is found and the '[' is before cutAt, also pull
-	// cutAt back — cutting inside a complete bracket still breaks replacement.
+	// If a matched '[' ... ']' bracket straddles cutAt (i.e. '[' is before cutAt
+	// but ']' is at or after cutAt), pull cutAt back to the '[' position.
+	// Complete brackets entirely before cutAt are safe to flush.
 	for i := len(accumulated) - 1; i >= 0; i-- {
 		if accumulated[i] == '[' {
 			closeBracket := strings.IndexByte(accumulated[i:], ']')
 			if closeBracket == -1 {
 				// Unmatched '[' — hold everything from here.
 				cutAt = i
-			} else if i < cutAt {
-				// Complete bracket that straddles cutAt — hold it.
+			} else if i < cutAt && i+closeBracket >= cutAt {
+				// Bracket straddles cutAt — hold the whole bracket.
 				cutAt = i
 			}
 			// else: bracket is entirely within the flush zone, cutAt is fine.

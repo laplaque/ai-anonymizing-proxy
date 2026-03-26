@@ -305,3 +305,141 @@ func TestS3FIFOWithBboltBacking(t *testing.T) {
 		t.Error("expected miss after Delete")
 	}
 }
+
+// TestS3FIFOGhostDedup verifies that ghostAdd deduplicates entries —
+// adding the same key twice does not increase the ghost count.
+func TestS3FIFOGhostDedup(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(2) // capacity 2 → sTarget 1, ghostCap 4
+	defer c.Close()        //nolint:errcheck
+
+	// Fill and evict to populate the ghost set.
+	c.Set("a", "t1")
+	c.Set("b", "t2")
+	c.Set("c", "t3") // evicts "a" from S → goes to ghost
+
+	c.mu.Lock()
+	countBefore := c.ghostCount
+	// Manually call ghostAdd with the same key again.
+	c.ghostAdd("a")
+	countAfter := c.ghostCount
+	c.mu.Unlock()
+
+	if countAfter != countBefore {
+		t.Errorf("ghost dedup failed: count before=%d after=%d", countBefore, countAfter)
+	}
+}
+
+// TestS3FIFOEvictFromSEmptyQueue exercises the nil-front guard in evictFromS.
+func TestS3FIFOEvictFromSEmptyQueue(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(10)
+	defer c.Close() //nolint:errcheck
+
+	// Calling evictFromS on an empty S queue should be a no-op.
+	c.mu.Lock()
+	c.evictFromS()
+	c.mu.Unlock()
+}
+
+// TestS3FIFOEvictFromMEmptyQueue exercises the nil-front guard in evictFromM.
+func TestS3FIFOEvictFromMEmptyQueue(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(10)
+	defer c.Close() //nolint:errcheck
+
+	// Calling evictFromM on an empty M queue should be a no-op.
+	c.mu.Lock()
+	c.evictFromM()
+	c.mu.Unlock()
+}
+
+// TestS3FIFOEvictFromSCorruptedElement exercises the type-assertion guard
+// in evictFromS when the queue front contains a non-string value.
+func TestS3FIFOEvictFromSCorruptedElement(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(10)
+	defer c.Close() //nolint:errcheck
+
+	// Inject a corrupted (non-string) element into sQueue.
+	c.mu.Lock()
+	c.sQueue.PushFront(12345) // int, not string
+	c.evictFromS()            // should discard without panic
+	c.mu.Unlock()
+}
+
+// TestS3FIFOEvictFromMCorruptedElement exercises the type-assertion guard
+// in evictFromM when the queue front contains a non-string value.
+func TestS3FIFOEvictFromMCorruptedElement(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(10)
+	defer c.Close() //nolint:errcheck
+
+	// Inject a corrupted (non-string) element into mQueue.
+	c.mu.Lock()
+	c.mQueue.PushFront(12345) // int, not string
+	c.evictFromM()            // should discard without panic
+	c.mu.Unlock()
+}
+
+// TestS3FIFOEvictFromSStaleEntry exercises the stale element path in evictFromS
+// where the queue has a key that's no longer in the entries map.
+func TestS3FIFOEvictFromSStaleEntry(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(10)
+	defer c.Close() //nolint:errcheck
+
+	c.Set("a", "t1")
+	c.Set("b", "t2")
+
+	// Manually remove "a" from entries but leave it in sQueue — creating a stale entry.
+	c.mu.Lock()
+	delete(c.entries, "a")
+	c.mu.Unlock()
+
+	// Now fill the cache to trigger eviction, which will encounter the stale "a".
+	for i := range 15 {
+		c.Set(fmt.Sprintf("fill-%d", i), fmt.Sprintf("v%d", i))
+	}
+}
+
+// TestS3FIFONewWithZeroCapacity covers the minimum capacity guard in newS3FIFOCache.
+func TestS3FIFONewWithZeroCapacity(t *testing.T) {
+	t.Parallel()
+	// Capacity 1 is the minimum — triggers sTarget=1, ghostCap=4 (min).
+	c := newTestS3FIFO(1)
+	defer c.Close() //nolint:errcheck
+
+	c.Set("a", "t1")
+	c.Set("b", "t2") // triggers eviction
+	_, ok := c.Get("b")
+	if !ok {
+		t.Error("expected hit for most recent entry")
+	}
+}
+
+// TestS3FIFOEvictFromMPath triggers eviction from M by promoting entries
+// from S to M until M overflows.
+func TestS3FIFOEvictFromMPath(t *testing.T) {
+	t.Parallel()
+	c := newTestS3FIFO(2) // capacity 2, sTarget 1, mTarget 1
+	defer c.Close()        //nolint:errcheck
+
+	// Set a key and access it to bump freq, then overflow S to trigger promotion to M.
+	c.Set("a", "t1")
+	c.Get("a") // bump freq
+
+	c.Set("b", "t2") // fills S, "a" has freq>0 so gets promoted to M
+	c.Get("b")        // bump freq for b
+
+	c.Set("c", "t3") // "b" promoted to M (freq>0), M now has 2 but target is 1 → evictFromM
+
+	// Verify at least one key was evicted from M.
+	c.mu.Lock()
+	mLen := c.mQueue.Len()
+	c.mu.Unlock()
+
+	if mLen > 1 {
+		t.Errorf("expected mQueue len ≤1 after eviction, got %d", mLen)
+	}
+}

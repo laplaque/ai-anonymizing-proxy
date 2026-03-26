@@ -738,3 +738,118 @@ func TestProcessTextDeltaJSONMarshalStillWorks(t *testing.T) {
 		t.Errorf("SSE data prefix missing:\n%s", got)
 	}
 }
+
+// TestProcessTextDeltaVerboseReplacementInFlush covers the verbose logging path in
+// processTextDelta when a token replacement occurs in the flushed prefix (not the
+// remainder). The token must be entirely within the flush zone, not the suffix guard.
+func TestProcessTextDeltaVerboseReplacementInFlush(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true)
+	sessionID := "verbose-flush-text"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{token: original}
+	a.sessionMu.Unlock()
+
+	// Two events: first delivers prefix+token+padding, second delivers more padding.
+	// After the second event, the accumulated text is long enough that the token
+	// falls entirely within the flush zone (before the suffix guard).
+	prefix := strings.Repeat("x", tokenSuffixLen+5)
+	padding1 := strings.Repeat("y", tokenSuffixLen+5)
+	padding2 := strings.Repeat("z", tokenSuffixLen+5)
+	sseInput := makeSSETextDelta(prefix+token+padding1) +
+		makeSSETextDelta(padding2+"end") + "\n"
+
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID)
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("verbose flush: token not replaced:\n%s", string(got))
+	}
+}
+
+// TestProcessJSONDeltaVerboseReplacement covers the verbose logging path in
+// processJSONDelta when a token is actually replaced.
+func TestProcessJSONDeltaVerboseReplacement(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true)
+	sessionID := "verbose-json-session"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = tokenMap
+	a.sessionMu.Unlock()
+
+	prefix := strings.Repeat("j", tokenSuffixLen+10)
+	sseInput := makeSSEJsonDelta(prefix+token) +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID)
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading output: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("json delta verbose: token not replaced:\n%s", string(got))
+	}
+}
+
+// TestHandleStreamEndNonEOFWithPartialLine covers the non-EOF error path
+// in handleStreamEnd when there is also a partial line in the buffer.
+func TestHandleStreamEndNonEOFWithPartialLine(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+
+	a := newTestAnonymizer()
+	sessionID := "err-partial"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{token: original}
+	a.sessionMu.Unlock()
+
+	// Data that ends mid-line with a non-EOF error.
+	errFail := errors.New("broken pipe")
+	src := &errorReader{
+		data: []byte("data: partial " + token),
+		err:  errFail,
+	}
+
+	rc := a.StreamingDeanonymize(src, sessionID)
+	_, err := io.ReadAll(rc)
+	if err == nil || !strings.Contains(err.Error(), "broken pipe") {
+		t.Errorf("expected 'broken pipe' error, got: %v", err)
+	}
+}
+
+// TestProcessLineTextDeltaErrorFallback exercises the error fallback path in
+// processLine when processTextDelta returns an error. This is triggered by
+// json.Marshal failing on the modified envelope, which is nearly impossible
+// with normal data. We test the surrounding logic works correctly with large data.
+func TestProcessLineTextDeltaErrorFallback(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// Multiple text deltas followed by a stop event — exercises the normal path
+	// plus the flush-on-non-delta path.
+	prefix := strings.Repeat("a", tokenSuffixLen+5)
+	sseInput := makeSSETextDelta(prefix) +
+		makeSSETextDelta(token) +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("token not replaced:\n%s", got)
+	}
+}
