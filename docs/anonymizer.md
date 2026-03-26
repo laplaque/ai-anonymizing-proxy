@@ -259,6 +259,54 @@ triggered by non-PII data and worth investigating with `LOG_LEVEL=debug`.
 
 ---
 
+## EU locale packs — DE and FR
+
+The pack system extends PII detection with locale-specific patterns. Each pack self-registers
+via `init()` and is loaded when listed in `enabledPacks`. Patterns with a `Validate` function
+use checksum algorithms to reject false positives before tokenization.
+
+### DE pack — Germany
+
+| Pattern | PII type | Regex | Checksum | Confidence | Source |
+|---------|----------|-------|----------|------------|--------|
+| `steuer_id` | `STEUERID` | `\b[1-9]\d{10}\b` | ISO 7064 MOD 11,10 — iterative product algorithm; last digit is check digit | 0.70 | [Wikipedia: Steuerliche Identifikationsnummer](https://de.wikipedia.org/wiki/Steuerliche_Identifikationsnummer) |
+| `svnr` | `SVNR` | `\b\d{2}(?:0[1-9]\|[12]\d\|3[01])(?:0[1-9]\|1[0-2])\d{2}[A-Za-z]\d{3}\b` | None (structural constraints on DOB component) | 0.80 | [Wikipedia: Sozialversicherungsnummer](https://de.wikipedia.org/wiki/Sozialversicherungsnummer); silv3rshi3ld/gdpr-pii-scanner |
+| `kfz` | `KFZ` | `\b[A-ZÄÖÜ]{1,3}[\s\-][A-Z]{1,2}[\s\-]?\d{1,4}\b` | None (strict format with separator) | 0.75 | [Wikipedia: Kfz-Kennzeichen](https://de.wikipedia.org/wiki/Kfz-Kennzeichen_(Deutschland)); mnestorov/regex-patterns |
+
+**False-positive mitigation (DE):**
+
+- **Steuer-ID:** The ISO 7064 MOD 11,10 check digit rejects ~90% of random 11-digit sequences.
+  The first digit must be non-zero, further constraining the match space.
+- **SVNR:** The embedded DDMMYY birthday component constrains day (01–31) and month (01–12)
+  ranges. The mandatory letter separator between the date and sequence number is structurally
+  uncommon in non-PII text.
+- **KFZ:** The district code (1–3 uppercase letters including umlauts) followed by a mandatory
+  separator (space or hyphen) and then letters + digits creates a distinctive format unlikely to
+  appear in prose.
+
+### FR pack — France
+
+| Pattern | PII type | Regex | Checksum | Confidence | Source |
+|---------|----------|-------|----------|------------|--------|
+| `nir` | `NIR` | `\b[12]\d{2}(?:0[1-9]\|1[0-2])(?:\d{2}\|2[AB])\d{3}\d{3}\d{2}\b` | `97 - (base % 97) == key`; Corsica: 2A→19, 2B→18 before modulus | 0.80 | [Wikipedia: Numéro de sécurité sociale en France](https://fr.wikipedia.org/wiki/Num%C3%A9ro_de_s%C3%A9curit%C3%A9_sociale_en_France); silv3rshi3ld/gdpr-pii-scanner |
+| `siret` | `SIRET` | `\b\d{14}\b` | None (14-digit length constraint) | 0.65 | [Wikipedia: SIRET](https://fr.wikipedia.org/wiki/Syst%C3%A8me_d%27identification_du_r%C3%A9pertoire_des_%C3%A9tablissements); mnestorov/regex-patterns |
+| `siren` | `SIREN` | `\b\d{9}\b` | None (low confidence triggers AI fallback) | 0.50 | [Wikipedia: SIREN](https://fr.wikipedia.org/wiki/Syst%C3%A8me_d%27identification_du_r%C3%A9pertoire_des_entreprises); mnestorov/regex-patterns |
+
+**False-positive mitigation (FR):**
+
+- **NIR:** The modulus 97 checksum (`key = 97 - (first 13 digits % 97)`) rejects ~99% of
+  random 15-digit sequences. The first digit is constrained to 1 (male) or 2 (female), and the
+  month field is constrained to 01–12. Corsica departments (2A, 2B) are handled by substituting
+  19 and 18 respectively before computing the modulus.
+- **SIRET:** The strict 14-digit boundary requirement (`\b\d{14}\b`) limits matches to exactly
+  14 consecutive digits. The moderate confidence (0.65) routes ambiguous matches through the
+  Ollama AI verification path.
+- **SIREN:** The 9-digit pattern is intentionally broad. The low confidence (0.50) ensures all
+  matches go through AI verification, preventing tokenization of non-PII 9-digit sequences
+  (e.g. ZIP+4 codes, partial phone numbers).
+
+---
+
 ## GDPR notes
 
 - PII values are stored in the bbolt cache **only for low-confidence Ollama detections**. Values

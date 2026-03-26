@@ -63,6 +63,10 @@ const (
 	PIIDBConn   PIIType = "DBCONN"
 	PIIAWSKey   PIIType = "AWSKEY"
 	PIIGHToken  PIIType = "GHTOKEN"
+	// FR pack types.
+	PIINIR   PIIType = "NIR"
+	PIISIRET PIIType = "SIRET"
+	PIISIREN PIIType = "SIREN"
 )
 
 // sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
