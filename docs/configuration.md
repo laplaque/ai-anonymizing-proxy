@@ -43,7 +43,9 @@ The file is optional — all fields have built-in defaults. Unknown fields are s
     "/auth", "/login", "/signin", "/signup", "/register",
     "/token", "/oauth", "/authenticate", "/session",
     "/v1/auth", "/api/auth", "/api/login", "/api/token"
-  ]
+  ],
+  "enabledPacks": ["GLOBAL", "DE", "SECRETS"],
+  "packDecayRate": 0.05
 }
 ```
 
@@ -66,6 +68,8 @@ Environment variables override the corresponding `proxy-config.json` fields.
 | `LOG_LEVEL`               | `info`                      | Log verbosity: `debug`, `info`, `warn`, `error`                      |
 | `CA_CERT_FILE`            | `ca-cert.pem`               | Path to CA certificate for MITM TLS interception                     |
 | `CA_KEY_FILE`             | `ca-key.pem`                | Path to CA private key for MITM TLS interception                     |
+| `ENABLED_PACKS`           | `GLOBAL,DE,SECRETS`         | Comma-separated list of enabled PII detection packs                  |
+| `PACK_DECAY_RATE`         | `0.05`                      | Positional confidence decay rate per pack (0.0 = no decay)           |
 
 > **Important:** `HTTP_PROXY` / `HTTPS_PROXY` environment variables are **not** read by the proxy
 > process for its own outbound connections. Use `UPSTREAM_PROXY` (or `upstreamProxy` in
@@ -91,12 +95,36 @@ trigger (regex only). Setting it to `1.0` causes Ollama to run on virtually ever
 | Phone number   | 0.65       |
 | ZIP code       | 0.40       |
 
+## Pack system
+
+PII detection patterns are organized into **packs** in `internal/anonymizer/packs/`. Each pack
+file self-registers its patterns via `init()`. The anonymizer loads only patterns from packs
+listed in `enabledPacks`.
+
+| Pack | Default | Content |
+|---|---|---|
+| GLOBAL | Enabled | Email, API key, credit card (Luhn validated) |
+| DE | Enabled | Steuer-ID (ISO 7064), SVNR, KFZ plate |
+| SECRETS | Enabled | SSH keys, JWT, bearer tokens, DB URIs, AWS keys, GitHub tokens |
+| US | Available | Phone, SSN, ZIP, address, IPv4/IPv6 |
+| FR | Planned | NIR, SIRET, SIREN |
+| NL | Planned | BSN, KvK |
+| FINANCE_EU | Planned | IBAN, SWIFT/BIC, VAT IDs |
+| HEALTHCARE | Planned | MRN, ICD-10, insurance IDs |
+
+The **positional decay multiplier** reduces confidence for patterns in later-listed packs:
+```
+effectiveConfidence = baseConfidence × (1.0 - (position - 1) × packDecayRate)
+```
+
+**Startup guard:** zero enabled packs is a fatal error.
+
 ## Token format
 
-Detected PII is replaced with deterministic tokens of the form `[PII_<TYPE>_<8hex>]` —
-e.g. `[PII_EMAIL_c160f8cc]`. The type label gives the LLM semantic context; the 8-hex suffix
-is the first 8 characters of `md5(original_value)`. See [anonymizer.md](anonymizer.md) for
-full details.
+Detected PII is replaced with deterministic tokens of the form `[PII_<TYPE>_<16hex>]` —
+e.g. `[PII_EMAIL_c160f8cc4b2e1a3d]`. The type label gives the LLM semantic context; the
+16-hex suffix is the first 16 characters of `md5(original_value)`. Maximum token length:
+33 bytes. See [anonymizer.md](anonymizer.md) for full details.
 
 ## Auth bypass
 

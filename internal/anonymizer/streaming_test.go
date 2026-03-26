@@ -97,7 +97,7 @@ func readStreamResult(t *testing.T, sseInput string, tokenMap map[string]string)
 // at every possible byte position across two text_delta events is correctly
 // reassembled and replaced.
 func TestStreamingDeanonymizeTokenSplitAcrossEvents(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -122,11 +122,11 @@ func TestStreamingDeanonymizeTokenSplitAcrossEvents(t *testing.T) {
 }
 
 // TestStreamingDeanonymizeSuffixGuardLongestToken verifies that the longest
-// possible token (PIICreditCard at 25 chars) is held in the accumulator
+// possible token (PIICreditCard at 33 chars) is held in the accumulator
 // rather than prematurely flushed when split across events.
 func TestStreamingDeanonymizeSuffixGuardLongestToken(t *testing.T) {
-	// Longest token: [PII_CREDITCARD_XXXXXXXX] = 25 chars
-	token := "[PII_CREDITCARD_a1b2c3d4]"
+	// Longest token: [PII_CREDITCARD_XXXXXXXXXXXXXXXX] = 33 chars
+	token := "[PII_CREDITCARD_a1b2c3d4e5f6a7b8]"
 	original := "4111-1111-1111-1111"
 	tokenMap := map[string]string{token: original}
 
@@ -137,7 +137,7 @@ func TestStreamingDeanonymizeSuffixGuardLongestToken(t *testing.T) {
 	// Split the token at the midpoint across two events. The prefix ensures
 	// the first flush only emits leading text, and the second event delivers
 	// the rest of the token. Without trailing text after the token, the
-	// complete token (25 chars < 26) stays in the accumulator and gets
+	// complete token (33 chars <= 33) stays in the accumulator and gets
 	// flushed correctly at EOF.
 	mid := len(token) / 2
 	prefix := strings.Repeat("y", tokenSuffixLen+5)
@@ -156,7 +156,7 @@ func TestStreamingDeanonymizeSuffixGuardLongestToken(t *testing.T) {
 // TestStreamingDeanonymizeEOFWithPendingAccumulator verifies that text held
 // in the accumulator at EOF is flushed via a synthetic text_delta event.
 func TestStreamingDeanonymizeEOFWithPendingAccumulator(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -176,7 +176,7 @@ func TestStreamingDeanonymizeEOFWithPendingAccumulator(t *testing.T) {
 // non-text-delta event arrives while the accumulator has content, the
 // accumulated text is flushed via a synthetic text_delta before the event.
 func TestStreamingDeanonymizeNonTextDeltaFlushesAccumulator(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -199,7 +199,7 @@ func TestStreamingDeanonymizeNonTextDeltaFlushesAccumulator(t *testing.T) {
 // TestStreamingDeanonymizeDoneTerminator verifies that "data: [DONE]" passes
 // through unchanged.
 func TestStreamingDeanonymizeDoneTerminator(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -222,7 +222,7 @@ func TestStreamingDeanonymizeDoneTerminator(t *testing.T) {
 // TestStreamingDeanonymizeThinkingDelta verifies that tokens inside
 // thinking_delta events are also replaced.
 func TestStreamingDeanonymizeThinkingDelta(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -242,7 +242,7 @@ func TestStreamingDeanonymizeThinkingDelta(t *testing.T) {
 // TestStreamingDeanonymizeCRLFLineEndings verifies that \r\n line endings
 // round-trip correctly.
 func TestStreamingDeanonymizeCRLFLineEndings(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -263,9 +263,9 @@ func TestStreamingDeanonymizeCRLFLineEndings(t *testing.T) {
 // TestStreamingDeanonymizeMultipleTokensInOneDelta verifies that two PII
 // tokens in a single text_delta event are both replaced.
 func TestStreamingDeanonymizeMultipleTokensInOneDelta(t *testing.T) {
-	token1 := "[PII_EMAIL_c160f8cc]"
+	token1 := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original1 := "alice@example.com"
-	token2 := "[PII_PHONE_deadbeef]"
+	token2 := "[PII_PHONE_deadbeef01234567]"
 	original2 := "555-867-5309"
 	tokenMap := map[string]string{token1: original1, token2: original2}
 
@@ -292,7 +292,7 @@ func TestStreamingDeanonymizeMultipleTokensInOneDelta(t *testing.T) {
 // the client must still receive the full response text.
 func TestStreamingDeanonymizeNoTokenMatchShortResponse(t *testing.T) {
 	// Session has a token, but the response text contains no placeholders.
-	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "[PII_EMAIL_357a20e8]"}
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc4b2e1a3d]": "[PII_EMAIL_357a20e8b1c9f456]"}
 
 	sseInput := makeSSETextDelta("Hello world") +
 		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
@@ -311,7 +311,7 @@ func TestStreamingDeanonymizeNoTokenMatchShortResponse(t *testing.T) {
 // multiple short text_delta events that individually and cumulatively stay
 // under tokenSuffixLen.
 func TestStreamingDeanonymizeNoTokenMatchMultiDelta(t *testing.T) {
-	tokenMap := map[string]string{"[PII_PHONE_deadbeef]": "555-0100"}
+	tokenMap := map[string]string{"[PII_PHONE_deadbeef01234567]": "555-0100"}
 
 	sseInput := makeSSETextDelta("Hi") +
 		makeSSETextDelta(" there") +
@@ -408,7 +408,7 @@ func TestDeleteSessionEmptyID(t *testing.T) {
 
 // TestProcessLineSSEComment covers the SSE comment passthrough in processLine.
 func TestProcessLineSSEComment(t *testing.T) {
-	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "alice@example.com"}
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc4b2e1a3d]": "alice@example.com"}
 	sseInput := ": this is an SSE comment\n" +
 		makeSSETextDelta(strings.Repeat("x", tokenSuffixLen+5)+"hello") + "\n"
 	got := readStreamResult(t, sseInput, tokenMap)
@@ -419,7 +419,7 @@ func TestProcessLineSSEComment(t *testing.T) {
 
 // TestProcessLineNonDataLine covers the non-"data:" line path (e.g. "event:" lines).
 func TestProcessLineNonDataLine(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -433,7 +433,7 @@ func TestProcessLineNonDataLine(t *testing.T) {
 
 // TestProcessLineInvalidJSON covers the JSON parse error fallback in processLine.
 func TestProcessLineInvalidJSON(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -493,7 +493,7 @@ func TestHandleStreamEndNonEOFError(t *testing.T) {
 // TestStreamingDeanonymizeVerboseLogging covers the verbose logging path in
 // processTextDelta when a token replacement actually occurs.
 func TestStreamingDeanonymizeVerboseLogging(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -522,7 +522,7 @@ func TestStreamingDeanonymizeVerboseLogging(t *testing.T) {
 // TestFlushRemainderUsesLastIndex verifies that flushRemainder emits the
 // content block index from the last-seen text_delta, not a hardcoded value.
 func TestFlushRemainderUsesLastIndex(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -554,7 +554,7 @@ func TestStreamingDeanonymizeEmptySession(t *testing.T) {
 // TestStreamingDeanonymizeThreeChunkSplit verifies that a token whose bytes
 // span three separate text_delta events is correctly reassembled and replaced.
 func TestStreamingDeanonymizeThreeChunkSplit(t *testing.T) {
-	token := "[PII_EMAIL_c160f8cc]"
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
 	tokenMap := map[string]string{token: original}
 
@@ -580,7 +580,7 @@ func TestStreamingDeanonymizeThreeChunkSplit(t *testing.T) {
 // TestStreamingDeanonymizeTokenMapMiss verifies that an unknown token (not in
 // the session map) passes through the stream unchanged.
 func TestStreamingDeanonymizeTokenMapMiss(t *testing.T) {
-	knownToken := "[PII_EMAIL_c160f8cc]"
+	knownToken := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	unknownToken := "[PII_PHONE_ffffffff]"
 	tokenMap := map[string]string{knownToken: "alice@example.com"}
 
@@ -625,7 +625,7 @@ func TestStreamingDeanonymizeJsonDeltaTokenSplit(t *testing.T) {
 // input_json_delta content without tokens is flushed correctly at
 // content_block_stop (same pattern as #55 but for JSON deltas).
 func TestStreamingDeanonymizeJsonDeltaShortNoMatch(t *testing.T) {
-	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc]": "[PII_EMAIL_357a20e8]"}
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc4b2e1a3d]": "[PII_EMAIL_357a20e8b1c9f456]"}
 
 	sseInput := makeSSEJsonDelta("{\"key\":") +
 		makeSSEJsonDelta("\"value\"}") +
@@ -657,8 +657,8 @@ func TestStreamingDeanonymizeJsonDeltaEOFFlush(t *testing.T) {
 // TestStreamingDeanonymizeJsonAndTextInterleaved verifies that text_delta
 // and input_json_delta accumulators are independent and don't cross-contaminate.
 func TestStreamingDeanonymizeJsonAndTextInterleaved(t *testing.T) {
-	token1 := "[PII_EMAIL_c160f8cc]"
-	original1 := "[PII_EMAIL_357a20e8]"
+	token1 := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original1 := "[PII_EMAIL_357a20e8b1c9f456]"
 	token2 := "[PII_PHONE_d4bc1884]"
 	original2 := "555-0199"
 	tokenMap := map[string]string{token1: original1, token2: original2}

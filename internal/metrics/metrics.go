@@ -17,9 +17,12 @@ import (
 // Used to pre-populate per-type counter maps in New() so Snapshot() can
 // iterate a fixed set without racing on map writes.
 var knownPIITypes = []string{
-	"email", "phone", "ssn", "creditCard", "ipAddress",
-	"apiKey", "name", "address", "medical", "salary",
-	"company", "jobTitle",
+	"EMAIL", "PHONE", "SSN", "CREDITCARD", "IPADDRESS",
+	"APIKEY", "NAME", "ADDRESS", "MEDICAL", "SALARY",
+	"COMPANY", "JOBTITLE",
+	// Pack-added types
+	"STEUERID", "SVNR", "KFZ",
+	"SSHKEY", "JWT", "BEARER", "DBCONN", "AWSKEY", "GHTOKEN",
 }
 
 // Metrics holds all runtime counters for a running proxy instance.
