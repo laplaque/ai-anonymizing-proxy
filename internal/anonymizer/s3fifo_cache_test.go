@@ -311,7 +311,7 @@ func TestS3FIFOWithBboltBacking(t *testing.T) {
 func TestS3FIFOGhostDedup(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(2) // capacity 2 → sTarget 1, ghostCap 4
-	defer c.Close()        //nolint:errcheck
+	defer c.Close()       //nolint:errcheck
 
 	// Fill and evict to populate the ghost set.
 	c.Set("a", "t1")
@@ -423,14 +423,14 @@ func TestS3FIFONewWithZeroCapacity(t *testing.T) {
 func TestS3FIFOEvictFromMPath(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(2) // capacity 2, sTarget 1, mTarget 1
-	defer c.Close()        //nolint:errcheck
+	defer c.Close()       //nolint:errcheck
 
 	// Set a key and access it to bump freq, then overflow S to trigger promotion to M.
 	c.Set("a", "t1")
 	c.Get("a") // bump freq
 
 	c.Set("b", "t2") // fills S, "a" has freq>0 so gets promoted to M
-	c.Get("b")        // bump freq for b
+	c.Get("b")       // bump freq for b
 
 	c.Set("c", "t3") // "b" promoted to M (freq>0), M now has 2 but target is 1 → evictFromM
 
