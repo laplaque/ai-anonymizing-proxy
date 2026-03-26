@@ -282,21 +282,17 @@ func TestLoadEnv_PackDecayRate(t *testing.T) {
 	}
 }
 
-func TestLoad_PackDecayRateClamping(t *testing.T) {
-	cfg := defaults()
-	cfg.PackDecayRate = -0.5
-	// Simulate what Load() does after loadEnv.
-	if cfg.PackDecayRate < 0 {
-		cfg.PackDecayRate = 0
-	}
+func TestLoad_PackDecayRateClampNegative(t *testing.T) {
+	t.Setenv("PACK_DECAY_RATE", "-0.5")
+	cfg := Load()
 	if cfg.PackDecayRate != 0 {
 		t.Errorf("negative decay rate should clamp to 0, got %f", cfg.PackDecayRate)
 	}
+}
 
-	cfg.PackDecayRate = 2.0
-	if cfg.PackDecayRate > 1 {
-		cfg.PackDecayRate = 1
-	}
+func TestLoad_PackDecayRateClampAboveOne(t *testing.T) {
+	t.Setenv("PACK_DECAY_RATE", "2.0")
+	cfg := Load()
 	if cfg.PackDecayRate != 1.0 {
 		t.Errorf("decay rate > 1 should clamp to 1.0, got %f", cfg.PackDecayRate)
 	}

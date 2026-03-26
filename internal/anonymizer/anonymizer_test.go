@@ -1195,3 +1195,101 @@ func TestSessionTokenCountWithPacks(t *testing.T) {
 		t.Error("expected zero for empty session ID")
 	}
 }
+
+// TestWalkValueNestedArray covers the recursive array traversal in walkValue.
+func TestWalkValueNestedArray(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"messages":[{"role":"user","content":["text with alice@example.com","more text"]}]}`)
+	out := a.AnonymizeJSON(body, "sess-nested-arr")
+	if strings.Contains(string(out), "alice@example.com") {
+		t.Error("email in nested array not anonymized")
+	}
+}
+
+// TestAnonymizeJSONEmptyModel covers the path where model field is missing.
+func TestAnonymizeJSONEmptyModel(t *testing.T) {
+	a := newTestAnonymizer()
+	body := []byte(`{"messages":[{"role":"user","content":"My email is alice@example.com"}]}`)
+	out := a.AnonymizeJSON(body, "sess-no-model")
+	if strings.Contains(string(out), "alice@example.com") {
+		t.Error("email not anonymized when model field is absent")
+	}
+}
+
+// TestDeleteSessionEmpty covers the no-op path for empty session ID.
+func TestDeleteSessionEmpty(t *testing.T) {
+	a := newTestAnonymizer()
+	a.AnonymizeText("alice@example.com", "keep-me")
+	a.DeleteSession("")
+	if a.SessionTokenCount("keep-me") == 0 {
+		t.Error("DeleteSession('') should not affect other sessions")
+	}
+}
+
+// TestAnonymizeTextWithAllPacks covers end-to-end with all packs including US.
+func TestAnonymizeTextWithAllPacks(t *testing.T) {
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "test",
+		UseAI:               false,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+		EnabledPacks:        []string{"GLOBAL", "DE", "US", "SECRETS"},
+		PackDecayRate:       0.0,
+	})
+	// SSH key header.
+	result := a.AnonymizeText("key: -----BEGIN RSA PRIVATE KEY-----", "sess-all")
+	if strings.Contains(result, "BEGIN RSA PRIVATE KEY") {
+		t.Error("SSH key not anonymized")
+	}
+	// AWS key.
+	result2 := a.AnonymizeText("AKIAIOSFODNN7EXAMPLE", "sess-all-2")
+	if strings.Contains(result2, "AKIAIOSFODNN7EXAMPLE") {
+		t.Error("AWS key not anonymized")
+	}
+}
+
+// TestBboltCacheGetMiss covers bbolt Get returning empty for missing key.
+func TestBboltCacheGetMiss(t *testing.T) {
+	dir := t.TempDir()
+	c, err := newBboltCache(dir + "/miss.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close() //nolint:errcheck
+
+	token, ok := c.Get("nonexistent-key")
+	if ok || token != "" {
+		t.Errorf("expected miss, got ok=%v token=%q", ok, token)
+	}
+}
+
+// TestBboltCacheOverwrite covers overwriting an existing key.
+func TestBboltCacheOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	c, err := newBboltCache(dir + "/overwrite.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close() //nolint:errcheck
+
+	c.Set("key", "token1")
+	c.Set("key", "token2")
+	tok, ok := c.Get("key")
+	if !ok || tok != "token2" {
+		t.Errorf("overwrite failed: ok=%v tok=%q", ok, tok)
+	}
+}
+
+// TestBboltCacheDeleteMissing covers deleting a nonexistent key (no-op).
+func TestBboltCacheDeleteMissing(t *testing.T) {
+	dir := t.TempDir()
+	c, err := newBboltCache(dir + "/delmiss.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close() //nolint:errcheck
+
+	// Should not panic.
+	c.Delete("never-set-key")
+}

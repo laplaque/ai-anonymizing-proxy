@@ -677,3 +677,64 @@ func TestStreamingDeanonymizeJsonAndTextInterleaved(t *testing.T) {
 		t.Errorf("input_json_delta token not replaced:\n%s", got)
 	}
 }
+
+// TestHandleStreamEndPartialLine verifies that a stream ending mid-line
+// (no trailing newline) still flushes the partial line with replacements.
+func TestHandleStreamEndPartialLine(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// Stream ends without a newline — exercises the lineBuf > 0 path in handleStreamEnd.
+	sseInput := "data: partial " + token
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("partial line token not replaced:\n%s", got)
+	}
+}
+
+// TestProcessLineEmptyLine covers the empty line passthrough in processLine.
+func TestProcessLineEmptyLine(t *testing.T) {
+	tokenMap := map[string]string{"[PII_EMAIL_c160f8cc4b2e1a3d]": "alice@example.com"}
+	sseInput := "\n\n" + makeSSETextDelta(strings.Repeat("a", tokenSuffixLen+5)+"text") + "\n"
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, "text") {
+		t.Errorf("text after empty lines not in output:\n%s", got)
+	}
+}
+
+// TestStreamingDeanonymizeJSONDeltaFlushAtStop verifies that accumulated
+// JSON delta content is flushed when a non-delta event arrives.
+func TestStreamingDeanonymizeJSONDeltaFlushAtStop(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("j", tokenSuffixLen+5)
+	sseInput := makeSSEJsonDelta(prefix+token) +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("json delta token not replaced on flush:\n%s", got)
+	}
+}
+
+// TestProcessTextDeltaJSONMarshalStillWorks verifies processTextDelta emits
+// valid SSE output after replacement for short accumulated text.
+func TestProcessTextDeltaJSONMarshalStillWorks(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// Long prefix ensures the token is in the flush zone, not the suffix guard.
+	prefix := strings.Repeat("m", tokenSuffixLen*2)
+	sseInput := makeSSETextDelta(prefix+token+" end") + "\n"
+	got := readStreamResult(t, sseInput, tokenMap)
+	if !strings.Contains(got, original) {
+		t.Errorf("token not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "data: ") {
+		t.Errorf("SSE data prefix missing:\n%s", got)
+	}
+}
