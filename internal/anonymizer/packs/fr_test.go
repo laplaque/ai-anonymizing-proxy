@@ -13,9 +13,9 @@ func TestValidateFRNIR(t *testing.T) {
 		// Source: https://fr.wikipedia.org/wiki/Numéro_de_sécurité_sociale_en_France
 
 		// Male, born Jan 1985, dept 75 (Paris), commune 012, order 345.
-		// base = 1850175012345 → 1850175012345 % 97 = 1850175012345 mod 97
-		// 1850175012345 / 97 = 19073969199 remainder 42 → key = 97 - 42 = 55
+		// base = 1850175012345 → 1850175012345 % 97 = 42 → key = 97 - 42 = 55
 		{"valid male Paris", "185017501234555", true},
+		{"valid male Paris spaced", "1 85 01 75 012 345 55", true},
 
 		// Female, born Dec 1990, dept 13 (Bouches-du-Rhône), commune 055, order 001.
 		// base = 2901213055001 → 2901213055001 % 97 = 15 → key = 97 - 15 = 82
@@ -35,7 +35,7 @@ func TestValidateFRNIR(t *testing.T) {
 		{"wrong key", "185017501234556", false},
 		{"too short", "18501750123455", false},
 		{"too long", "1850175012345550", false},
-		{"invalid sex digit", "385017501234500", false}, // regex won't match 3, but validator should reject
+		{"invalid sex digit", "385017501234500", false},
 		{"all zeros", "000000000000000", false},
 		{"non-numeric", "18501750123A555", false},
 	}
@@ -44,6 +44,79 @@ func TestValidateFRNIR(t *testing.T) {
 			got := validateFRNIR(tc.input)
 			if got != tc.want {
 				t.Errorf("validateFRNIR(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateLuhn(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		// Source: ISO/IEC 7812-1, https://en.wikipedia.org/wiki/Luhn_algorithm
+		{"valid 9-digit SIREN", "362521874", true},
+		{"valid 9-digit SIREN 2", "443061841", true},
+		{"valid 14-digit SIRET", "36252187400036", true},
+		{"valid 14-digit SIRET 2", "44306184100013", true},
+		{"invalid 9-digit", "362521879", false},
+		{"invalid 9-digit 2", "443061840", false},
+		{"invalid 14-digit", "12345678901234", false},
+		{"single digit", "5", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateLuhn(tc.input)
+			if got != tc.want {
+				t.Errorf("validateLuhn(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateSIRET(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid contiguous", "36252187400036", true},
+		{"valid spaced", "362 521 874 00036", true},
+		{"valid second", "44306184100013", true},
+		{"invalid Luhn", "12345678901234", false},
+		{"too short", "3625218740003", false},
+		{"too long", "362521874000360", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateSIRET(tc.input)
+			if got != tc.want {
+				t.Errorf("validateSIRET(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateSIREN(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid contiguous", "362521874", true},
+		{"valid spaced", "362 521 874", true},
+		{"valid second", "443061841", true},
+		{"invalid Luhn", "362521879", false},
+		{"too short", "36252187", false},
+		{"too long", "3625218740", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateSIREN(tc.input)
+			if got != tc.want {
+				t.Errorf("validateSIREN(%q) = %v, want %v", tc.input, got, tc.want)
 			}
 		})
 	}
@@ -76,7 +149,7 @@ func TestFRNIRPattern(t *testing.T) {
 		t.Fatal("nir entry should have a Validate function")
 	}
 
-	// True positives (regex match)
+	// True positives (regex match — contiguous)
 	positives := []string{
 		"185017501234555", // standard male
 		"290121305500182", // standard female
@@ -84,6 +157,17 @@ func TestFRNIRPattern(t *testing.T) {
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
 			t.Errorf("nir pattern should match %q", s)
+		}
+	}
+
+	// True positives (regex match — spaced, as conventionally written)
+	spacedPositives := []string{
+		"1 85 01 75 012 345 55",
+		"2 90 12 13 055 001 82",
+	}
+	for _, s := range spacedPositives {
+		if !entry.Re.MatchString(s) {
+			t.Errorf("nir pattern should match spaced format %q", s)
 		}
 	}
 
@@ -101,7 +185,6 @@ func TestFRNIRPattern(t *testing.T) {
 	// True negatives (regex should not match)
 	negatives := []string{
 		"385017501234500", // sex digit 3 invalid
-		"18501750123455",  // too short (14 chars)
 		"0850175012345",   // starts with 0
 	}
 	for _, s := range negatives {
@@ -123,18 +206,30 @@ func TestFRSIRETPattern(t *testing.T) {
 	if entry == nil {
 		t.Fatal("siret entry not found in FR pack")
 	}
-
-	// True positive: 14 digits
-	if !entry.Re.MatchString("12345678901234") {
-		t.Error("siret pattern should match 14-digit number")
+	if entry.Validate == nil {
+		t.Fatal("siret entry should have a Validate function")
 	}
 
-	// True negatives
-	if entry.Re.MatchString("1234567890123") {
-		t.Error("siret pattern should NOT match 13-digit number")
+	// True positive: 14 contiguous digits (3+3+3+5 grouping)
+	if !entry.Re.MatchString("36252187400036") {
+		t.Error("siret pattern should match 14-digit contiguous number")
 	}
-	if entry.Re.MatchString("123456789012345") {
-		t.Error("siret pattern should NOT match 15-digit number")
+
+	// True positive: spaced format
+	if !entry.Re.MatchString("362 521 874 00036") {
+		t.Error("siret pattern should match spaced SIRET format")
+	}
+
+	// Regex match + validator pass
+	if entry.Re.MatchString("36252187400036") && !entry.Validate("36252187400036") {
+		t.Error("siret validator should accept Luhn-valid SIRET")
+	}
+
+	// Regex match + validator reject (bad Luhn)
+	if entry.Re.MatchString("12345678901234") {
+		if entry.Validate("12345678901234") {
+			t.Error("siret validator should reject Luhn-invalid SIRET")
+		}
 	}
 }
 
@@ -143,18 +238,30 @@ func TestFRSIRENPattern(t *testing.T) {
 	if entry == nil {
 		t.Fatal("siren entry not found in FR pack")
 	}
+	if entry.Validate == nil {
+		t.Fatal("siren entry should have a Validate function")
+	}
 
-	// True positive: 9 digits
-	if !entry.Re.MatchString("123456789") {
+	// True positive: 9 contiguous digits
+	if !entry.Re.MatchString("362521874") {
 		t.Error("siren pattern should match 9-digit number")
 	}
 
-	// True negatives
-	if entry.Re.MatchString("12345678") {
-		t.Error("siren pattern should NOT match 8-digit number")
+	// True positive: spaced format
+	if !entry.Re.MatchString("362 521 874") {
+		t.Error("siren pattern should match spaced SIREN format")
 	}
-	if entry.Re.MatchString("1234567890") {
-		t.Error("siren pattern should NOT match 10-digit number")
+
+	// Regex match + validator pass
+	if entry.Re.MatchString("362521874") && !entry.Validate("362521874") {
+		t.Error("siren validator should accept Luhn-valid SIREN")
+	}
+
+	// Regex match + validator reject (bad Luhn)
+	if entry.Re.MatchString("362521879") {
+		if entry.Validate("362521879") {
+			t.Error("siren validator should reject Luhn-invalid SIREN")
+		}
 	}
 }
 
