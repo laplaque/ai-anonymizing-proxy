@@ -1436,6 +1436,56 @@ func TestAnonymizeTextWithAllPacks(t *testing.T) {
 	}
 }
 
+// TestAnonymizeTextGermanNoFalseAddress verifies the #68 fix: German words
+// ending in street suffixes (e.g. "ist") must not produce ADDRESS tokens.
+// Tests both the pack-based and legacy code paths.
+func TestAnonymizeTextGermanNoFalseAddress(t *testing.T) {
+	// Pack-based code path.
+	a := NewWithCacheAndCapacity(Options{
+		OllamaEndpoint:      "http://localhost:11434",
+		OllamaModel:         "test",
+		UseAI:               false,
+		AIThreshold:         0.8,
+		OllamaMaxConcurrent: 1,
+		EnabledPacks:        []string{"US"},
+		PackDecayRate:       0.0,
+	})
+	defer a.Close() //nolint:errcheck // test cleanup
+
+	// Use digit strings that won't trigger the ZIP code pattern (which also
+	// produces PII_ADDRESS tokens for 5-digit sequences). The bug is about
+	// "ist" being consumed as part of an address match, not about ZIP codes.
+	inputs := []string{
+		"65929970489 ist korrekt",
+		"1234 ist falsch",
+		"99 Durst nach Wissen",
+	}
+	for _, input := range inputs {
+		result := a.AnonymizeText(input, "test-german-pack")
+		if strings.Contains(result, "[PII_ADDRESS") {
+			t.Errorf("pack path: German text falsely anonymized as ADDRESS: %q -> %q", input, result)
+		}
+	}
+
+	// Legacy code path (no EnabledPacks).
+	legacy := newTestAnonymizer()
+	for _, input := range inputs {
+		result := legacy.AnonymizeText(input, "test-german-legacy")
+		if strings.Contains(result, "[PII_ADDRESS") {
+			t.Errorf("legacy path: German text falsely anonymized as ADDRESS: %q -> %q", input, result)
+		}
+	}
+
+	// Round-trip: anonymize then deanonymize must return original text.
+	for _, input := range inputs {
+		anonymized := a.AnonymizeText(input, "test-german-rt")
+		deanonymized := a.DeanonymizeText(anonymized, "test-german-rt")
+		if deanonymized != input {
+			t.Errorf("round-trip failed: %q -> %q -> %q", input, anonymized, deanonymized)
+		}
+	}
+}
+
 // TestBboltCacheGetMiss covers bbolt Get returning empty for missing key.
 func TestBboltCacheGetMiss(t *testing.T) {
 	dir := t.TempDir()
