@@ -63,6 +63,8 @@ func TestNLPackPipeline(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			result := a.AnonymizeText(c.input, "sess-nl-"+c.name)
+			// Negative cases: pii=="" means the value should NOT be anonymized as the target type
+			// (but may be anonymized by other broad patterns like credit_card).
 			if c.pii != "" {
 				if strings.Contains(result, c.pii) {
 					t.Errorf("PII %q not anonymized in result: %q", c.pii, result)
@@ -72,9 +74,6 @@ func TestNLPackPipeline(t *testing.T) {
 				if !strings.Contains(restored, c.pii) {
 					t.Errorf("PII %q not restored after deanonymization: %q", c.pii, restored)
 				}
-			} else {
-				// Negative case — should not be anonymized as the target type
-				// (but may be anonymized by other broad patterns like credit_card)
 			}
 			a.DeleteSession("sess-nl-" + c.name)
 		})

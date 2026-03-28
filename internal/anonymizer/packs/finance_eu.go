@@ -3,6 +3,7 @@ package packs
 import (
 	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -33,7 +34,7 @@ func validateIBAN(s string) bool {
 	var numStr strings.Builder
 	for _, c := range rearranged {
 		if c >= 'A' && c <= 'Z' {
-			numStr.WriteString(big.NewInt(int64(c - 'A' + 10)).String())
+			numStr.WriteString(strconv.Itoa(int(c - 'A' + 10)))
 		} else if c >= '0' && c <= '9' {
 			numStr.WriteByte(byte(c))
 		} else {
@@ -110,7 +111,7 @@ func init() {
 					`|NL\d{9}B\d{2}` + // Netherlands
 					`|PL\d{10}` + // Poland
 					`|PT\d{9}` + // Portugal
-					`|RO\d{2,10}` + // Romania
+					`|RO\d{6,10}` + // Romania
 					`|SK\d{10}` + // Slovakia
 					`|SI\d{8}` + // Slovenia
 					`|ES[A-Z0-9]\d{7}[A-Z0-9]` + // Spain

@@ -102,10 +102,10 @@ func TestFINANCEEUSWIFTBICPattern(t *testing.T) {
 	}
 
 	positives := []string{
-		"DEUTDEFF",     // Deutsche Bank, 8-char
-		"DEUTDEFF500",  // Deutsche Bank Frankfurt branch, 11-char
-		"COBADEFFXXX",  // Commerzbank, 11-char
-		"BNPAFRPPXXX",  // BNP Paribas, 11-char
+		"DEUTDEFF",    // Deutsche Bank, 8-char
+		"DEUTDEFF500", // Deutsche Bank Frankfurt branch, 11-char
+		"COBADEFFXXX", // Commerzbank, 11-char
+		"BNPAFRPPXXX", // BNP Paribas, 11-char
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
@@ -114,9 +114,9 @@ func TestFINANCEEUSWIFTBICPattern(t *testing.T) {
 	}
 
 	negatives := []string{
-		"DEUT",         // too short
-		"deutdeff",     // lowercase
-		"12UTDEFF",     // starts with digits
+		"DEUT",     // too short
+		"deutdeff", // lowercase
+		"12UTDEFF", // starts with digits
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
@@ -132,12 +132,12 @@ func TestFINANCEEUVATPattern(t *testing.T) {
 	}
 
 	positives := []string{
-		"DE123456789",       // Germany
-		"FR12345678901",     // France (2 digits + 9 digits)
-		"NL123456789B01",    // Netherlands
-		"ATU12345678",       // Austria
-		"BE0123456789",      // Belgium
-		"ES12345678A",       // Spain
+		"DE123456789",    // Germany
+		"FR12345678901",  // France (2 digits + 9 digits)
+		"NL123456789B01", // Netherlands
+		"ATU12345678",    // Austria
+		"BE0123456789",   // Belgium
+		"ES12345678A",    // Spain
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
@@ -146,9 +146,9 @@ func TestFINANCEEUVATPattern(t *testing.T) {
 	}
 
 	negatives := []string{
-		"XX123456789",  // unknown country code
-		"DE12345678",   // too short for DE
-		"US123456789",  // not EU
+		"XX123456789", // unknown country code
+		"DE12345678",  // too short for DE
+		"US123456789", // not EU
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {

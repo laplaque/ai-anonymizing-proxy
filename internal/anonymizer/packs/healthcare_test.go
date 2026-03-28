@@ -40,9 +40,9 @@ func TestHEALTHCAREMRNPattern(t *testing.T) {
 	}
 
 	negatives := []string{
-		"MRN12345",     // too few digits (5)
+		"MRN12345",       // too few digits (5)
 		"MRN12345678901", // too many digits (11)
-		"ABC123456",    // wrong prefix
+		"ABC123456",      // wrong prefix
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
@@ -72,8 +72,8 @@ func TestHEALTHCAREICD10Pattern(t *testing.T) {
 	}
 
 	negatives := []string{
-		"A01.2",       // no context keyword
-		"random Z00",  // no context keyword
+		"A01.2",      // no context keyword
+		"random Z00", // no context keyword
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
@@ -102,8 +102,8 @@ func TestHEALTHCAREInsuranceIDPattern(t *testing.T) {
 	}
 
 	negatives := []string{
-		"ID12345678",       // no keyword prefix
-		"insurance 12345",  // too few digits
+		"ID12345678",      // no keyword prefix
+		"insurance 12345", // too few digits
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
