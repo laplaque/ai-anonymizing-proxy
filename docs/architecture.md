@@ -236,7 +236,7 @@ Each request gets a random `sessionID`. The token→original map is stored in
 
 For SSE (`Content-Type: text/event-stream`), `StreamingDeanonymize` wraps the response body in a
 pipe-based reader. Because the Anthropic API delivers one or two characters per `text_delta`
-event, a single token like `[PII_EMAIL_c160f8cc]` frequently arrives split across multiple
+event, a single token like `[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple
 events.
 
 The streaming logic is decomposed into small, independently testable helpers in

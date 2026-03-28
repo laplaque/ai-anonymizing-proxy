@@ -18,19 +18,19 @@ func TestMemoryCacheBasicOperations(t *testing.T) {
 	}
 
 	// Set and hit.
-	c.Set("alice@example.com", "[PII_a3f29c81]")
+	c.Set("alice@example.com", "[PII_a3f29c81e4d07b56]")
 	token, ok := c.Get("alice@example.com")
 	if !ok {
 		t.Error("expected hit after Set")
 	}
-	if token != "[PII_a3f29c81]" {
+	if token != "[PII_a3f29c81e4d07b56]" {
 		t.Errorf("unexpected token: %q", token)
 	}
 
 	// Overwrite.
-	c.Set("alice@example.com", "[PII_newtoken0]")
+	c.Set("alice@example.com", "[PII_newtoken0abcdef12]")
 	token, ok = c.Get("alice@example.com")
-	if !ok || token != "[PII_newtoken0]" {
+	if !ok || token != "[PII_newtoken0abcdef12]" {
 		t.Errorf("expected overwritten token, got %q ok=%v", token, ok)
 	}
 
@@ -59,12 +59,12 @@ func TestBboltCacheBasicOperations(t *testing.T) {
 	}
 
 	// Set and hit.
-	c.Set("bob@corp.io", "[PII_bb3f1c2a]")
+	c.Set("bob@corp.io", "[PII_bb3f1c2a9e70d415]")
 	token, ok := c.Get("bob@corp.io")
 	if !ok {
 		t.Error("expected hit after Set")
 	}
-	if token != "[PII_bb3f1c2a]" {
+	if token != "[PII_bb3f1c2a9e70d415]" {
 		t.Errorf("unexpected token: %q", token)
 	}
 
@@ -87,8 +87,8 @@ func TestBboltCacheSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open first instance: %v", err)
 	}
-	c1.Set("alice@example.com", "[PII_a3f29c81]")
-	c1.Set("555-867-5309", "[PII_7f4e1b02]")
+	c1.Set("alice@example.com", "[PII_a3f29c81e4d07b56]")
+	c1.Set("555-867-5309", "[PII_7f4e1b02c8a3d596]")
 	if closeErr := c1.Close(); closeErr != nil {
 		t.Fatalf("close first instance: %v", closeErr)
 	}
@@ -106,12 +106,12 @@ func TestBboltCacheSurvivesRestart(t *testing.T) {
 	defer c2.Close() //nolint:errcheck // test cleanup
 
 	token, ok := c2.Get("alice@example.com")
-	if !ok || token != "[PII_a3f29c81]" {
+	if !ok || token != "[PII_a3f29c81e4d07b56]" {
 		t.Errorf("email token did not survive restart: ok=%v token=%q", ok, token)
 	}
 
 	token, ok = c2.Get("555-867-5309")
-	if !ok || token != "[PII_7f4e1b02]" {
+	if !ok || token != "[PII_7f4e1b02c8a3d596]" {
 		t.Errorf("phone token did not survive restart: ok=%v token=%q", ok, token)
 	}
 }

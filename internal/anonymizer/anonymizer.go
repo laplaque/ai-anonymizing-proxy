@@ -67,6 +67,17 @@ const (
 	PIINIR   PIIType = "NIR"
 	PIISIRET PIIType = "SIRET"
 	PIISIREN PIIType = "SIREN"
+	// NL pack types.
+	PIIBSN PIIType = "BSN"
+	PIIKVK PIIType = "KVK"
+	// FINANCE_EU pack types.
+	PIIIBAN     PIIType = "IBAN"
+	PIISWIFTBIC PIIType = "SWIFTBIC"
+	PIIVATID    PIIType = "VATID"
+	// HEALTHCARE pack types.
+	PIIMRN         PIIType = "MRN"
+	PIIICD10       PIIType = "ICD10"
+	PIIInsuranceID PIIType = "INSURANCEID"
 )
 
 // sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
@@ -633,7 +644,7 @@ func (a *Anonymizer) DeleteSession(sessionID string) {
 // for Anthropic SSE streams.
 //
 // The Anthropic API streams one or two characters per text_delta event, which
-// means a single PII token like [PII_78cabb39] frequently arrives split across
+// means a single PII token like [PII_EMAIL_c160f8cc4b2e1a3d] frequently arrives split across
 // multiple SSE events:
 //
 //	{"type":"text_delta","text":"[PII_78cabb"}

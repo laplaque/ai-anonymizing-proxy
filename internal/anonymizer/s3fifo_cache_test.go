@@ -29,19 +29,19 @@ func TestS3FIFOGetSetDelete(t *testing.T) {
 	}
 
 	// Set then Get.
-	c.Set("alice@example.com", "[PII_aabbccdd]")
+	c.Set("alice@example.com", "[PII_aabbccdd11223344]")
 	tok, ok := c.Get("alice@example.com")
 	if !ok {
 		t.Fatal("expected hit after Set")
 	}
-	if tok != "[PII_aabbccdd]" {
+	if tok != "[PII_aabbccdd11223344]" {
 		t.Errorf("unexpected token: %q", tok)
 	}
 
 	// Overwrite.
-	c.Set("alice@example.com", "[PII_11223344]")
+	c.Set("alice@example.com", "[PII_1122334455667788]")
 	tok, ok = c.Get("alice@example.com")
-	if !ok || tok != "[PII_11223344]" {
+	if !ok || tok != "[PII_1122334455667788]" {
 		t.Errorf("expected overwritten value, got %q ok=%v", tok, ok)
 	}
 
@@ -293,10 +293,10 @@ func TestS3FIFOWithBboltBacking(t *testing.T) {
 	c := newS3FIFOCache(bbolt, 100)
 	defer c.Close() //nolint:errcheck
 
-	c.Set("persist@example.com", "[PII_feedbeef]")
+	c.Set("persist@example.com", "[PII_feedbeef12345678]")
 
 	tok, ok := c.Get("persist@example.com")
-	if !ok || tok != "[PII_feedbeef]" {
+	if !ok || tok != "[PII_feedbeef12345678]" {
 		t.Fatalf("expected hit, got ok=%v tok=%q", ok, tok)
 	}
 

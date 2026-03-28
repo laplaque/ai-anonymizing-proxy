@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-03-28T01:00:00.000Z" agent="Claude" version="21.0.0" type="device">
+  <diagram id="eu-pii-formats-nl-finance" name="EU PII Formats — NL, FINANCE_EU, HEALTHCARE">
+    <mxGraphModel dx="1400" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="title" value="EU PII Formats — NL, FINANCE_EU, HEALTHCARE Packs" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="250" y="10" width="700" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== NL SECTION ===== -->
+        <mxCell id="nl_header" value="NL Pack — Netherlands" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#FF6600;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="300" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- BSN -->
+        <mxCell id="bsn_label" value="BSN (Burgerservicenummer)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="300" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d1" value="D&#x2081;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d2" value="D&#x2082;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="85" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d3" value="D&#x2083;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="130" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d4" value="D&#x2084;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="175" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d5" value="D&#x2085;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="220" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d6" value="D&#x2086;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="265" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d7" value="D&#x2087;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="310" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_d8" value="D&#x2088;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="355" y="130" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_chk" value="CHK" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="130" width="45" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="bsn_note" value="9 digits &#x2014; elfproef: 9&#xd7;D&#x2081;+8&#xd7;D&#x2082;+...+2&#xd7;D&#x2088;-1&#xd7;D&#x2089; mod 11 = 0" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="455" y="130" width="450" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- KvK -->
+        <mxCell id="kvk_label" value="KvK (Chamber of Commerce Number)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="185" width="300" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="kvk_digits" value="8 digits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="215" width="160" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="kvk_note" value="8 digits &#x2014; no checksum &#x2014; low confidence (0.45) routes to AI" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="210" y="215" width="400" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== FINANCE_EU SECTION ===== -->
+        <mxCell id="fin_header" value="FINANCE_EU Pack &#x2014; EU Financial Identifiers" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#0050EF;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="400" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- IBAN -->
+        <mxCell id="iban_label" value="IBAN (International Bank Account Number)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="320" width="350" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="iban_country" value="Country&#xa;2 alpha" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="350" width="65" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="iban_check" value="Check&#xa;2 digits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="110" y="350" width="65" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="iban_bban" value="BBAN (up to 30 alphanumeric chars)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="180" y="350" width="280" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="iban_note" value="15&#x2013;34 chars &#x2014; ISO 7064 MOD 97-10 checksum" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="470" y="350" width="350" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- SWIFT/BIC -->
+        <mxCell id="swift_label" value="SWIFT/BIC (Business Identifier Code)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="405" width="350" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="swift_bank" value="Bank&#xa;4 alpha" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="435" width="65" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="swift_country" value="Country&#xa;2 alpha" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="435" width="65" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="swift_loc" value="Location&#xa;2 alnum" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="180" y="435" width="70" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="swift_branch" value="Branch&#xa;3 alnum&#xa;(optional)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="255" y="435" width="70" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="swift_note" value="8 or 11 chars &#x2014; no checksum &#x2014; structural format" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="340" y="435" width="350" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- VAT -->
+        <mxCell id="vat_label" value="EU VAT ID (Value Added Tax Identifier)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="490" width="350" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="vat_prefix" value="Country&#xa;2 alpha" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="520" width="65" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="vat_body" value="Country-specific body (2&#x2013;15 alnum)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="520" width="250" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="vat_note" value="27 EU formats &#x2014; e.g. DE123456789, NL123456789B01" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="370" y="520" width="400" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== HEALTHCARE SECTION ===== -->
+        <mxCell id="hc_header" value="HEALTHCARE Pack &#x2014; Medical Identifiers" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#CC0000;" vertex="1" parent="1">
+          <mxGeometry x="40" y="590" width="400" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- MRN -->
+        <mxCell id="mrn_label" value="MRN (Medical Record Number)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="300" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="mrn_prefix" value="Prefix&#xa;MRN|MR|PAT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="660" width="90" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="mrn_sep" value="sep" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="135" y="660" width="35" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="mrn_digits" value="6&#x2013;10 digits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="175" y="660" width="120" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="mrn_note" value="Keyword-gated &#x2014; no checksum &#x2014; high confidence (0.85)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="310" y="660" width="400" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- ICD-10 -->
+        <mxCell id="icd10_label" value="ICD-10 (Diagnostic Code)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="715" width="300" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="icd10_kw" value="Keyword&#xa;diagnosis|ICD|dx|code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="745" width="130" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="icd10_letter" value="A&#x2013;Z" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="175" y="745" width="45" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="icd10_digits" value="DD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="225" y="745" width="40" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="icd10_dot" value=".DDDD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="270" y="745" width="55" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="icd10_note" value="Keyword + letter + 2 digits + optional .1&#x2013;4 digits" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="340" y="745" width="400" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Insurance ID -->
+        <mxCell id="ins_label" value="Insurance/Policy ID" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="800" width="300" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins_kw" value="Keyword&#xa;insurance|policy|&#xa;member|EHIC|subscriber" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="40" y="830" width="140" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins_prefix" value="Alpha&#xa;2&#x2013;4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="185" y="830" width="55" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins_digits" value="6&#x2013;12 digits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="245" y="830" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="ins_note" value="Keyword-gated &#x2014; covers EHIC, US CMS, EU formats" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="360" y="830" width="400" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== LEGEND ===== -->
+        <mxCell id="legend_header" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="910" width="100" height="25" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_green" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="40" y="940" width="25" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_green_label" value="Numeric field" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="70" y="940" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_blue" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="180" y="940" width="25" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_blue_label" value="Constrained field" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="210" y="940" width="120" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_purple" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="340" y="940" width="25" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_purple_label" value="Alpha / keyword field" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="370" y="940" width="130" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_yellow" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="510" y="940" width="25" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend_yellow_label" value="Check digit (validated)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="940" width="150" height="20" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

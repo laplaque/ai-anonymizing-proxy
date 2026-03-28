@@ -94,14 +94,14 @@ stateDiagram-v2
 All tokens use the format:
 
 ```
-[PII_<TYPE>_<8hex>]
+[PII_<TYPE>_<16hex>]
 ```
 
-For example: `[PII_EMAIL_c160f8cc]`, `[PII_PHONE_7f4e1b02]`, `[PII_IPADDRESS_5d8c3f1a]`.
+For example: `[PII_EMAIL_c160f8cc4b2e1a3d]`, `[PII_PHONE_7f4e1b02c8a3d596]`, `[PII_IPADDRESS_5d8c3f1a9e2b70c4]`.
 
 - `<TYPE>` is the uppercased PII type name, giving the LLM semantic context without revealing the
   original value.
-- `<8hex>` is the first 8 hex characters of `md5(original_value)` — deterministic, so the same
+- `<16hex>` is the first 16 hex characters of `md5(original_value)` — deterministic, so the same
   value always produces the same token within and across sessions.
 - The bracket notation is chosen to satisfy the **non-retriggering invariant**: no token matches
   any of the eight compiled regex patterns. A violation here would cause the proxy to tokenize
@@ -153,11 +153,11 @@ starts, so a `DeleteSession` call that races with streaming cannot cause missed 
 ## Streaming deanonymization
 
 The Anthropic API delivers one or two characters per `text_delta` SSE event, meaning a single
-token like `[PII_EMAIL_c160f8cc]` frequently arrives split across multiple events:
+token like `[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple events:
 
 ```
 {"type":"text_delta","text":"[PII_EMA"}
-{"type":"text_delta","text":"IL_c160f8cc]"}
+{"type":"text_delta","text":"IL_c160f8cc4b2e1a3d]"}
 ```
 
 Raw byte replacement cannot match tokens split this way. `StreamingDeanonymize` delegates to a
@@ -172,9 +172,9 @@ pipeline of small helper functions (in `streaming.go`) that each handle one conc
    `content_block_delta` / `text_delta` **and** `thinking_delta` events, tracks the content
    block index, and flushes safe prefixes.
 4. **Safe flush boundary** (`safeCutPoint`) — calculates how many accumulated bytes can be
-   flushed without splitting a partial token. A `tokenSuffixLen` of 26 bytes is retained in
+   flushed without splitting a partial token. A `tokenSuffixLen` of 33 bytes is retained in
    the accumulator — enough to cover the longest possible token
-   (`[PII_CREDITCARD_XXXXXXXX]` = 25 chars).
+   (`[PII_CREDITCARD_XXXXXXXXXXXXXXXX]` = 33 chars).
 5. **Remainder flush** (`flushRemainder`) — when a non-text-delta event arrives or the stream
    ends, any text still in the accumulator is emitted as a synthetic `content_block_delta`
    targeting the correct content block index.
@@ -306,6 +306,58 @@ use checksum algorithms to reject false positives before tokenization.
   coincidental matches (phone fragments, ZIP+4 codes). The regex matches the conventional
   3+3+3 spaced grouping (e.g. `362 521 874`). The moderate confidence (0.60) routes remaining
   ambiguous matches through AI verification.
+
+### NL pack — Netherlands
+
+| Pattern | PII type | Regex | Checksum | Confidence | Source |
+|---------|----------|-------|----------|------------|--------|
+| `bsn` | `BSN` | `\b\d{9}\b` | Modulo 11 "elfproef": weighted sum `9*d1 + 8*d2 + … + 2*d8 - 1*d9` must be divisible by 11 and non-zero | 0.70 | [Wikipedia: Burgerservicenummer](https://nl.wikipedia.org/wiki/Burgerservicenummer); silv3rshi3ld/gdpr-pii-scanner |
+| `kvk` | `KVK` | `\b\d{8}\b` | None | 0.45 | [KvK.nl](https://www.kvk.nl/english/); 8-digit business registration number |
+
+**False-positive mitigation (NL):**
+
+- **BSN:** The elfproef modulo 11 algorithm rejects ~91% of random 9-digit sequences. The
+  additional constraint that the weighted sum must be non-zero eliminates the all-zeros edge case.
+- **KvK:** The 8-digit pattern is inherently broad. The very low confidence (0.45) ensures
+  matches route through AI verification, where contextual keywords ("KvK", "Kamer van Koophandel",
+  "registration") provide disambiguation.
+
+### FINANCE_EU pack — EU Financial Identifiers
+
+| Pattern | PII type | Regex | Checksum | Confidence | Source |
+|---------|----------|-------|----------|------------|--------|
+| `iban` | `IBAN` | `\b[A-Z]{2}\d{2}[\s]?[\dA-Z]{4}[\s]?(?:[\dA-Z]{4}[\s]?){1,7}[\dA-Z]{1,4}\b` | ISO 7064 MOD 97-10: rearrange first 4 chars to end, convert letters to digits (A=10..Z=35), compute mod 97; result must be 1 | 0.85 | [Wikipedia: IBAN](https://en.wikipedia.org/wiki/International_Bank_Account_Number); mnestorov/regex-patterns |
+| `swift_bic` | `SWIFTBIC` | `\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b` | None (structural format) | 0.65 | [Wikipedia: ISO 9362](https://en.wikipedia.org/wiki/ISO_9362) |
+| `vat_eu` | `VATID` | Consolidated regex covering all 27 EU member state VAT formats | None (structural per-country format) | 0.80 | [Wikipedia: VAT identification number](https://en.wikipedia.org/wiki/VAT_identification_number); mnestorov/regex-patterns (per-country patterns) |
+
+**False-positive mitigation (FINANCE_EU):**
+
+- **IBAN:** The MOD 97-10 checksum rejects >99% of random alphanumeric strings matching the regex.
+  The country code prefix (2 uppercase letters) and check digits (2 digits) provide additional
+  structural constraints. The validator handles spaced/hyphenated formats by stripping whitespace.
+- **SWIFT/BIC:** The strict 4-alpha bank code + 2-alpha country code structure is distinctive.
+  The moderate confidence (0.65) routes ambiguous short codes through AI verification.
+- **VAT ID:** The consolidated regex requires a known EU country code prefix (AT, BE, BG, etc.)
+  followed by the country-specific digit/letter pattern. This eliminates matches on arbitrary
+  alphanumeric sequences.
+
+### HEALTHCARE pack — Medical Identifiers
+
+| Pattern | PII type | Regex | Checksum | Confidence | Source |
+|---------|----------|-------|----------|------------|--------|
+| `mrn` | `MRN` | `(?i)\b(?:MRN\|MR\|PAT)[\s\-:#]?\d{6,10}\b` | None (keyword-gated) | 0.85 | HL7 FHIR identifier patterns; silv3rshi3ld/gdpr-pii-scanner patient_id detector |
+| `icd10` | `ICD10` | `(?i)(?:diagnosis\|icd[\s\-]?10?\|dx\|code)[\s:]*\b[A-Z]\d{2}(?:\.\d{1,4})?\b` | None (keyword-gated) | 0.75 | [WHO ICD-10](https://www.who.int/classifications/icd/en/) |
+| `insurance_id` | `INSURANCEID` | `(?i)(?:insurance\|policy\|member\|ehic\|subscriber)[\s\-:#]*[A-Z0-9]{2,4}[\s\-]?\d{6,12}\b` | None (keyword-gated) | 0.70 | EHIC format; silv3rshi3ld/gdpr-pii-scanner (GDPR special category: medical) |
+
+**False-positive mitigation (HEALTHCARE):**
+
+- **MRN:** Requires a keyword prefix (MRN, MR, PAT) which is structurally uncommon outside
+  medical contexts. The 6-10 digit range covers common hospital MRN lengths.
+- **ICD-10:** Requires a contextual keyword (diagnosis, ICD, dx, code) preceding the code.
+  Without the keyword gate, the letter+2-digit pattern would match too broadly.
+- **Insurance ID:** Requires an insurance-related keyword prefix, limiting matches to contexts
+  where insurance identifiers are likely. The alphanumeric prefix + 6-12 digit range covers
+  EHIC, US CMS, and common EU insurance ID formats.
 
 ---
 
