@@ -78,6 +78,16 @@ func TestDESteuerIDPattern(t *testing.T) {
 	if entry.Re.MatchString("05929970489") {
 		t.Error("steuer_id regex should NOT match number starting with 0")
 	}
+
+	// True negative: double space (not a valid separator).
+	if entry.Re.MatchString("659  299 704 89") {
+		t.Error("steuer_id regex should NOT match double-space format")
+	}
+
+	// True negative: underscore separator.
+	if entry.Re.MatchString("659_299_704_89") {
+		t.Error("steuer_id regex should NOT match underscore format")
+	}
 }
 
 func TestDESVNRPattern(t *testing.T) {
