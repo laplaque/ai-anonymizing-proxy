@@ -21,7 +21,7 @@ func TestSafeCutPoint(t *testing.T) {
 		{"exactly tokenSuffixLen held", strings.Repeat("x", tokenSuffixLen), 0},
 		{"long text without bracket", strings.Repeat("a", 50), 50 - tokenSuffixLen},
 		{"open bracket in suffix", strings.Repeat("a", 30) + "[PII_EMAIL", 30},
-		{"closed bracket in suffix", strings.Repeat("a", 30) + "[PII_EMAIL_abc12345]rest", 30 + len("[PII_EMAIL_abc12345]rest") - tokenSuffixLen},
+		{"closed bracket in suffix", strings.Repeat("a", 30) + "[PII_EMAIL_abc12345deadbeef]rest", 30 + len("[PII_EMAIL_abc12345deadbeef]rest") - tokenSuffixLen},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -581,7 +581,7 @@ func TestStreamingDeanonymizeThreeChunkSplit(t *testing.T) {
 // the session map) passes through the stream unchanged.
 func TestStreamingDeanonymizeTokenMapMiss(t *testing.T) {
 	knownToken := "[PII_EMAIL_c160f8cc4b2e1a3d]"
-	unknownToken := "[PII_PHONE_ffffffff]"
+	unknownToken := "[PII_PHONE_ffffffff00000000]"
 	tokenMap := map[string]string{knownToken: "alice@example.com"}
 
 	prefix := strings.Repeat("u", tokenSuffixLen+10)
@@ -598,7 +598,7 @@ func TestStreamingDeanonymizeTokenMapMiss(t *testing.T) {
 // TestStreamingDeanonymizeJsonDeltaTokenSplit verifies that a PII token split
 // across multiple input_json_delta fragments is reassembled and replaced.
 func TestStreamingDeanonymizeJsonDeltaTokenSplit(t *testing.T) {
-	token := "[PII_PHONE_d4bc1884]"
+	token := "[PII_PHONE_d4bc1884a0e5f321]"
 	original := "555-0199"
 	tokenMap := map[string]string{token: original}
 
@@ -607,8 +607,8 @@ func TestStreamingDeanonymizeJsonDeltaTokenSplit(t *testing.T) {
 	prefix := strings.Repeat("x", tokenSuffixLen+10)
 	sseInput := makeSSEJsonDelta(prefix+"[PII_") +
 		makeSSEJsonDelta("PHONE") +
-		makeSSEJsonDelta("_d4bc") +
-		makeSSEJsonDelta("1884]") +
+		makeSSEJsonDelta("_d4bc1884") +
+		makeSSEJsonDelta("a0e5f321]") +
 		"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
 
@@ -641,7 +641,7 @@ func TestStreamingDeanonymizeJsonDeltaShortNoMatch(t *testing.T) {
 // TestStreamingDeanonymizeJsonDeltaEOFFlush verifies that the JSON
 // accumulator is flushed at EOF when no content_block_stop follows.
 func TestStreamingDeanonymizeJsonDeltaEOFFlush(t *testing.T) {
-	token := "[PII_PHONE_d4bc1884]"
+	token := "[PII_PHONE_d4bc1884a0e5f321]"
 	original := "555-0199"
 	tokenMap := map[string]string{token: original}
 
@@ -659,7 +659,7 @@ func TestStreamingDeanonymizeJsonDeltaEOFFlush(t *testing.T) {
 func TestStreamingDeanonymizeJsonAndTextInterleaved(t *testing.T) {
 	token1 := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original1 := "[PII_EMAIL_357a20e8b1c9f456]"
-	token2 := "[PII_PHONE_d4bc1884]"
+	token2 := "[PII_PHONE_d4bc1884a0e5f321]"
 	original2 := "555-0199"
 	tokenMap := map[string]string{token1: original1, token2: original2}
 

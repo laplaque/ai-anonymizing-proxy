@@ -492,7 +492,7 @@ func TestTokenFormatNonRetriggering(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "SECRETS"},
+		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
 		PackDecayRate:       0.05,
 	})
 	piiTypes := []PIIType{
@@ -503,6 +503,9 @@ func TestTokenFormatNonRetriggering(t *testing.T) {
 		PIISteuerID, PIISVNR, PIIKFZ,
 		PIISSHKey, PIIJWT, PIIBearer, PIIDBConn, PIIAWSKey, PIIGHToken,
 		PIINIR, PIISIRET, PIISIREN,
+		PIIBSN, PIIKVK,
+		PIIIBAN, PIISWIFTBIC, PIIVATID,
+		PIIMRN, PIIICD10, PIIInsuranceID,
 	}
 	for _, pt := range piiTypes {
 		token := a.replacement(pt, "test-value-for-"+string(pt))
@@ -523,7 +526,7 @@ func TestTokenFormatNonRetriggeringAllPacks(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "US", "SECRETS"},
+		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "US", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
 		PackDecayRate:       0.05,
 	})
 	// Only test PII types whose tokens are guaranteed not to retrigger.
@@ -539,6 +542,9 @@ func TestTokenFormatNonRetriggeringAllPacks(t *testing.T) {
 		PIISteuerID, PIISVNR, PIIKFZ,
 		PIISSHKey, PIIJWT, PIIBearer, PIIDBConn, PIIAWSKey, PIIGHToken,
 		PIINIR, PIISIRET, PIISIREN,
+		PIIBSN, PIIKVK,
+		PIIIBAN, PIISWIFTBIC, PIIVATID,
+		PIIMRN, PIIICD10, PIIInsuranceID,
 	}
 	for _, pt := range piiTypes {
 		token := a.replacement(pt, "test-value-for-"+string(pt))
