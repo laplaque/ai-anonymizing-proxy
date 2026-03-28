@@ -131,6 +131,8 @@ func TestUSAddressPattern(t *testing.T) {
 		"5 B Ave",
 		"100 North Main Rd",
 		"42 West Elm Drive",
+		"My address is 123 Main St in Springfield", // embedded in surrounding text
+		"123 Main Street, Apt 4",                   // trailing punctuation after \b
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
@@ -148,11 +150,19 @@ func TestUSAddressPattern(t *testing.T) {
 		{"German Durst", "99 Durst nach Wissen"},
 		{"German erst", "100 erst dann"},
 		{"German Bist", "42 Bist du sicher"},
+		// Addresses where the suffix IS the street name (e.g. "123 Court")
+		// are not matched because the regex requires at least one word + space
+		// before the suffix. This is an accepted trade-off to eliminate false
+		// positives on words ending in street suffixes.
+		{"suffix-only street name", "123 Court"},
+		{"suffix-only Lane", "456 Lane"},
 	}
 	for _, tc := range negatives {
-		if entry.Re.MatchString(tc.input) {
-			t.Errorf("address pattern should NOT match %q (false positive on %s)", tc.input, tc.name)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if entry.Re.MatchString(tc.input) {
+				t.Errorf("address pattern should NOT match %q", tc.input)
+			}
+		})
 	}
 }
 
