@@ -12,6 +12,11 @@ func TestValidateSteuerID(t *testing.T) {
 		// Source: https://de.wikipedia.org/wiki/Steuerliche_Identifikationsnummer
 		{"valid example 1", "65929970489", true},
 		{"valid example 2", "86095742719", true},
+		// Spaced/hyphenated formats (validateSteuerID strips non-digits).
+		{"valid spaced", "659 299 704 89", true},
+		{"valid hyphenated", "659-299-704-89", true},
+		{"valid mixed", "659 299-704 89", true},
+		{"valid spaced example 2", "860 957 427 19", true},
 		// True negatives
 		{"wrong check digit", "65929970488", false},
 		{"starts with zero", "05929970489", false},
@@ -54,9 +59,19 @@ func TestDESteuerIDPattern(t *testing.T) {
 		t.Fatal("steuer_id entry not found in DE pack")
 	}
 
-	// True positive: 11-digit number starting with non-zero.
+	// True positive: contiguous 11-digit number starting with non-zero.
 	if !entry.Re.MatchString("65929970489") {
-		t.Error("steuer_id regex should match valid format")
+		t.Error("steuer_id regex should match contiguous format")
+	}
+
+	// True positive: spaced format (XXX XXX XXX XX).
+	if !entry.Re.MatchString("659 299 704 89") {
+		t.Error("steuer_id regex should match spaced format")
+	}
+
+	// True positive: hyphenated format.
+	if !entry.Re.MatchString("659-299-704-89") {
+		t.Error("steuer_id regex should match hyphenated format")
 	}
 
 	// True negative: starts with 0.
@@ -73,7 +88,17 @@ func TestDESVNRPattern(t *testing.T) {
 
 	// Synthetic SVNR: area(12) + DOB(150385) + letter(A) + seq(123)
 	if !entry.Re.MatchString("12150385A123") {
-		t.Error("svnr regex should match valid format")
+		t.Error("svnr regex should match contiguous format")
+	}
+
+	// Spaced format: area DOB letter seq
+	if !entry.Re.MatchString("12 150385 A 123") {
+		t.Error("svnr regex should match spaced format")
+	}
+
+	// Hyphenated format
+	if !entry.Re.MatchString("12-150385-A-123") {
+		t.Error("svnr regex should match hyphenated format")
 	}
 
 	// Invalid: bad month (13)
