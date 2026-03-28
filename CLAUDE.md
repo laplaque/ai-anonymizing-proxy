@@ -25,7 +25,7 @@
 | DE | Enabled by default | Steuer-ID (ISO 7064 MOD 11,10), SVNR, KFZ |
 | SECRETS | Enabled by default | SSH keys, JWT, bearer tokens, DB connection strings, AWS keys, GitHub tokens |
 | US | Available | Phone, SSN, ZIP, address, IPv4, IPv6 |
-| FR | Planned (PR 2) | NIR, SIRET, SIREN |
+| FR | Available | NIR (mod 97 validated, Corsica 2A/2B), SIRET, SIREN |
 | NL | Planned (PR 3) | BSN, KvK |
 | FINANCE_EU | Planned (PR 3) | IBAN, SWIFT/BIC, VAT IDs |
 | HEALTHCARE | Planned (PR 3) | MRN, ICD-10, insurance identifiers |
