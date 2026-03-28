@@ -48,7 +48,7 @@ func init() {
 		Entry{
 			Name:       "steuer_id",
 			Pack:       "DE",
-			Re:         regexp.MustCompile(`\b[1-9]\d{10}\b`),
+			Re:         regexp.MustCompile(`\b[1-9]\d{2}[ -]?\d{3}[ -]?\d{3}[ -]?\d{2}\b`),
 			PIIType:    "STEUERID",
 			Confidence: 0.70,
 			Validate:   validateSteuerID,
@@ -63,7 +63,7 @@ func init() {
 		Entry{
 			Name:       "svnr",
 			Pack:       "DE",
-			Re:         regexp.MustCompile(`\b\d{2}(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}[A-Za-z]\d{3}\b`),
+			Re:         regexp.MustCompile(`\b\d{2}[ -]?(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}[ -]?[A-Za-z][ -]?\d{3}\b`),
 			PIIType:    "SVNR",
 			Confidence: 0.80,
 		},

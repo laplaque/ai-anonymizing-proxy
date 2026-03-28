@@ -66,7 +66,7 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 
 | # | Issue | Packs | Status |
 |---|-------|-------|--------|
-| #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Open |
+| #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Resolved (PR) |
 | #68 | US address_us false-positives on German "ist" | US x DE | Open |
 | #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Open |
 | #70 | GLOBAL api_key "token" keyword steals SECRETS ghp_ tokens | GLOBAL x SECRETS | Open |
