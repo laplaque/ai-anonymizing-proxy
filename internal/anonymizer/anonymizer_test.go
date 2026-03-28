@@ -1450,7 +1450,7 @@ func TestAnonymizeTextGermanNoFalseAddress(t *testing.T) {
 		EnabledPacks:        []string{"US"},
 		PackDecayRate:       0.0,
 	})
-	defer a.Close()
+	defer a.Close() //nolint:errcheck // test cleanup
 
 	// Use digit strings that won't trigger the ZIP code pattern (which also
 	// produces PII_ADDRESS tokens for 5-digit sequences). The bug is about
