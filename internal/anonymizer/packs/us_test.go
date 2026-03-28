@@ -126,10 +126,32 @@ func TestUSAddressPattern(t *testing.T) {
 		"123 Main Street",
 		"456 Elm Ave",
 		"789 Oak Boulevard",
+		"321 Oak St",
+		"10 A St",
+		"5 B Ave",
+		"100 North Main Rd",
+		"42 West Elm Drive",
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
 			t.Errorf("address pattern should match %q", s)
+		}
+	}
+
+	negatives := []struct {
+		name  string
+		input string
+	}{
+		{"German ist", "65929970489 ist korrekt"},
+		{"German ist 2", "12345 ist falsch"},
+		{"German Kunst", "12345 Kunst und Kultur"},
+		{"German Durst", "99 Durst nach Wissen"},
+		{"German erst", "100 erst dann"},
+		{"German Bist", "42 Bist du sicher"},
+	}
+	for _, tc := range negatives {
+		if entry.Re.MatchString(tc.input) {
+			t.Errorf("address pattern should NOT match %q (false positive on %s)", tc.input, tc.name)
 		}
 	}
 }
