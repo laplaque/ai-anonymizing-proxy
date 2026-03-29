@@ -17,7 +17,7 @@ interfere with each other when all packs are enabled simultaneously.
 |---|-------|-------|--------|
 | #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Known, not fixed |
 | #68 | US address_us false-positives on German "ist" | US x DE | Known, not fixed |
-| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Known, not fixed |
+| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Resolved (SSN requires hyphens) |
 | #70 | GLOBAL api_key "token" keyword steals SECRETS ghp_ tokens | GLOBAL x SECRETS | Known, not fixed |
 
 ### New Cross-Pack Cases (PR 3)

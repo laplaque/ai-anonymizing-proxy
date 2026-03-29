@@ -68,7 +68,7 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 |---|-------|-------|--------|
 | #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Resolved (PR) |
 | #68 | US address_us false-positives on German "ist" | US x DE | Open |
-| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Open |
+| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Resolved (PR #75) |
 | #70 | GLOBAL api_key "token" keyword steals SECRETS ghp_ tokens | GLOBAL x SECRETS | Open |
 | — | NL KvK 8-digit pattern is very broad | NL | By design (low confidence 0.45) |
 | — | SWIFT/BIC 8-char may match all-caps words | FINANCE_EU | By design (moderate confidence 0.65) |
