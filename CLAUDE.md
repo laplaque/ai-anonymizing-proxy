@@ -13,9 +13,10 @@
 - All PII detection patterns live in `internal/anonymizer/packs/`
 - Packs self-register via `init()` calling `packs.Register()`
 - Pack loader in `anonymizer.go` imports packs via blank import
-- Configuration: `enabledPacks` in `proxy-config.json` (default: `["GLOBAL", "DE", "SECRETS"]`)
+- Configuration: `enabledPacks` in `proxy-config.json` (default: `["SECRETS", "GLOBAL", "DE"]`)
+- **Pack ordering matters**: `loadPacks()` iterates in `enabledPacks` order — first pack listed runs first. SECRETS must precede GLOBAL to prevent keyword overlap theft (issue #70).
 - Zero enabled packs at startup is fatal (`log.Fatalf` in `cmd/proxy/main.go`)
-- Likelihood multiplier: `effectiveConfidence = baseConfidence * (1.0 - (position-1) * packDecayRate)`
+- Likelihood multiplier: `effectiveConfidence = baseConfidence * (1.0 - index * packDecayRate)`
 
 ## Available Packs
 

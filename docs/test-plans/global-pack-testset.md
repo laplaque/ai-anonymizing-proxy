@@ -2,7 +2,7 @@
 
 Use these messages to test GLOBAL + US pack PII detection through the proxy. All checksum values are computed programmatically.
 
-> **Test config:** `EnabledPacks: ["GLOBAL", "US", "DE", "FR", "SECRETS"]`, `UseAI: false`, `PackDecayRate: 0.0`
+> **Test config:** `EnabledPacks: ["SECRETS", "GLOBAL", "US", "DE", "FR"]`, `UseAI: false`, `PackDecayRate: 0.0`
 
 ---
 
@@ -77,6 +77,17 @@ Use these messages to test GLOBAL + US pack PII detection through the proxy. All
 
 "Number 123456789012 short."
 > 12 digits -- below 13-digit minimum.
+
+---
+
+## GLOBAL api_key vs SECRETS ordering (issue #70)
+
+With SECRETS before GLOBAL in the pipeline, the `api_key` pattern's keywords
+(`token`, `secret`, `bearer`) no longer steal matches from SECRETS patterns.
+SECRETS patterns (ghp_, eyJ, AKIA, Bearer, DB URIs) run first and claim their
+specific matches. GLOBAL `api_key` then claims remaining generic tokens.
+
+See `secrets_priority_report_test.go` for full coverage.
 
 ---
 

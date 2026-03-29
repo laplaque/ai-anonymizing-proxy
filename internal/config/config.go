@@ -44,7 +44,7 @@ type Config struct {
 	AuthPaths    []string `json:"authPaths"`
 
 	// EnabledPacks lists the PII detection packs that are active at startup.
-	// Defaults: ["GLOBAL", "DE", "SECRETS"]. All patterns must belong to an
+	// Defaults: ["SECRETS", "GLOBAL", "DE"]. All patterns must belong to an
 	// enabled pack to participate in detection. Zero enabled packs is fatal.
 	EnabledPacks []string `json:"enabledPacks"`
 
@@ -91,7 +91,7 @@ func defaults() *Config {
 		CAKeyFile:           "ca-key.pem",
 		BindAddress:         "127.0.0.1",
 		OllamaCacheFile:     "ollama-cache.db",
-		EnabledPacks:        []string{"GLOBAL", "DE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE"},
 		PackDecayRate:       0.05,
 		AIAPIDomains: []string{
 			"api.anthropic.com",

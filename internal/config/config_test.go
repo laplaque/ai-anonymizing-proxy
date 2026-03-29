@@ -243,13 +243,13 @@ func TestLoadFile_InvalidJSON_PreservesDefaults(t *testing.T) {
 
 func TestDefaults_EnabledPacks(t *testing.T) {
 	cfg := defaults()
-	if len(cfg.EnabledPacks) != 3 {
-		t.Errorf("EnabledPacks length: got %d, want 3", len(cfg.EnabledPacks))
+	wantOrder := []string{"SECRETS", "GLOBAL", "DE"}
+	if len(cfg.EnabledPacks) != len(wantOrder) {
+		t.Fatalf("EnabledPacks length: got %d, want %d", len(cfg.EnabledPacks), len(wantOrder))
 	}
-	expected := map[string]bool{"GLOBAL": true, "DE": true, "SECRETS": true}
-	for _, p := range cfg.EnabledPacks {
-		if !expected[p] {
-			t.Errorf("unexpected default pack: %q", p)
+	for i, p := range cfg.EnabledPacks {
+		if p != wantOrder[i] {
+			t.Errorf("EnabledPacks[%d]: got %q, want %q", i, p, wantOrder[i])
 		}
 	}
 }

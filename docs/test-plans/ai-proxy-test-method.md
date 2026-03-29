@@ -34,9 +34,14 @@ Standard configuration for all report tests:
 Options{
     UseAI:        false,
     PackDecayRate: 0.0,
-    EnabledPacks:  []string{"GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
+    EnabledPacks:  []string{"SECRETS", "GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
 }
 ```
+
+**Pattern ordering (§1.2):** Patterns are evaluated in `EnabledPacks` order.
+SECRETS runs before GLOBAL so that specific secret patterns (ghp_, eyJ, AKIA,
+Bearer, DB URIs) are not consumed by GLOBAL's broad `api_key` regex.
+Pipeline: SECRETS → GLOBAL → US → DE → FR → NL → FINANCE_EU → HEALTHCARE.
 
 ## 3. Test Case Design Rules
 
@@ -69,7 +74,7 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 | #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Resolved (PR) |
 | #68 | US address_us false-positives on German "ist" | US x DE | Open |
 | #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Resolved (PR #75) |
-| #70 | GLOBAL api_key "token" keyword steals SECRETS ghp_ tokens | GLOBAL x SECRETS | Open |
+| #70 | GLOBAL api_key keywords steal SECRETS pattern matches (expanded scope: ghp_, JWT, AWS, DB, Bearer) | GLOBAL x SECRETS | Resolved — SECRETS runs before GLOBAL (#70) |
 | — | NL KvK 8-digit pattern is very broad | NL | By design (low confidence 0.45) |
 | — | SWIFT/BIC 8-char may match all-caps words | FINANCE_EU | By design (moderate confidence 0.65) |
 | — | ICD-10 without keyword context not detected | HEALTHCARE | By design (keyword gate) |
