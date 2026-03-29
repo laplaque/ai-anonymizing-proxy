@@ -65,7 +65,7 @@ func init() {
 		Entry{
 			Name:       "ssn",
 			Pack:       "US",
-			Re:         regexp.MustCompile(`\b\d{3}-?\d{2}-?\d{4}\b`),
+			Re:         regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
 			PIIType:    "SSN",
 			Confidence: 0.85,
 			Validate:   validateSSN,
