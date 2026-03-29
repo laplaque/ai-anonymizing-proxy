@@ -243,6 +243,10 @@ func (a *Anonymizer) loadPacks(enabledPacks []string, packDecayRate float64) {
 	// Iterate in enabledPacks order so pack position determines pattern priority.
 	for i, packName := range enabledPacks {
 		entries := byPack[packName]
+		if len(entries) == 0 {
+			log.Printf("[ANONYMIZER] warning: enabled pack %q has no registered patterns", packName)
+			continue
+		}
 		for _, entry := range entries {
 			// Apply positional decay: effectiveConfidence = base * (1.0 - i * decay)
 			effective := entry.Confidence * (1.0 - float64(i)*packDecayRate)
