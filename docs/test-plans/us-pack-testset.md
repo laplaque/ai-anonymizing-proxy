@@ -13,16 +13,16 @@ Use these messages to test US pack PII detection through the proxy. Covers all 6
 "My SSN is 123-45-6789."
 > Hyphenated format. Area 123 valid, group 45 valid, serial 6789 valid.
 
-"SSN: 123456789 on file."
-> Contiguous 9 digits. Same value, no hyphens.
-
 "SSN 001-01-0001 is the lowest valid."
 > Area 001 is the lowest valid area code.
 
 "SSN 899-99-9999 is highest before invalid range."
 > Area 899 is the last valid area code before the 900+ exclusion.
 
-### 1.2 Should NOT detect (validator rejects)
+### 1.2 Should NOT detect
+
+"SSN: 123456789 on file."
+> Contiguous 9 digits, no hyphens. SSN regex requires hyphens (fix #69: prevents cross-pattern interference with SIREN).
 
 "SSN 000-12-3456 rejected."
 > Area 000 has never been issued.

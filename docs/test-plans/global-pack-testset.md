@@ -86,7 +86,7 @@ Use these messages to test GLOBAL + US pack PII detection through the proxy. All
 > 9 digits, Luhn-valid. SIREN pattern claims it (registered first). SSN regex also matches (area 362 is valid), but SIREN replacement already consumed the match.
 
 "Number 362521879 in file."
-> 9 digits, Luhn-invalid. SIREN validator rejects. SSN regex then matches (area 362 is valid, group 52, serial 1879 all non-zero). Detected as SSN -- cross-pattern leakage.
+> 9 digits, Luhn-invalid. SIREN validator rejects. SSN regex requires hyphens (fix #69), so contiguous form is not matched. Not detected — correct behavior.
 
 "Call 555-123-4567 for support."
 > US phone format. Detected as PHONE.
@@ -136,7 +136,7 @@ Use these messages to test GLOBAL + US pack PII detection through the proxy. All
 | Value | SIREN Luhn | SSN area valid | Claimed by |
 |---|---|---|---|
 | 362521874 | Yes | Yes (362) | SIREN (runs first) |
-| 362521879 | No | Yes (362) | SSN (SIREN validator rejects) |
+| 362521879 | No | Yes (362) | None (SSN requires hyphens, fix #69) |
 
 ## Test results (verified against commit f2fb6ea)
 

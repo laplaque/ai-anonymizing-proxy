@@ -79,12 +79,23 @@ func TestUSSSNPattern(t *testing.T) {
 		t.Fatal("ssn entry should have a Validate function")
 	}
 
-	// Valid SSN.
+	// Hyphenated SSN must match.
 	if !entry.Re.MatchString("123-45-6789") {
-		t.Error("ssn regex should match valid format")
+		t.Error("ssn regex should match hyphenated format")
 	}
 	if !entry.Validate("123-45-6789") {
 		t.Error("ssn validator should accept valid SSN")
+	}
+
+	// Contiguous 9-digit SSN must NOT match regex (fix for #69: prevents
+	// cross-pattern interference with SIREN which also matches 9 digits).
+	if entry.Re.MatchString("123456789") {
+		t.Error("ssn regex should NOT match contiguous 9-digit number (requires hyphens)")
+	}
+
+	// 9-digit number that fails SIREN Luhn must not match SSN regex.
+	if entry.Re.MatchString("362521879") {
+		t.Error("ssn regex should NOT match contiguous 362521879 (SIREN/SSN cross-pattern fix)")
 	}
 
 	// Invalid area code 000.
@@ -195,6 +206,57 @@ func TestUSIPv6Pattern(t *testing.T) {
 		if !entry.Re.MatchString(s) {
 			t.Errorf("ipv6 pattern should match %q", s)
 		}
+	}
+}
+
+// TestSIREN_SSN_CrossPattern verifies that the SIREN/SSN 9-digit cross-pattern
+// interference described in issue #69 is resolved. A contiguous 9-digit number
+// must not be claimed by the SSN regex regardless of Luhn validity.
+func TestSIREN_SSN_CrossPattern(t *testing.T) {
+	ssn := findEntry("ssn", "US")
+	siren := findEntry("siren", "FR")
+	if ssn == nil {
+		t.Fatal("ssn entry not found in US pack")
+	}
+	if siren == nil {
+		t.Fatal("siren entry not found in FR pack")
+	}
+
+	cases := []struct {
+		name       string
+		input      string
+		sirenMatch bool // SIREN regex matches
+		sirenValid bool // SIREN validator accepts
+		ssnMatch   bool // SSN regex matches
+		ssnValid   bool // SSN validator accepts (only meaningful if regex matches)
+	}{
+		// Luhn-invalid: SIREN regex matches but validator rejects.
+		// SSN regex must NOT match (hyphens required), preventing false positive.
+		{"luhn-invalid 362521879", "362521879", true, false, false, true},
+		// Luhn-valid: SIREN claims it first; SSN regex must not match contiguous form.
+		{"luhn-valid 362521874", "362521874", true, true, false, true},
+		// Hyphenated SSN: SSN regex matches, SIREN regex does not.
+		{"hyphenated SSN", "123-45-6789", false, false, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := siren.Re.MatchString(tc.input); got != tc.sirenMatch {
+				t.Errorf("SIREN regex match(%q) = %v, want %v", tc.input, got, tc.sirenMatch)
+			}
+			if tc.sirenMatch {
+				if got := siren.Validate(tc.input); got != tc.sirenValid {
+					t.Errorf("SIREN validate(%q) = %v, want %v", tc.input, got, tc.sirenValid)
+				}
+			}
+			if got := ssn.Re.MatchString(tc.input); got != tc.ssnMatch {
+				t.Errorf("SSN regex match(%q) = %v, want %v", tc.input, got, tc.ssnMatch)
+			}
+			if tc.ssnMatch {
+				if got := ssn.Validate(tc.input); got != tc.ssnValid {
+					t.Errorf("SSN validate(%q) = %v, want %v", tc.input, got, tc.ssnValid)
+				}
+			}
+		})
 	}
 }
 
