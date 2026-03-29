@@ -223,12 +223,12 @@ func TestSIREN_SSN_CrossPattern(t *testing.T) {
 	}
 
 	cases := []struct {
-		name         string
-		input        string
-		sirenMatch   bool // SIREN regex matches
-		sirenValid   bool // SIREN validator accepts
-		ssnMatch     bool // SSN regex matches
-		ssnValid     bool // SSN validator accepts (only meaningful if regex matches)
+		name       string
+		input      string
+		sirenMatch bool // SIREN regex matches
+		sirenValid bool // SIREN validator accepts
+		ssnMatch   bool // SSN regex matches
+		ssnValid   bool // SSN validator accepts (only meaningful if regex matches)
 	}{
 		// Luhn-invalid: SIREN regex matches but validator rejects.
 		// SSN regex must NOT match (hyphens required), preventing false positive.
