@@ -17,7 +17,7 @@ func TestNLPackPipeline(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.0,
 	})
 
@@ -92,7 +92,7 @@ func TestNLBSNCrossPatternSIREN(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "US", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.0,
 	})
 

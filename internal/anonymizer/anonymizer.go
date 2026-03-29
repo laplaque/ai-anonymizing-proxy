@@ -226,33 +226,38 @@ func (a *Anonymizer) SetVerbose(v bool) {
 }
 
 // loadPacks populates a.patterns from the pack registry, filtered by enabledPacks.
-// Patterns are ordered by pack position; confidence is decayed by packDecayRate
-// based on a pack's position in the enabled list.
+// Patterns are ordered by pack position in enabledPacks — the first pack listed
+// runs first, so its patterns get priority over later packs. This ordering is
+// critical: specific packs (e.g. SECRETS) should precede broad packs (e.g. GLOBAL)
+// to prevent keyword overlap from stealing matches (see issue #70).
+// Confidence is decayed by packDecayRate based on a pack's position.
 func (a *Anonymizer) loadPacks(enabledPacks []string, packDecayRate float64) {
-	packEntries := packs.All()
-	enabledSet := make(map[string]int, len(enabledPacks)) // pack name → position (1-based)
-	for i, p := range enabledPacks {
-		enabledSet[p] = i + 1
+	allEntries := packs.All()
+
+	// Group registered entries by pack name for ordered iteration.
+	byPack := make(map[string][]packs.Entry)
+	for _, entry := range allEntries {
+		byPack[entry.Pack] = append(byPack[entry.Pack], entry)
 	}
 
-	for _, entry := range packEntries {
-		pos, ok := enabledSet[entry.Pack]
-		if !ok {
-			continue
-		}
-		// Apply positional decay: effectiveConfidence = base * (1.0 - (pos-1) * decay)
-		effective := entry.Confidence * (1.0 - float64(pos-1)*packDecayRate)
-		if effective < 0 {
-			effective = 0
-		}
+	// Iterate in enabledPacks order so pack position determines pattern priority.
+	for i, packName := range enabledPacks {
+		entries := byPack[packName]
+		for _, entry := range entries {
+			// Apply positional decay: effectiveConfidence = base * (1.0 - i * decay)
+			effective := entry.Confidence * (1.0 - float64(i)*packDecayRate)
+			if effective < 0 {
+				effective = 0
+			}
 
-		a.patterns = append(a.patterns, pattern{
-			re:         entry.Re,
-			piiType:    PIIType(entry.PIIType),
-			confidence: effective,
-			validate:   entry.Validate,
-			pack:       entry.Pack,
-		})
+			a.patterns = append(a.patterns, pattern{
+				re:         entry.Re,
+				piiType:    PIIType(entry.PIIType),
+				confidence: effective,
+				validate:   entry.Validate,
+				pack:       entry.Pack,
+			})
+		}
 	}
 
 	log.Printf("[ANONYMIZER] loaded %d patterns from %d enabled packs: %v",

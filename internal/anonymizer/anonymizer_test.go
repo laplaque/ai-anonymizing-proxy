@@ -492,7 +492,7 @@ func TestTokenFormatNonRetriggering(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.05,
 	})
 	piiTypes := []PIIType{
@@ -526,7 +526,7 @@ func TestTokenFormatNonRetriggeringAllPacks(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "FR", "US", "NL", "FINANCE_EU", "HEALTHCARE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "FR", "US", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.05,
 	})
 	// Only test PII types whose tokens are guaranteed not to retrigger.
@@ -614,14 +614,14 @@ func TestPackDecayRate(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE"},
 		PackDecayRate:       0.10,
 	})
 
-	// DE is at position 2, so its patterns should have confidence * (1.0 - 0.10)
+	// DE is at position 3 (index 2), so its patterns should have confidence * (1.0 - 2*0.10) = confidence * 0.80
 	for _, p := range a.patterns {
-		if p.pack == "DE" && p.confidence > 0.81 {
-			t.Errorf("DE pack pattern %q confidence %f should be decayed (pack position 2, decay 0.10)",
+		if p.pack == "DE" && p.confidence > 0.72 {
+			t.Errorf("DE pack pattern %q confidence %f should be decayed (pack index 2, decay 0.10)",
 				p.piiType, p.confidence)
 		}
 	}
@@ -1066,7 +1066,7 @@ func TestLoadPacksAllPacks(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "US", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "US"},
 		PackDecayRate:       0.0,
 	})
 	if len(a.patterns) == 0 {
@@ -1077,7 +1077,7 @@ func TestLoadPacksAllPacks(t *testing.T) {
 	for _, p := range a.patterns {
 		packsSeen[p.pack] = true
 	}
-	for _, want := range []string{"GLOBAL", "DE", "US", "SECRETS"} {
+	for _, want := range []string{"SECRETS", "GLOBAL", "DE", "US"} {
 		if !packsSeen[want] {
 			t.Errorf("pack %q not found in loaded patterns", want)
 		}
@@ -1113,10 +1113,10 @@ func TestLoadPacksDecayClampToZero(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "US", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "US"},
 		PackDecayRate:       1.0, // extreme decay
 	})
-	// Pack at position 4 (SECRETS) should have confidence * (1 - 3*1.0) = negative → clamped to 0
+	// Pack at index 3 (US) should have confidence * (1 - 3*1.0) = negative → clamped to 0
 	for _, p := range a.patterns {
 		if p.confidence < 0 {
 			t.Errorf("confidence should be clamped to 0, got %f for %s/%s", p.confidence, p.pack, string(p.piiType))
@@ -1421,7 +1421,7 @@ func TestAnonymizeTextWithAllPacks(t *testing.T) {
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        []string{"GLOBAL", "DE", "US", "SECRETS"},
+		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "US"},
 		PackDecayRate:       0.0,
 	})
 	// SSH key header.

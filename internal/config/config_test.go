@@ -246,7 +246,7 @@ func TestDefaults_EnabledPacks(t *testing.T) {
 	if len(cfg.EnabledPacks) != 3 {
 		t.Errorf("EnabledPacks length: got %d, want 3", len(cfg.EnabledPacks))
 	}
-	expected := map[string]bool{"GLOBAL": true, "DE": true, "SECRETS": true}
+	expected := map[string]bool{"SECRETS": true, "GLOBAL": true, "DE": true}
 	for _, p := range cfg.EnabledPacks {
 		if !expected[p] {
 			t.Errorf("unexpected default pack: %q", p)
