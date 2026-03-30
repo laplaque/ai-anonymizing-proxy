@@ -144,6 +144,10 @@ func TestUSAddressPattern(t *testing.T) {
 		"42 West Elm Drive",
 		"My address is 123 Main St in Springfield", // embedded in surrounding text
 		"123 Main Street, Apt 4",                   // trailing punctuation after \b
+		"789 42nd Street",                          // ordinal street name (#74)
+		"100 5th Ave",                              // ordinal street name (#74)
+		"250 3rd Rd",                               // ordinal street name (#74)
+		"1 1st Street",                             // single-digit ordinal (#74)
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
@@ -165,6 +169,7 @@ func TestUSAddressPattern(t *testing.T) {
 		// are not matched because the regex requires at least one word + space
 		// before the suffix. This is an accepted trade-off to eliminate false
 		// positives on words ending in street suffixes.
+		{"pure-digit segment", "123 456 Street"},
 		{"suffix-only street name", "123 Court"},
 		{"suffix-only Lane", "456 Lane"},
 	}

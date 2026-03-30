@@ -89,7 +89,7 @@ func init() {
 		Entry{
 			Name:       "address_us",
 			Pack:       "US",
-			Re:         regexp.MustCompile(`(?i)\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)*\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`),
+			Re:         regexp.MustCompile(`(?i)\d+\s+[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*)*\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`),
 			PIIType:    "ADDRESS",
 			Confidence: 0.75,
 		},
