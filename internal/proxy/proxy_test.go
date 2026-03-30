@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
@@ -1464,5 +1465,72 @@ func TestHandleMITMTunnel_NoHijacker(t *testing.T) {
 	// Falls through to opaque tunnel which blocks the private IP
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 fallback, got %d", w.Code)
+	}
+}
+
+func TestHandleOpaqueTunnel_HappyPath(t *testing.T) {
+	// Start a local TCP echo server
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = io.Copy(conn, conn)
+	}()
+
+	// Create proxy with local dial allowed (bypasses SSRF check at dial time)
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	// Build a hijack-capable ResponseWriter
+	hw := newHijackResponseWriter()
+
+	// Use "localhost:<port>" instead of the raw IP so isPrivateHost (which only
+	// checks literal IPs, not DNS) doesn't block before dialing.
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	host := "localhost:" + port
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "http://"+host, nil)
+	req.Host = host
+	req.RemoteAddr = "127.0.0.1:12345"
+
+	go srv.handleOpaqueTunnel(hw, req, host)
+
+	// Send data through the tunnel and verify echo
+	if _, writeErr := hw.clientConn.Write([]byte("ping")); writeErr != nil {
+		t.Fatalf("write to tunnel: %v", writeErr)
+	}
+	buf := make([]byte, 4)
+	if deadlineErr := hw.clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); deadlineErr != nil {
+		t.Fatalf("set deadline: %v", deadlineErr)
+	}
+	n, readErr := hw.clientConn.Read(buf)
+	if readErr != nil {
+		t.Fatalf("read from tunnel: %v", readErr)
+	}
+	if string(buf[:n]) != "ping" {
+		t.Errorf("expected echo 'ping', got %q", buf[:n])
+	}
+	_ = hw.clientConn.Close()
+}
+
+func TestHandleOpaqueTunnel_DialFailure(t *testing.T) {
+	// Use allowLocal so SSRF doesn't block, but point to a port nothing listens on
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "http://localhost:1", nil)
+	req.Host = "localhost:1"
+	req.RemoteAddr = "127.0.0.1:12345"
+
+	w := httptest.NewRecorder()
+	srv.handleOpaqueTunnel(w, req, "localhost:1")
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502 for dial failure, got %d", w.Code)
 	}
 }
