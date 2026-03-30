@@ -48,6 +48,13 @@ jobs:
       - name: Display coverage
         run: go tool cover -func=coverage.out
 
+      - name: Update coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          BENCHMARK_GIST_TOKEN: ${{ secrets.BENCHMARK_GIST_TOKEN }}
+        run: |
+          bash .github/scripts/update-coverage-gist.sh coverage.out 0fcf197a0e717817dbeb34d146db423e
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest

@@ -3,6 +3,8 @@
 [![CI](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
 [![regex / cache](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/0fcf197a0e717817dbeb34d146db423e/raw/benchmark-regex-cache.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
 [![streaming](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/0fcf197a0e717817dbeb34d146db423e/raw/benchmark-streaming.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/0fcf197a0e717817dbeb34d146db423e/raw/coverage.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Privacy-preserving infrastructure for AI-assisted development.
 
