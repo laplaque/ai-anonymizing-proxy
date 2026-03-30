@@ -1235,17 +1235,19 @@ func TestHandleTunnel_NonAIDomain(t *testing.T) {
 }
 
 func TestHandleTunnel_AIDomainWithoutCA(t *testing.T) {
+	// CA is nil, so even an AI domain falls through to the opaque tunnel path.
+	// Use a private IP so the tunnel is blocked quickly (no DNS/dial timeout).
 	srv := newTestProxyServer(t)
-	// CA is nil, so even AI domain goes to opaque tunnel
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://api.openai.com:443", nil)
-	req.Host = "api.openai.com:443"
+	srv.aiDomains.Add("10.0.0.52")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://10.0.0.52:443", nil)
+	req.Host = "10.0.0.52:443"
 
 	w := httptest.NewRecorder()
 	srv.handleTunnel(w, req)
 
-	// Should try opaque tunnel (which will fail to dial, returning 502)
-	if w.Code != http.StatusBadGateway {
-		t.Errorf("expected 502, got %d", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
 
