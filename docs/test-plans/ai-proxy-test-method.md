@@ -39,8 +39,14 @@ Options{
 ```
 
 **Pattern ordering (§1.2):** Patterns are evaluated in `EnabledPacks` order.
-SECRETS runs before GLOBAL so that specific secret patterns (ghp_, eyJ, AKIA,
-Bearer, DB URIs) are not consumed by GLOBAL's broad `api_key` regex.
+SECRETS runs before GLOBAL so that specific secret patterns are not consumed by
+GLOBAL's broad `api_key` regex. SECRETS patterns include: SSH keys, JWT, Bearer,
+DB URIs, AWS (AKIA), GitHub (ghp_/gho_/ghu_/ghs_/ghr_), GitLab (glpat-/gldt-),
+Slack (xox[bpar]-), Stripe (sk_live_/sk_test_/pk_live_/pk_test_), NPM (npm_),
+PyPI (pypi-), OpenAI (sk-), Docker (dckr_pat_), Google (AIza), Shopify
+(shpat_/shpca_/shpss_), SendGrid (SG.), Groq (gsk_), Twilio (AC/SK),
+Facebook (EAACEdEose0cBA), Amazon MWS (amzn.mws.), Cloudinary (cloudinary://),
+and PGP private keys.
 Pipeline: SECRETS → GLOBAL → US → DE → FR → NL → FINANCE_EU → HEALTHCARE.
 
 ## 3. Test Case Design Rules
@@ -88,7 +94,7 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 | DE | `packs/de_test.go` | — | `.idea/de-pack-testset.md` |
 | US | `packs/us_test.go` | — | `.idea/us-pack-testset.md` |
 | FR | `packs/fr_test.go` | — | `.idea/phase-2a-pr2-testset.md` |
-| SECRETS | `packs/secrets_test.go` | — | — |
+| SECRETS | `packs/secrets_test.go` | `secrets_report_test.go` | `docs/test-plans/secrets-pack-testset.md` |
 | NL | `packs/nl_test.go` | `nl_report_test.go` | `.idea/nl-pack-testset.md` |
 | FINANCE_EU | `packs/finance_eu_test.go` | `finance_eu_report_test.go` | `.idea/finance-eu-pack-testset.md` |
 | HEALTHCARE | `packs/healthcare_test.go` | `healthcare_report_test.go` | `.idea/healthcare-pack-testset.md` |

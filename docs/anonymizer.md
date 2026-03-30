@@ -259,6 +259,66 @@ triggered by non-PII data and worth investigating with `LOG_LEVEL=debug`.
 
 ---
 
+## SECRETS pack — Token and Secret Detection
+
+The SECRETS pack detects structured secrets with well-known prefixes. It runs first in the
+pipeline (before GLOBAL) so that specific token patterns are not consumed by GLOBAL's broad
+`api_key` keyword-based detection (see issue #70).
+
+### Original patterns
+
+| Pattern | PII type | Prefix | Confidence | Source |
+|---------|----------|--------|------------|--------|
+| `ssh_private_key` | `SSHKEY` | `-----BEGIN ... PRIVATE KEY-----` | 0.99 | RFC 7468 (PEM encoding) |
+| `jwt` | `JWT` | `eyJ` | 0.95 | RFC 7519 (JSON Web Token) |
+| `bearer_token` | `BEARER` | `Bearer ` | 0.92 | RFC 6750 (OAuth 2.0 Bearer Token Usage) |
+| `db_connection_string` | `DBCONN` | `postgres://`, `mysql://`, etc. | 0.93 | DB URI format documentation |
+| `aws_access_key` | `AWSKEY` | `AKIA` | 0.97 | AWS IAM documentation |
+| `github_token` | `GHTOKEN` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | 0.97 | GitHub token format docs |
+
+### Expanded patterns (issue #77)
+
+**High priority:**
+
+| Pattern | PII type | Prefix | Confidence | Source |
+|---------|----------|--------|------------|--------|
+| `gitlab_pat` | `GLTOKEN` | `glpat-` | 0.97 | GitLab PAT docs |
+| `gitlab_deploy` | `GLTOKEN` | `gldt-` | 0.97 | GitLab deploy token docs |
+| `slack_token` | `SLACKTOKEN` | `xox[bpar]-` | 0.95 | Slack API token docs |
+| `stripe_key` | `STRIPEKEY` | `sk_live_`, `sk_test_`, `pk_live_`, `pk_test_` | 0.97 | Stripe API key docs |
+| `npm_token` | `NPMTOKEN` | `npm_` | 0.97 | npm access token docs |
+| `pypi_token` | `PYPITOKEN` | `pypi-` | 0.97 | PyPI API token docs |
+| `openai_key` | `OPENAIKEY` | `sk-` | 0.95 | OpenAI API key docs |
+
+**Medium priority:**
+
+| Pattern | PII type | Prefix | Confidence | Source |
+|---------|----------|--------|------------|--------|
+| `docker_pat` | `DOCKERTOKEN` | `dckr_pat_` | 0.97 | Docker Hub PAT docs |
+| `google_api_key` | `GOOGLEKEY` | `AIza` | 0.97 | Google Cloud API key docs |
+| `shopify_token` | `SHOPIFYTOKEN` | `shpat_`, `shpca_`, `shpss_` | 0.97 | Shopify API auth docs |
+| `sendgrid_key` | `SENDGRIDKEY` | `SG.` | 0.96 | SendGrid API key docs |
+| `groq_key` | `GROQKEY` | `gsk_` | 0.96 | Groq API key docs |
+| `twilio_sid` | `TWILIOTOKEN` | `AC` | 0.95 | Twilio Account SID docs |
+| `twilio_auth` | `TWILIOTOKEN` | `SK` | 0.95 | Twilio API Key SID docs |
+
+**Lower priority:**
+
+| Pattern | PII type | Prefix | Confidence | Source |
+|---------|----------|--------|------------|--------|
+| `facebook_token` | `FBTOKEN` | `EAACEdEose0cBA` | 0.97 | Facebook Graph API docs |
+| `amazon_mws` | `AMZTOKEN` | `amzn.mws.` | 0.96 | Amazon MWS auth docs |
+| `cloudinary_url` | `CLOUDINARYTOKEN` | `cloudinary://` | 0.95 | Cloudinary config URL docs |
+| `pgp_private_key` | `PGPKEY` | `-----BEGIN PGP PRIVATE KEY BLOCK-----` | 0.99 | RFC 4880 (OpenPGP) |
+
+**Cross-pattern notes:**
+
+- `sk-` (OpenAI) vs `sk_live_`/`sk_test_` (Stripe): distinguished by hyphen vs underscore after `sk`
+- `gsk_` (Groq) vs `ghs_` (GitHub): different 3-character prefixes, no overlap
+- `AC`/`SK` (Twilio): 2-char prefixes require exactly 32 hex characters to avoid false positives
+
+---
+
 ## EU locale packs — DE and FR
 
 The pack system extends PII detection with locale-specific patterns. Each pack self-registers
