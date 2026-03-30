@@ -197,7 +197,7 @@ jobs:
           BENCHMARK_GIST_TOKEN: ${{ secrets.BENCHMARK_GIST_TOKEN }}
         run: |
           chmod +x .github/scripts/update-benchmark-gist.sh
-          .github/scripts/update-benchmark-gist.sh .tmp/benchmark-ci.txt public_gists
+          .github/scripts/update-benchmark-gist.sh .tmp/benchmark-ci.txt 0fcf197a0e717817dbeb34d146db423e
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

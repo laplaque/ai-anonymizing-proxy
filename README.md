@@ -1,8 +1,8 @@
 # AI Anonymizing Proxy
 
 [![CI](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
-[![regex / cache](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/public_gists/raw/benchmark-regex-cache.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
-[![streaming](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/public_gists/raw/benchmark-streaming.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
+[![regex / cache](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/0fcf197a0e717817dbeb34d146db423e/raw/benchmark-regex-cache.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
+[![streaming](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/laplaque/0fcf197a0e717817dbeb34d146db423e/raw/benchmark-streaming.json)](https://github.com/laplaque/ai-anonymizing-proxy/actions/workflows/ci.yml)
 
 Privacy-preserving infrastructure for AI-assisted development.
 
