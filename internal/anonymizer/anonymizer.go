@@ -39,7 +39,6 @@ import (
 type PIIType string
 
 // Supported PII types for detection and anonymization.
-// Legacy constants retained for backward compatibility with tests and metrics.
 const (
 	PIIEmail      PIIType = "EMAIL"
 	PIIPhone      PIIType = "PHONE"
@@ -128,7 +127,7 @@ type Options struct {
 	Metrics             *metrics.Metrics // optional metrics collector; nil disables metrics
 	CachePath           string           // path to bbolt cache file; empty = in-memory only
 	CacheCapacity       int              // S3-FIFO cache capacity; 0 = unbounded (testing only)
-	EnabledPacks        []string         // list of enabled pack names; nil = legacy compilePatterns
+	EnabledPacks        []string         // list of enabled pack names; nil = all registered packs
 	PackDecayRate       float64          // positional confidence decay rate per pack
 }
 
@@ -198,11 +197,10 @@ func NewWithCacheAndCapacity(opts Options) *Anonymizer {
 		ollamaSem:   make(chan struct{}, opts.OllamaMaxConcurrent),
 		sessions:    make(map[string]map[string]string),
 	}
-	if len(opts.EnabledPacks) > 0 {
-		a.loadPacks(opts.EnabledPacks, opts.PackDecayRate)
-	} else {
-		a.compilePatterns()
+	if len(opts.EnabledPacks) == 0 {
+		opts.EnabledPacks = allPackNames()
 	}
+	a.loadPacks(opts.EnabledPacks, opts.PackDecayRate)
 	return a
 }
 
@@ -268,41 +266,18 @@ func (a *Anonymizer) loadPacks(enabledPacks []string, packDecayRate float64) {
 		len(a.patterns), len(enabledPacks), enabledPacks)
 }
 
-func (a *Anonymizer) compilePatterns() {
-	// Legacy pattern loader — used only when EnabledPacks is empty (tests, backward compat).
-	specs := []struct {
-		expr       string
-		piiType    PIIType
-		confidence float64
-	}{
-		{`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`, PIIEmail, 0.95},
-		{`(?i)(?:api[_\-]?key|token|secret|bearer)[\s"':=]+([a-zA-Z0-9_\-.]{20,})`, PIIAPIKey, 0.90},
-		{`\b\d{3}-\d{2}-\d{4}\b`, PIISSN, 0.85},
-		{`\b(?:\d{4}[\-\s]?){3}\d{4}\b`, PIICreditCard, 0.85},
-		{`(?i)\d+\s+[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*)*\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct)\b`, PIIAddress, 0.75},
-		{`(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,7}:` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}` +
-			`|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}` +
-			`|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}` +
-			`|:(?::[0-9a-fA-F]{1,4}){1,7}` +
-			`|::`,
-			PIIIPAddress, 0.85},
-		{`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`, PIIIPAddress, 0.70},
-		{`(\+?1?[\-.\s]?)?\(?([0-9]{3})\)?[\-.\s]?([0-9]{3})[\-.\s]?([0-9]{4})`, PIIPhone, 0.65},
-		{`\b\d{5}(?:-\d{4})?\b`, PIIAddress, 0.40},
-	}
-	for _, s := range specs {
-		re, err := regexp.Compile(s.expr)
-		if err != nil {
-			log.Printf("[ANONYMIZER] Warning: could not compile pattern %q: %v", s.expr, err)
-			continue
+// allPackNames returns the deduplicated list of pack names from the registry,
+// preserving registration order. Used as the default when EnabledPacks is nil.
+func allPackNames() []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, e := range packs.All() {
+		if !seen[e.Pack] {
+			seen[e.Pack] = true
+			names = append(names, e.Pack)
 		}
-		a.patterns = append(a.patterns, pattern{re: re, piiType: s.piiType, confidence: s.confidence})
 	}
+	return names
 }
 
 // AnonymizeText replaces all detected PII in the given string.

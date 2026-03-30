@@ -16,11 +16,11 @@ import (
 )
 
 // knownPIITypes returns the list of PII type strings derived from the pack
-// registry. Fallback types that exist only in the legacy compilePatterns path
-// are included as a static baseline so metrics counters are always available.
+// registry. A static baseline of additional types is included so metrics
+// counters are always available for AI-detected categories.
 func knownPIITypes() []string {
-	// Static baseline — types that may come from the legacy compilePatterns
-	// path and are not registered in any pack.
+	// Static baseline — types detected by the AI path (Ollama) that are not
+	// registered in any pack.
 	baseline := map[string]bool{
 		"NAME": true, "MEDICAL": true, "SALARY": true,
 		"COMPANY": true, "JOBTITLE": true,
