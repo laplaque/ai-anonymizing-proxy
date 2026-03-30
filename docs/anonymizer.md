@@ -269,7 +269,7 @@ pipeline (before GLOBAL) so that specific token patterns are not consumed by GLO
 
 | Pattern | PII type | Prefix | Confidence | Source |
 |---------|----------|--------|------------|--------|
-| `ssh_private_key` | `SSHKEY` | `-----BEGIN ... PRIVATE KEY-----` | 0.99 | RFC 7468 (PEM encoding) |
+| `ssh_private_key` | `SSHKEY` | `-----BEGIN ... PRIVATE KEY-----` (incl. RSA, EC, DSA, OPENSSH, ENCRYPTED) | 0.99 | RFC 7468 (PEM encoding), PKCS#8 |
 | `jwt` | `JWT` | `eyJ` | 0.95 | RFC 7519 (JSON Web Token) |
 | `bearer_token` | `BEARER` | `Bearer ` | 0.92 | RFC 6750 (OAuth 2.0 Bearer Token Usage) |
 | `db_connection_string` | `DBCONN` | `postgres://`, `mysql://`, etc. | 0.93 | DB URI format documentation |

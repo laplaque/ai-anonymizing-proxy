@@ -10,7 +10,7 @@ func init() {
 		Entry{
 			Name:       "ssh_private_key",
 			Pack:       "SECRETS",
-			Re:         regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`),
+			Re:         regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`),
 			PIIType:    "SSHKEY",
 			Confidence: 0.99,
 		},

@@ -285,6 +285,20 @@ func TestSecretsExpandedPipeline(t *testing.T) {
 			notes: "too few chars after scheme",
 		},
 
+		// --- Encrypted private key (PKCS#8) ---
+		{
+			name:  "ssh_private_key encrypted happy path",
+			input: "Found key: -----BEGIN ENCRYPTED PRIVATE KEY-----",
+			pii:   "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+			notes: "PKCS#8 encrypted private key header",
+		},
+		{
+			name:  "ssh_private_key encrypted public negative",
+			input: "-----BEGIN ENCRYPTED PUBLIC KEY-----",
+			pii:   "",
+			notes: "encrypted PUBLIC key — should NOT match private key pattern",
+		},
+
 		// --- PGP private key ---
 		{
 			name:  "pgp_private_key happy path",

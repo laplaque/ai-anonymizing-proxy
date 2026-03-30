@@ -36,6 +36,7 @@ func TestSecretsSSHKeyPattern(t *testing.T) {
 		"-----BEGIN EC PRIVATE KEY-----",
 		"-----BEGIN OPENSSH PRIVATE KEY-----",
 		"-----BEGIN PRIVATE KEY-----",
+		"-----BEGIN ENCRYPTED PRIVATE KEY-----",
 	}
 	for _, s := range positives {
 		if !entry.Re.MatchString(s) {
