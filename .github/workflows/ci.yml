@@ -114,7 +114,7 @@ jobs:
         run: |
           mkdir -p .tmp
           go test -run='^$' -bench=. -benchmem -benchtime=1s -count=1 \
-            ./internal/anonymizer/... | tee .tmp/benchmark-ci.txt
+            ./internal/anonymizer/... 2>.tmp/benchmark-stderr.txt | tee .tmp/benchmark-ci.txt
 
       - name: Check benchmark thresholds
         run: |
