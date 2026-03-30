@@ -97,6 +97,9 @@ jobs:
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -171,6 +174,30 @@ jobs:
           else
             echo "SUCCESS: All benchmarks within latency budgets."
           fi
+
+      - name: Post benchmark comment on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x .github/scripts/benchmark-comment.sh
+          COMMENT="$(.github/scripts/benchmark-comment.sh .tmp/benchmark-ci.txt)"
+          EXISTING=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            --jq '.[] | select(.body | startswith("## Benchmark results")) | .id' | head -1)
+          if [ -n "$EXISTING" ]; then
+            gh api repos/${{ github.repository }}/issues/comments/"$EXISTING" \
+              -X PATCH -f body="$COMMENT"
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT"
+          fi
+
+      - name: Update benchmark badges
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          BENCHMARK_GIST_TOKEN: ${{ secrets.BENCHMARK_GIST_TOKEN }}
+        run: |
+          chmod +x .github/scripts/update-benchmark-gist.sh
+          .github/scripts/update-benchmark-gist.sh .tmp/benchmark-ci.txt public_gists
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
