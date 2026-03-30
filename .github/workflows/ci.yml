@@ -51,7 +51,7 @@ jobs:
       - name: Delta coverage check
         if: github.event_name == 'pull_request'
         run: |
-          git fetch origin main --depth=1
+          git fetch origin main --depth=50
           bash .github/scripts/delta-coverage.sh coverage.out 95.0 origin/main
 
       - name: Update coverage badge

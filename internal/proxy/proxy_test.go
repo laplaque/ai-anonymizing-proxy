@@ -1,15 +1,20 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +22,7 @@ import (
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
+	"ai-anonymizing-proxy/internal/mitm"
 )
 
 // TestIsAuthRequest_PathBypasses verifies that the auth path matching logic
@@ -561,8 +567,12 @@ func TestCopyHeader(t *testing.T) {
 func TestDecompressResponse_Gzip(t *testing.T) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	gw.Write([]byte("hello gzip")) //nolint:errcheck
-	gw.Close()                     //nolint:errcheck
+	if _, err := gw.Write([]byte("hello gzip")); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
 
 	resp := &http.Response{
 		Header: http.Header{},
@@ -584,9 +594,16 @@ func TestDecompressResponse_Gzip(t *testing.T) {
 
 func TestDecompressResponse_Deflate(t *testing.T) {
 	var buf bytes.Buffer
-	fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-	fw.Write([]byte("hello deflate")) //nolint:errcheck
-	fw.Close()                        //nolint:errcheck
+	fw, err := flate.NewWriter(&buf, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("flate writer: %v", err)
+	}
+	if _, err := fw.Write([]byte("hello deflate")); err != nil {
+		t.Fatalf("flate write: %v", err)
+	}
+	if err := fw.Close(); err != nil {
+		t.Fatalf("flate close: %v", err)
+	}
 
 	resp := &http.Response{
 		Header: http.Header{},
@@ -747,8 +764,12 @@ func TestDeanonymizeResponseBody_GzipEncoded(t *testing.T) {
 
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	gw.Write([]byte("compressed body")) //nolint:errcheck
-	gw.Close()                          //nolint:errcheck
+	if _, err := gw.Write([]byte("compressed body")); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
 
 	resp := &http.Response{
 		Header: http.Header{},
@@ -781,7 +802,7 @@ func TestDeanonymizeResponseBody_ReadError(t *testing.T) {
 
 // --- recordMITMMetrics ---
 
-func TestRecordMITMMetrics_NilMetrics(_ *testing.T) {
+func TestRecordMITMMetrics_NilMetrics(t *testing.T) {
 	cfg := &config.Config{
 		OllamaEndpoint: "http://localhost:11434",
 		OllamaModel:    "test",
@@ -789,7 +810,12 @@ func TestRecordMITMMetrics_NilMetrics(_ *testing.T) {
 	domains := management.NewDomainRegistry(cfg, "")
 	srv := New(cfg, domains, nil)
 	defer func() { _ = srv.Close() }()
-	// Should not panic with nil metrics
+	// Verify no panic with nil metrics
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("recordMITMMetrics panicked with nil metrics: %v", r)
+		}
+	}()
 	srv.recordMITMMetrics(false)
 	srv.recordMITMMetrics(true)
 }
@@ -838,7 +864,10 @@ func TestServeHTTP_HTTP_AIAnonymization(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body) //nolint:errcheck
+		if _, err := w.Write(body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer backend.Close()
 
@@ -1014,15 +1043,22 @@ func TestAnonymizeRequestBody_ReadError(t *testing.T) {
 func TestForward_WithGzipResponse(t *testing.T) {
 	var gzBuf bytes.Buffer
 	gw := gzip.NewWriter(&gzBuf)
-	gw.Write([]byte(`{"result":"ok"}`)) //nolint:errcheck
-	gw.Close()                          //nolint:errcheck
+	if _, err := gw.Write([]byte(`{"result":"ok"}`)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
 	gzData := gzBuf.Bytes()
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Encoding", "gzip")
 		w.WriteHeader(http.StatusOK)
-		w.Write(gzData) //nolint:errcheck
+		if _, err := w.Write(gzData); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer backend.Close()
 
@@ -1130,7 +1166,10 @@ func TestServeMITMRequest_Integration(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body) //nolint:errcheck
+		if _, err := w.Write(body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer backend.Close()
 
@@ -1275,5 +1314,155 @@ func TestForwardMITMRequest_UpstreamError(t *testing.T) {
 
 	if rw.Code != http.StatusBadGateway {
 		t.Errorf("expected 502, got %d", rw.Code)
+	}
+}
+
+// --- handleMITMTunnel ---
+
+// hijackResponseWriter wraps an httptest.ResponseRecorder with hijack support
+// using a net.Pipe for the client connection.
+type hijackResponseWriter struct {
+	*httptest.ResponseRecorder
+	clientConn net.Conn
+	serverConn net.Conn
+}
+
+func newHijackResponseWriter() *hijackResponseWriter {
+	client, server := net.Pipe()
+	return &hijackResponseWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		clientConn:       client,
+		serverConn:       server,
+	}
+}
+
+func (h *hijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	rw := bufio.NewReadWriter(bufio.NewReader(h.serverConn), bufio.NewWriter(h.serverConn))
+	return h.serverConn, rw, nil
+}
+
+func TestHandleMITMTunnel(t *testing.T) {
+	// Set up a TLS backend that echoes requests
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}))
+	defer backend.Close()
+
+	backendHost := strings.TrimPrefix(backend.URL, "https://")
+
+	// Create a proxy server with a real CA
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "ca-cert.pem")
+	keyFile := filepath.Join(dir, "ca-key.pem")
+
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AIAPIDomains:   []string{backendHost},
+		AuthDomains:    []string{},
+		AuthPaths:      []string{},
+		CACertFile:     certFile,
+		CAKeyFile:      keyFile,
+		EnabledPacks:   []string{"GLOBAL"},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, metrics.New())
+	defer func() { _ = srv.Close() }()
+
+	// Override transport to trust the backend's TLS cert
+	srv.transport = backend.Client().Transport.(*http.Transport) //nolint:errcheck // test setup
+
+	if srv.ca == nil {
+		t.Fatal("expected CA to be loaded")
+	}
+
+	// Create a hijack-capable response writer
+	hw := newHijackResponseWriter()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://"+backendHost, nil)
+	req.Host = backendHost
+	req.RemoteAddr = "127.0.0.1:12345"
+
+	// Run handleMITMTunnel in a goroutine (it will hijack and serve).
+	// The goroutine may outlive the test due to singleConnListener blocking on
+	// second Accept(); this is by design in the production code.
+	go srv.handleMITMTunnel(hw, req, backendHost, backendHost)
+
+	// Act as a TLS client on the hijacked connection.
+	roots := x509.NewCertPool()
+	certPEM, readErr := os.ReadFile(certFile)
+	if readErr != nil {
+		t.Fatalf("read CA cert: %v", readErr)
+	}
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("failed to add CA cert to pool")
+	}
+	tlsClient := tls.Client(hw.clientConn, &tls.Config{
+		ServerName: backendHost,
+		RootCAs:    roots,
+		NextProtos: []string{"http/1.1"},
+	})
+	defer func() { _ = tlsClient.Close() }()
+
+	if hsErr := tlsClient.HandshakeContext(t.Context()); hsErr != nil {
+		t.Fatalf("TLS handshake: %v", hsErr)
+	}
+
+	// Send an HTTP request through the MITM tunnel
+	httpReq, _ := http.NewRequestWithContext(t.Context(), "POST", "https://"+backendHost+"/v1/chat",
+		strings.NewReader(`{"prompt":"test"}`))
+	httpReq.Header.Set("Content-Type", "application/json")
+	if writeErr := httpReq.Write(tlsClient); writeErr != nil {
+		t.Fatalf("write request: %v", writeErr)
+	}
+
+	resp, respErr := http.ReadResponse(bufio.NewReader(tlsClient), httpReq)
+	if respErr != nil {
+		t.Fatalf("ReadResponse: %v", respErr)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 through MITM tunnel, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleMITMTunnel_NoHijacker(t *testing.T) {
+	// When ResponseWriter doesn't support hijacking, should fall through to opaque tunnel
+	srv := newTestProxyServer(t)
+
+	// Manually set up CA so the MITM path is tried
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "ca-cert.pem")
+	keyFile := filepath.Join(dir, "ca-key.pem")
+	if err := mitm.GenerateCA(certFile, keyFile); err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	ca, err := mitm.LoadCA(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("LoadCA: %v", err)
+	}
+	srv.ca = ca
+
+	// Use private IP so the opaque tunnel fallback blocks quickly
+	srv.aiDomains.Add("10.0.0.52")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://10.0.0.52:443", nil)
+	req.Host = "10.0.0.52:443"
+	req.RemoteAddr = "127.0.0.1:12345"
+
+	// httptest.NewRecorder does NOT implement http.Hijacker
+	w := httptest.NewRecorder()
+	srv.handleMITMTunnel(w, req, "10.0.0.52:443", "10.0.0.52")
+
+	// Falls through to opaque tunnel which blocks the private IP
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 fallback, got %d", w.Code)
 	}
 }

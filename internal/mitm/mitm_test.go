@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // tempCA generates a CA into a temp dir and returns (certFile, keyFile).
@@ -532,11 +534,9 @@ func TestHandleConn_H2(t *testing.T) {
 		t.Fatalf("LoadCA: %v", err)
 	}
 
-	handlerCalled := make(chan struct{}, 1)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "hello h2")
-		handlerCalled <- struct{}{}
 	})
 
 	clientRaw, serverRaw := net.Pipe()
@@ -545,29 +545,42 @@ func TestHandleConn_H2(t *testing.T) {
 
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.cert)
-	tlsClient := tls.Client(clientRaw, &tls.Config{
+	tlsCfg := &tls.Config{
 		ServerName: "h2test.example.com",
 		RootCAs:    roots,
 		NextProtos: []string{"h2"},
-	})
+	}
+	tlsClient := tls.Client(clientRaw, tlsCfg)
 
 	if hsErr := tlsClient.HandshakeContext(t.Context()); hsErr != nil {
 		t.Fatalf("TLS handshake: %v", hsErr)
 	}
 
-	// Verify we negotiated h2
 	if proto := tlsClient.ConnectionState().NegotiatedProtocol; proto != "h2" {
 		t.Fatalf("expected h2, got %q", proto)
 	}
 
-	_ = tlsClient.Close()
-
-	select {
-	case <-handlerCalled:
-		// OK - handler was called via h2
-	case <-time.After(5 * time.Second):
-		// H2 handler may not have been called before close; that's OK for coverage
+	// Make a proper HTTP/2 request using http2.ClientConn
+	h2Transport := &http2.Transport{
+		TLSClientConfig: tlsCfg,
 	}
+	h2Conn, h2Err := h2Transport.NewClientConn(tlsClient)
+	if h2Err != nil {
+		t.Fatalf("h2 client conn: %v", h2Err)
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), "GET", "https://h2test.example.com/test", nil)
+	resp, respErr := h2Conn.RoundTrip(req)
+	if respErr != nil {
+		t.Fatalf("h2 RoundTrip: %v", respErr)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	_ = tlsClient.Close()
 }
 
 func TestCertFor_ExpiredCert(t *testing.T) {

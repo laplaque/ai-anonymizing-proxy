@@ -356,12 +356,17 @@ func TestMetrics_Enabled(t *testing.T) {
 	}
 }
 
-func TestDomainRegistry_PersistNoPersistPath(_ *testing.T) {
+func TestDomainRegistry_PersistNoPersistPath(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("persist with no path panicked: %v", r)
+		}
+	}()
 	cfg := testConfig()
-	r := NewDomainRegistry(cfg, "")
+	reg := NewDomainRegistry(cfg, "")
 	// Add/Remove with no persist path should not panic
-	r.Add("test.example.com")
-	r.Remove("test.example.com")
+	reg.Add("test.example.com")
+	reg.Remove("test.example.com")
 }
 
 func TestDomainRegistry_PersistAtomicWrite(t *testing.T) {

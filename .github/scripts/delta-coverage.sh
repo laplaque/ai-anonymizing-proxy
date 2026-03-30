@@ -29,6 +29,8 @@ fi
 
 echo "=== Delta Coverage Check (threshold: ${THRESHOLD}%) ==="
 echo ""
+changed_files_count=$(echo "$changed_files" | wc -l)
+
 echo "Changed source files:"
 echo "$changed_files" | sed 's/^/  /'
 echo ""
@@ -40,9 +42,8 @@ failed=0
 checked=0
 
 while IFS= read -r file; do
-  # go tool cover uses module-relative paths; strip the leading directory
-  # to match against the file paths from git diff.
-  # The cover output format is: <module-path>/<file>:<line>:\t<func>\t<coverage>
+  # Match file path precisely using literal match with trailing colon
+  # to prevent substring collisions (e.g. proxy.go matching reverse_proxy.go).
   while IFS= read -r line; do
     # Extract coverage percentage (last field, strip %)
     pct=$(echo "$line" | awk '{print $NF}' | tr -d '%')
@@ -61,11 +62,11 @@ while IFS= read -r file; do
       echo "FAIL: ${line}"
       failed=$((failed + 1))
     fi
-  done < <(echo "$cover_output" | grep "$file" || true)
+  done < <(echo "$cover_output" | grep -F "/$file:" || true)
 done <<< "$changed_files"
 
 echo ""
-echo "Checked ${checked} functions in ${changed_files_count:=$(echo "$changed_files" | wc -l)} changed files."
+echo "Checked ${checked} functions in ${changed_files_count} changed files."
 
 if [ "$failed" -gt 0 ]; then
   echo "ERROR: ${failed} function(s) below ${THRESHOLD}% coverage threshold."
