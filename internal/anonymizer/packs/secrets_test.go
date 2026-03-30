@@ -200,6 +200,7 @@ func TestSecretsSlackTokenPattern(t *testing.T) {
 	negatives := []string{
 		"xoxz-123456789012", // wrong variant letter
 		"xox-123456789012",  // missing variant letter
+		"xoxb-1",            // too short (<10 chars after prefix)
 	}
 	for _, s := range negatives {
 		if entry.Re.MatchString(s) {
@@ -277,6 +278,10 @@ func TestSecretsOpenAIKeyPattern(t *testing.T) {
 
 	if !entry.Re.MatchString("sk-ABCDEFghijklmnopqrst") {
 		t.Error("openai_key should match valid OpenAI key")
+	}
+	// sk-proj- format (newer OpenAI project keys)
+	if !entry.Re.MatchString("sk-proj-ABCDEFghijklmnopqrst") {
+		t.Error("openai_key should match sk-proj- project key format")
 	}
 	if entry.Re.MatchString("sk-short") {
 		t.Error("openai_key should NOT match short key")

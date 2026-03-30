@@ -133,6 +133,12 @@ func TestSecretsExpandedPipeline(t *testing.T) {
 			notes: "valid OpenAI API key with sk- prefix",
 		},
 		{
+			name:  "openai_key sk-proj format",
+			input: "OPENAI_API_KEY=sk-proj-ABCDEFghijklmnop",
+			pii:   "sk-proj-ABCDEFghijklmnop",
+			notes: "valid OpenAI project key with sk-proj- prefix",
+		},
+		{
 			name:  "openai_key negative too short",
 			input: "sk-short",
 			pii:   "",

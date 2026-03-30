@@ -88,13 +88,13 @@ func init() {
 			PIIType:    "GLTOKEN",
 			Confidence: 0.97,
 		},
-		// Slack token: xoxb-, xoxp-, xoxa-, xoxr- prefix + alphanumeric/dash segments.
+		// Slack token: xoxb-, xoxp-, xoxa-, xoxr- prefix + 10+ alphanumeric/dash chars.
 		// Source: Slack API docs on token types.
-		// False-positive mitigation: xox[bpar]- prefix is unique to Slack tokens.
+		// False-positive mitigation: xox[bpar]- prefix is unique to Slack tokens; minimum length avoids truncated matches.
 		Entry{
 			Name:       "slack_token",
 			Pack:       "SECRETS",
-			Re:         regexp.MustCompile(`\bxox[bpar]-[0-9A-Za-z\-]+\b`),
+			Re:         regexp.MustCompile(`\bxox[bpar]-[0-9A-Za-z\-]{10,}\b`),
 			PIIType:    "SLACKTOKEN",
 			Confidence: 0.95,
 		},
@@ -129,14 +129,14 @@ func init() {
 			PIIType:    "PYPITOKEN",
 			Confidence: 0.97,
 		},
-		// OpenAI API key: sk- prefix + 20+ alphanumeric characters.
-		// Source: OpenAI docs on API keys. Also matches DeepSeek keys with same format.
+		// OpenAI API key: sk- prefix + 20+ alphanumeric/hyphen characters.
+		// Source: OpenAI docs on API keys. Also matches DeepSeek keys and sk-proj- project keys.
 		// False-positive mitigation: sk- prefix (no underscore) is distinct from Stripe sk_live_/sk_test_.
 		// Cross-pattern: Stripe uses sk_ (underscore), OpenAI uses sk- (hyphen) — no collision.
 		Entry{
 			Name:       "openai_key",
 			Pack:       "SECRETS",
-			Re:         regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`),
+			Re:         regexp.MustCompile(`\bsk-[A-Za-z0-9\-]{20,}\b`),
 			PIIType:    "OPENAIKEY",
 			Confidence: 0.95,
 		},
@@ -243,7 +243,7 @@ func init() {
 		Entry{
 			Name:       "cloudinary_url",
 			Pack:       "SECRETS",
-			Re:         regexp.MustCompile(`cloudinary://[^\s"']{10,}`),
+			Re:         regexp.MustCompile(`\bcloudinary://[^\s"']{10,}`),
 			PIIType:    "CLOUDINARYTOKEN",
 			Confidence: 0.95,
 		},
