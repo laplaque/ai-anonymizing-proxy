@@ -98,14 +98,15 @@ func TestSecretsPriorityOverGLOBAL(t *testing.T) {
 			notes:     "issue #70 expanded: 'bearer' keyword must not steal bearer token match",
 		},
 
-		// --- GLOBAL api_key must still work for non-SECRETS tokens ---
+		// --- sk- tokens now match SECRETS openai_key (issue #77) ---
 		{
-			name:      "api_key with token keyword non-secrets",
+			name:      "sk- token claimed by openai_key",
 			input:     "token: sk-abc123def456ghi789jklmno",
 			pii:       "sk-abc123def456ghi789jklmno",
-			wantToken: "[PII_APIKEY_",
-			notes:     "generic token with no SECRETS-specific prefix — GLOBAL api_key should claim it",
+			wantToken: "[PII_OPENAIKEY_",
+			notes:     "sk- prefix with 20+ chars is now claimed by SECRETS openai_key (issue #77)",
 		},
+		// --- GLOBAL api_key must still work for non-SECRETS tokens ---
 		{
 			name:      "api_key with api_key keyword",
 			input:     "api_key=abc123def456ghi789jklmno",
