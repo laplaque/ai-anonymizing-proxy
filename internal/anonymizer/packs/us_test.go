@@ -169,6 +169,7 @@ func TestUSAddressPattern(t *testing.T) {
 		// are not matched because the regex requires at least one word + space
 		// before the suffix. This is an accepted trade-off to eliminate false
 		// positives on words ending in street suffixes.
+		{"pure-digit segment", "123 456 Street"},
 		{"suffix-only street name", "123 Court"},
 		{"suffix-only Lane", "456 Lane"},
 	}
