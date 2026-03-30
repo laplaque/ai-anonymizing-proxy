@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ai-anonymizing-proxy/internal/anonymizer/packs"
 	"ai-anonymizing-proxy/internal/metrics"
 )
 
@@ -1265,15 +1266,19 @@ func TestAllPackNamesDefault(t *testing.T) {
 	if len(a.patterns) == 0 {
 		t.Error("expected patterns from all registered packs")
 	}
-	// Verify at least the three default packs are present.
+	// Verify all registered packs were loaded.
 	packsSeen := make(map[string]bool)
 	for _, p := range a.patterns {
 		packsSeen[p.pack] = true
 	}
-	for _, want := range []string{"SECRETS", "GLOBAL", "DE"} {
-		if !packsSeen[want] {
-			t.Errorf("pack %q not found in loaded patterns", want)
-		}
+	// Derive expected count from the registry itself so the test stays
+	// correct when packs are added or removed.
+	wantPacks := make(map[string]bool)
+	for _, e := range packs.All() {
+		wantPacks[e.Pack] = true
+	}
+	if len(packsSeen) != len(wantPacks) {
+		t.Errorf("expected %d packs, got %d: %v", len(wantPacks), len(packsSeen), packsSeen)
 	}
 }
 
