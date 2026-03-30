@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ai-anonymizing-proxy/internal/anonymizer/packs"
 	"ai-anonymizing-proxy/internal/metrics"
 )
 
@@ -1084,23 +1085,23 @@ func TestLoadPacksAllPacks(t *testing.T) {
 	}
 }
 
-// TestLoadPacksNoPacks verifies that empty EnabledPacks falls back to compilePatterns.
-func TestLoadPacksNoPacks(t *testing.T) {
+// TestLoadPacksNilDefaultsToAll verifies that nil EnabledPacks loads all registered packs.
+func TestLoadPacksNilDefaultsToAll(t *testing.T) {
 	a := NewWithCacheAndCapacity(Options{
 		OllamaEndpoint:      "http://localhost:11434",
 		OllamaModel:         "test",
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        nil, // nil = legacy mode
+		EnabledPacks:        nil, // nil = all registered packs
 	})
 	if len(a.patterns) == 0 {
-		t.Error("no patterns loaded in legacy mode")
+		t.Error("no patterns loaded when EnabledPacks is nil")
 	}
-	// Legacy patterns have no pack name.
+	// All patterns should have a pack name (no legacy patterns).
 	for _, p := range a.patterns {
-		if p.pack != "" {
-			t.Errorf("legacy pattern has pack name: %q", p.pack)
+		if p.pack == "" {
+			t.Errorf("pattern %s has empty pack name", string(p.piiType))
 		}
 	}
 }
@@ -1251,28 +1252,34 @@ func TestStreamingDeanonymizeWithMetrics(t *testing.T) {
 	}
 }
 
-// TestCompilePatternsInvalidRegex covers the regex compile error path in
-// compilePatterns by temporarily testing that the warning path doesn't panic.
-// Since compilePatterns uses hardcoded patterns, we test via a direct method call
-// that exercises the warning log branch.
-func TestCompilePatternsWarningPath(t *testing.T) {
-	// Create an anonymizer that uses compilePatterns (legacy mode).
+// TestAllPackNamesDefault verifies that allPackNames returns a non-empty list
+// covering all registered packs.
+func TestAllPackNamesDefault(t *testing.T) {
 	a := NewWithCacheAndCapacity(Options{
 		OllamaEndpoint:      "http://localhost:11434",
 		OllamaModel:         "test",
 		UseAI:               false,
 		AIThreshold:         0.8,
 		OllamaMaxConcurrent: 1,
-		EnabledPacks:        nil, // legacy mode
+		EnabledPacks:        nil, // defaults to all packs
 	})
-	// Verify it has patterns (legacy compile succeeded).
 	if len(a.patterns) == 0 {
-		t.Error("compilePatterns should produce patterns")
+		t.Error("expected patterns from all registered packs")
 	}
-	// Now reset and add an invalid regex to test the error branch.
-	a.patterns = nil
-	// We can't easily inject a bad regex into specs, but we can verify
-	// the function handles the existing patterns without error.
+	// Verify all registered packs were loaded.
+	packsSeen := make(map[string]bool)
+	for _, p := range a.patterns {
+		packsSeen[p.pack] = true
+	}
+	// Derive expected count from the registry itself so the test stays
+	// correct when packs are added or removed.
+	wantPacks := make(map[string]bool)
+	for _, e := range packs.All() {
+		wantPacks[e.Pack] = true
+	}
+	if len(packsSeen) != len(wantPacks) {
+		t.Errorf("expected %d packs, got %d: %v", len(wantPacks), len(packsSeen), packsSeen)
+	}
 }
 
 // TestQueryOllamaHTTPReadBodyError covers the io.ReadAll body error path.
