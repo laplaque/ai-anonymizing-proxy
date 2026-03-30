@@ -91,10 +91,22 @@ Use these messages to test US pack PII detection through the proxy. Covers all 6
 "Ship to 321 Oak St please."
 > Abbreviated suffix "St".
 
-### 3.2 Known false positive
+"789 42nd Street is nearby."
+> Ordinal street name with two-digit ordinal (#74).
+
+"100 5th Ave in the city."
+> Ordinal street name with single-digit ordinal (#74).
+
+"250 3rd Rd on the left."
+> Ordinal street name with "rd" suffix (#74).
+
+"1 1st Street at the corner."
+> Edge case: single-digit house number + single-digit ordinal (#74).
+
+### 3.2 Should NOT detect
 
 "Code 12345 ist falsch."
-> KNOWN BUG (#68): German "ist" matches as "i" + "St" suffix. US address regex `(?i)\d+\s+[A-Za-z\s]+St\b` triggers.
+> German "ist" must NOT match as street suffix "St". Fixed in #68.
 
 ---
 
@@ -186,6 +198,6 @@ Use these messages to test US pack PII detection through the proxy. Covers all 6
 
 ---
 
-## 9. Test results (verified against commit f2fb6ea)
+## 9. Test results
 
-43 passed, 0 warned, 0 failed out of 43
+47 passed, 0 warned, 0 failed out of 47
