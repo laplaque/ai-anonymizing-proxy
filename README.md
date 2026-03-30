@@ -62,14 +62,17 @@ flowchart TD
     M -->|No| L
 ```
 
-**PII detection runs in two stages:**
+**PII detection uses a pack-based architecture:**
 
-1. **Regex pass** — fast, deterministic patterns for emails, phone numbers, SSNs, credit cards,
-   IP addresses, API keys, street addresses, ZIP codes. Each pattern carries a confidence score.
-2. **Ollama AI pass** (async best-effort) — context-aware detection for names, job titles,
-   medical info, salaries, company names. On cache miss the regex-only result is returned
-   immediately while Ollama runs in the background; on the next identical request the cached AI
-   detections are applied.
+Patterns are organized into locale-aware **packs** (`GLOBAL`, `DE`, `FR`, `NL`, `US`,
+`FINANCE_EU`, `HEALTHCARE`, `SECRETS`) that can be selectively enabled per deployment. Each
+pack contributes fast, deterministic regex patterns with individual confidence scores. A
+positional decay multiplier reduces confidence for patterns in later-listed packs to resolve
+cross-pattern ambiguity.
+
+An optional **Ollama AI pass** (async best-effort) adds context-aware detection for names, job
+titles, medical info, salaries, and company names. On cache miss the regex-only result is
+returned immediately; the AI result is cached for subsequent identical requests.
 
 Detected PII is replaced with deterministic anonymized tokens (e.g. `user<hash>@example.com`),
 so the same input always produces the same output. Tokens are reversed in the response so the AI
@@ -77,7 +80,7 @@ API's reply reaches the client with original values restored.
 
 ## Prerequisites
 
-- **Go 1.24+** — [go.dev/dl](https://go.dev/dl/)
+- **Go 1.26+** — [go.dev/dl](https://go.dev/dl/)
 - **Ollama** (optional, for AI-powered PII detection) — [ollama.com](https://ollama.com)
 
 If Ollama is not running, the proxy falls back to regex-only detection.
@@ -99,13 +102,16 @@ See [docs/client-setup.md](docs/client-setup.md) for per-tool instructions.
 
 | Topic | File |
 | ----- | ---- |
+| PII detection packs, token format, confidence scoring | [docs/anonymizer.md](docs/anonymizer.md) |
 | Architecture and design | [docs/architecture.md](docs/architecture.md) |
+| Latency benchmarks and CI threshold budgets | [docs/benchmarks.md](docs/benchmarks.md) |
 | Configuration reference (env vars, proxy-config.json, upstream proxy) | [docs/configuration.md](docs/configuration.md) |
 | Installing as a service (launchd, systemd, Windows) + log rotation | [docs/installation.md](docs/installation.md) |
 | HTTPS/MITM TLS interception and CA trust setup | [docs/tls-mitm.md](docs/tls-mitm.md) |
 | Configuring clients (shell, VSCode, Git, Python, Node.js) | [docs/client-setup.md](docs/client-setup.md) |
 | Management API reference | [docs/management-api.md](docs/management-api.md) |
 | Building, linting, testing, CI/CD | [docs/development.md](docs/development.md) |
+| Per-pack test set documentation | [docs/test-plans/](docs/test-plans/) |
 
 ## Monitoring
 
@@ -155,12 +161,12 @@ curl http://localhost:8081/metrics
 
 - **Clients must trust the proxy CA.** HTTPS interception only works if the client trusts the
   proxy's CA certificate. Without it, clients will see TLS certificate errors.
-- **Ollama detection cache is in-memory with no eviction.** The cache grows unboundedly until the
-  proxy is restarted. The cert cache is capped at 10 000 entries and is cleared in full when the
-  limit is reached.
+- **Ollama detection cache uses S3-FIFO eviction.** The persistent bbolt cache is bounded by an
+  S3-FIFO in-memory eviction layer (default 50 000 entries). The TLS cert cache is capped at
+  10 000 entries and is cleared in full when the limit is reached.
 - **Streaming responses use on-the-fly de-anonymization.** SSE / chunked responses are never
   fully buffered; text is accumulated across consecutive `text_delta` events and flushed only
-  when a 26-byte suffix guard confirms no partial token straddles the boundary.
+  when a 33-byte suffix guard confirms no partial token straddles the boundary.
 - **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token
   auth. Without it, anyone with network access to port 8081 can add or remove domains.
 

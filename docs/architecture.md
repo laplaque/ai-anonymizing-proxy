@@ -14,7 +14,7 @@ flowchart TD
     subgraph Proxy ["AI Anonymizing Proxy (127.0.0.1:8080)"]
         direction TB
         PRXY[proxy.go\nrequest router]
-        ANON[anonymizer.go\ntwo-stage PII detection]
+        ANON[anonymizer.go\npack-based PII detection]
         MITM[mitm/\ncert.go · mitm.go]
         REG[(DomainRegistry)]
         MET[metrics.go]
@@ -329,7 +329,7 @@ are never blocked by disk I/O.
 |-----------------------|-----------------------------------------------------------------------------|
 | `cmd/proxy`           | Entry point: wires config, shared registry, metrics, both HTTP servers      |
 | `internal/config`     | Layered config loading: defaults → `proxy-config.json` → env vars           |
-| `internal/anonymizer` | Two-stage PII detection, token replacement, session maps, streaming de-anon |
+| `internal/anonymizer` | Pack-based PII detection, token replacement, session maps, streaming de-anon |
 | `internal/anonymizer/packs` | Self-registering PII detection pattern packs (GLOBAL, DE, US, SECRETS, etc.) |
 | `internal/proxy`      | Request router: MITM tunnel, opaque tunnel, plain-HTTP forwarding, SSRF     |
 | `internal/mitm`       | CA management, per-host leaf cert generation/caching, TLS handshake, ALPN   |

@@ -128,13 +128,14 @@ ai-proxy/
 │       └── main_test.go
 ├── internal/
 │   ├── anonymizer/
-│   │   ├── anonymizer.go          # Two-stage PII detection (regex + Ollama) and de-anonymization
+│   │   ├── anonymizer.go          # Pack-based PII detection (regex + Ollama) and de-anonymization
 │   │   ├── anonymizer_test.go
 │   │   ├── streaming.go           # Streaming SSE deanonymization helpers (decomposed pipeline)
 │   │   ├── streaming_test.go
 │   │   ├── cache.go               # PersistentCache interface, memoryCache, bboltCache
 │   │   ├── s3fifo_cache.go        # S3-FIFO in-memory eviction layer wrapping bboltCache
-│   │   └── s3fifo_cache_test.go
+│   │   ├── s3fifo_cache_test.go
+│   │   └── packs/                 # Self-registering locale/domain PII detection packs
 │   ├── config/
 │   │   ├── config.go              # Config loading: defaults → proxy-config.json → env vars
 │   │   └── config_test.go
@@ -155,12 +156,15 @@ ai-proxy/
 │       ├── proxy.go               # Core HTTP proxy: MITM tunnel, opaque tunnel, plain HTTP
 │       └── proxy_test.go
 ├── docs/                          # Documentation
+│   ├── anonymizer.md              # PII detection packs, token format, confidence scoring
 │   ├── architecture.md            # Design overview and request lifecycle
+│   ├── benchmarks.md              # Performance benchmarks
 │   ├── client-setup.md            # Per-tool proxy configuration
 │   ├── configuration.md           # All config fields and env vars
 │   ├── development.md             # This file
 │   ├── installation.md            # Service installation (launchd, systemd, NSSM)
 │   ├── management-api.md          # Management API endpoint reference
+│   ├── test-plans/                # Per-pack test set documentation
 │   └── tls-mitm.md                # MITM TLS setup and CA trust
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .golangci.yml                  # Linter configuration
@@ -192,6 +196,6 @@ connection is established later.
 in `streaming.go` is decomposed into small helpers (`readLoop`, `assembleLines`, `processLine`,
 `processTextDelta`, `safeCutPoint`, `flushRemainder`, `handleStreamEnd`) sharing a
 `streamContext` struct. Text is accumulated across `text_delta` and `thinking_delta` events and
-flushed only when a 26-byte suffix guard (`tokenSuffixLen`) confirms no partial token straddles
+flushed only when a 33-byte suffix guard (`tokenSuffixLen`) confirms no partial token straddles
 the boundary. The context tracks the last-seen content block index so flush events target the
 correct block. See [anonymizer.md](anonymizer.md) for the full strategy.

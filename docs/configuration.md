@@ -105,12 +105,12 @@ listed in `enabledPacks`.
 |---|---|---|
 | GLOBAL | Enabled | Email, API key, credit card (Luhn validated) |
 | DE | Enabled | Steuer-ID (ISO 7064), SVNR, KFZ plate |
-| SECRETS | Enabled | SSH keys, JWT, bearer tokens, DB URIs, AWS keys, GitHub tokens |
+| SECRETS | Enabled | SSH keys, JWT, bearer tokens, DB URIs, AWS/GitHub/GitLab/Slack/Stripe/NPM/PyPI/OpenAI/Docker/Google/Shopify/SendGrid/Groq/Twilio/Facebook/Amazon MWS/Cloudinary/PGP tokens |
 | US | Available | Phone, SSN, ZIP, address, IPv4/IPv6 |
-| FR | Planned | NIR, SIRET, SIREN |
-| NL | Planned | BSN, KvK |
-| FINANCE_EU | Planned | IBAN, SWIFT/BIC, VAT IDs |
-| HEALTHCARE | Planned | MRN, ICD-10, insurance IDs |
+| FR | Available | NIR, SIRET, SIREN |
+| NL | Available | BSN, KvK |
+| FINANCE_EU | Available | IBAN, SWIFT/BIC, VAT IDs |
+| HEALTHCARE | Available | MRN, ICD-10, insurance IDs |
 
 The **positional decay multiplier** reduces confidence for patterns in later-listed packs:
 ```

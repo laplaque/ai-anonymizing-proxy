@@ -1,7 +1,7 @@
 # Anonymization Pipeline
 
 This document describes how the proxy detects, replaces, and later reverses PII in requests and
-responses: the two-stage detection pipeline, token format, session lifecycle, Ollama async cache,
+responses: the pack-based detection pipeline, token format, session lifecycle, Ollama async cache,
 and the streaming deanonymization strategy.
 
 ## Overview
@@ -31,7 +31,7 @@ asynchronously; the request is always returned immediately with whatever tokens 
 
 ## Stage 1 — Regex detection
 
-Eight compiled patterns cover the most common structured PII types. Each carries a confidence
+The GLOBAL and US packs provide the core structured PII patterns. Each carries a confidence
 score that reflects its false-positive risk:
 
 | PII type       | Token prefix    | Example match              | Confidence |
@@ -104,7 +104,7 @@ For example: `[PII_EMAIL_c160f8cc4b2e1a3d]`, `[PII_PHONE_7f4e1b02c8a3d596]`, `[P
 - `<16hex>` is the first 16 hex characters of `md5(original_value)` — deterministic, so the same
   value always produces the same token within and across sessions.
 - The bracket notation is chosen to satisfy the **non-retriggering invariant**: no token matches
-  any of the eight compiled regex patterns. A violation here would cause the proxy to tokenize
+  any of the compiled regex patterns from enabled packs. A violation here would cause the proxy to tokenize
   its own output in future sessions ("proxy eats itself"). `TestTokenFormatNonRetriggering`
   enforces this property on every CI run.
 
