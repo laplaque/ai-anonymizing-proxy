@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/metrics"
 )
 
 func testConfig() *config.Config {
@@ -299,5 +300,113 @@ func TestRemoveDomain_InvalidDomain(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid domain, got %d", w.Code)
+	}
+}
+
+func TestRemoveDomain_WrongMethod(t *testing.T) {
+	srv, _ := newTestServer("")
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/domains/remove", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET, got %d", w.Code)
+	}
+}
+
+func TestRemoveDomain_EmptyBody(t *testing.T) {
+	srv, _ := newTestServer("")
+	body := `{"domain":""}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty domain, got %d", w.Code)
+	}
+}
+
+func TestMetrics_NotEnabled(t *testing.T) {
+	srv, _ := newTestServer("")
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for no metrics, got %d", w.Code)
+	}
+}
+
+func TestMetrics_Enabled(t *testing.T) {
+	cfg := testConfig()
+	reg := NewDomainRegistry(cfg, "")
+	m := &metrics.Metrics{}
+	srv := New(cfg, reg, m)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for metrics, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+}
+
+func TestDomainRegistry_PersistNoPersistPath(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("persist with no path panicked: %v", r)
+		}
+	}()
+	cfg := testConfig()
+	reg := NewDomainRegistry(cfg, "")
+	// Add/Remove with no persist path should not panic
+	reg.Add("test.example.com")
+	reg.Remove("test.example.com")
+}
+
+func TestDomainRegistry_PersistAtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "domains.json")
+
+	cfg := testConfig()
+	r := NewDomainRegistry(cfg, path)
+
+	// Add and verify file exists
+	r.Add("test.example.com")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("persist file not created: %v", err)
+	}
+
+	// Remove and verify file updated
+	r.Remove("test.example.com")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read persist file: %v", err)
+	}
+	var domains []string
+	if err := json.Unmarshal(data, &domains); err != nil {
+		t.Fatalf("parse persist file: %v", err)
+	}
+	for _, d := range domains {
+		if d == "test.example.com" {
+			t.Error("removed domain should not be in persist file")
+		}
+	}
+}
+
+func TestAuth_MalformedBearerToken(t *testing.T) {
+	srv, _ := newTestServer("secret123")
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
+	req.Header.Set("Authorization", "Basic secret123") // Wrong scheme
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for wrong auth scheme, got %d", w.Code)
 	}
 }
