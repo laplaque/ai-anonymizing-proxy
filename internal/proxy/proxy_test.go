@@ -2,17 +2,21 @@ package proxy
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
+	"ai-anonymizing-proxy/internal/metrics"
 )
 
 // TestIsAuthRequest_PathBypasses verifies that the auth path matching logic
@@ -410,5 +414,864 @@ func TestProcessMITMRequestBody_SuccessfulAnonymization(t *testing.T) {
 	// Clean up the session
 	if sessionID != "" {
 		srv.anon.DeleteSession(sessionID)
+	}
+}
+
+// --- helpers for new tests ---
+
+func newTestProxyServer(t *testing.T) *Server {
+	t.Helper()
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AIAPIDomains:   []string{"api.openai.com"},
+		AuthDomains:    []string{"auth.example.com"},
+		AuthPaths:      []string{"/oauth"},
+		EnabledPacks:   []string{"GLOBAL"},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, metrics.New())
+	t.Cleanup(func() { _ = srv.Close() })
+	return srv
+}
+
+// newTestProxyServerAllowLocal creates a proxy that allows connections to
+// localhost (overriding SSRF protection) so httptest backends are reachable.
+func newTestProxyServerAllowLocal(t *testing.T, aiDomains, authDomains []string) *Server {
+	t.Helper()
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		AIAPIDomains:   aiDomains,
+		AuthDomains:    authDomains,
+		AuthPaths:      []string{"/oauth"},
+		EnabledPacks:   []string{"GLOBAL"},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, metrics.New())
+	// Override dialContext to allow local connections (bypass SSRF for tests)
+	dialer := &net.Dialer{Timeout: 5e9}
+	srv.dialContext = dialer.DialContext
+	srv.transport.DialContext = dialer.DialContext
+	t.Cleanup(func() { _ = srv.Close() })
+	return srv
+}
+
+// backendHostPort returns the "localhost:<port>" form of an httptest server URL.
+// Using "localhost" instead of the raw IP avoids isPrivateHost literal IP checks.
+func backendHostPort(t *testing.T, serverURL, scheme string) string {
+	t.Helper()
+	raw := strings.TrimPrefix(serverURL, scheme+"://")
+	_, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		t.Fatalf("bad server URL %q: %v", serverURL, err)
+	}
+	return "localhost:" + port
+}
+
+// --- hashRemoteAddr ---
+
+func TestHashRemoteAddr(t *testing.T) {
+	h := hashRemoteAddr("127.0.0.1:12345")
+	if len(h) != 8 {
+		t.Errorf("expected 8-char hash, got %d chars: %q", len(h), h)
+	}
+	// Deterministic
+	if h2 := hashRemoteAddr("127.0.0.1:12345"); h != h2 {
+		t.Errorf("expected deterministic hash, got %q then %q", h, h2)
+	}
+	// Different input, different hash
+	if h3 := hashRemoteAddr("192.168.1.1:80"); h == h3 {
+		t.Error("different addresses should produce different hashes")
+	}
+}
+
+// --- toSet ---
+
+func TestToSet(t *testing.T) {
+	s := toSet([]string{"a", "b", "c"})
+	if len(s) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(s))
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		if !s[k] {
+			t.Errorf("expected %q in set", k)
+		}
+	}
+	if s["d"] {
+		t.Error("unexpected key in set")
+	}
+	// Empty input
+	s2 := toSet(nil)
+	if len(s2) != 0 {
+		t.Errorf("expected empty set, got %d", len(s2))
+	}
+}
+
+// --- removeHopByHop ---
+
+func TestRemoveHopByHop(t *testing.T) {
+	h := http.Header{}
+	h.Set("Connection", "keep-alive")
+	h.Set("Keep-Alive", "timeout=5")
+	h.Set("Proxy-Authorization", "Basic abc")
+	h.Set("Content-Type", "application/json")
+	h.Set("X-Custom", "value")
+
+	removeHopByHop(h)
+
+	if h.Get("Connection") != "" {
+		t.Error("Connection header should be removed")
+	}
+	if h.Get("Keep-Alive") != "" {
+		t.Error("Keep-Alive header should be removed")
+	}
+	if h.Get("Proxy-Authorization") != "" {
+		t.Error("Proxy-Authorization header should be removed")
+	}
+	if h.Get("Content-Type") != "application/json" {
+		t.Error("Content-Type should be preserved")
+	}
+	if h.Get("X-Custom") != "value" {
+		t.Error("X-Custom should be preserved")
+	}
+}
+
+// --- copyHeader ---
+
+func TestCopyHeader(t *testing.T) {
+	src := http.Header{}
+	src.Set("Content-Type", "text/plain")
+	src.Add("X-Multi", "a")
+	src.Add("X-Multi", "b")
+
+	dst := http.Header{}
+	copyHeader(dst, src)
+
+	if dst.Get("Content-Type") != "text/plain" {
+		t.Errorf("Content-Type not copied: %q", dst.Get("Content-Type"))
+	}
+	if vals := dst.Values("X-Multi"); len(vals) != 2 {
+		t.Errorf("expected 2 X-Multi values, got %d", len(vals))
+	}
+}
+
+// --- decompressResponse ---
+
+func TestDecompressResponse_Gzip(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("hello gzip")) //nolint:errcheck
+	gw.Close()                     //nolint:errcheck
+
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(&buf),
+	}
+	resp.Header.Set("Content-Encoding", "gzip")
+
+	if err := decompressResponse(resp); err != nil {
+		t.Fatalf("decompressResponse gzip: %v", err)
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Error("Content-Encoding should be removed after decompression")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello gzip" {
+		t.Errorf("expected 'hello gzip', got %q", string(body))
+	}
+}
+
+func TestDecompressResponse_Deflate(t *testing.T) {
+	var buf bytes.Buffer
+	fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+	fw.Write([]byte("hello deflate")) //nolint:errcheck
+	fw.Close()                        //nolint:errcheck
+
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(&buf),
+	}
+	resp.Header.Set("Content-Encoding", "deflate")
+
+	if err := decompressResponse(resp); err != nil {
+		t.Fatalf("decompressResponse deflate: %v", err)
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Error("Content-Encoding should be removed after decompression")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello deflate" {
+		t.Errorf("expected 'hello deflate', got %q", string(body))
+	}
+}
+
+func TestDecompressResponse_Identity(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("plain")),
+	}
+	resp.Header.Set("Content-Encoding", "identity")
+
+	if err := decompressResponse(resp); err != nil {
+		t.Fatalf("decompressResponse identity: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "plain" {
+		t.Errorf("expected 'plain', got %q", string(body))
+	}
+}
+
+func TestDecompressResponse_Empty(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("plain")),
+	}
+	if err := decompressResponse(resp); err != nil {
+		t.Fatalf("decompressResponse empty: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "plain" {
+		t.Errorf("expected 'plain', got %q", string(body))
+	}
+}
+
+func TestDecompressResponse_Unsupported(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("data")),
+	}
+	resp.Header.Set("Content-Encoding", "br")
+	// Should not error, just log and leave body unchanged
+	if err := decompressResponse(resp); err != nil {
+		t.Fatalf("decompressResponse unsupported: %v", err)
+	}
+}
+
+func TestDecompressResponse_InvalidGzip(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("not gzip data")),
+	}
+	resp.Header.Set("Content-Encoding", "gzip")
+	err := decompressResponse(resp)
+	if err == nil {
+		t.Error("expected error for invalid gzip data")
+	}
+}
+
+// --- isStreamingResponse ---
+
+func TestIsStreamingResponse(t *testing.T) {
+	tests := []struct {
+		contentType string
+		want        bool
+	}{
+		{"text/event-stream", true},
+		{"text/event-stream; charset=utf-8", true},
+		{"application/json", false},
+		{"text/plain", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		resp := &http.Response{Header: http.Header{}}
+		resp.Header.Set("Content-Type", tt.contentType)
+		if got := isStreamingResponse(resp); got != tt.want {
+			t.Errorf("isStreamingResponse(%q) = %v, want %v", tt.contentType, got, tt.want)
+		}
+	}
+}
+
+// --- ReverseProxy ---
+
+func TestReverseProxy(t *testing.T) {
+	srv := newTestProxyServer(t)
+	rp := srv.ReverseProxy()
+	if rp == nil {
+		t.Fatal("ReverseProxy() returned nil")
+	}
+}
+
+// --- deanonymizeResponseBody ---
+
+func TestDeanonymizeResponseBody_NoSessionID(t *testing.T) {
+	srv := newTestProxyServer(t)
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("body")),
+	}
+	// Should not panic or modify when sessionID is empty
+	srv.deanonymizeResponseBody(resp, "")
+}
+
+func TestDeanonymizeResponseBody_NilResp(t *testing.T) {
+	srv := newTestProxyServer(t)
+	// Should not panic
+	srv.deanonymizeResponseBody(nil, "session123")
+}
+
+func TestDeanonymizeResponseBody_NonStreaming(t *testing.T) {
+	srv := newTestProxyServer(t)
+	resp := &http.Response{
+		Header:        http.Header{},
+		Body:          io.NopCloser(strings.NewReader("hello world")),
+		ContentLength: 11,
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	srv.deanonymizeResponseBody(resp, "test-session")
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello world" {
+		t.Errorf("expected 'hello world', got %q", string(body))
+	}
+}
+
+func TestDeanonymizeResponseBody_Streaming(t *testing.T) {
+	srv := newTestProxyServer(t)
+	resp := &http.Response{
+		Header:        http.Header{},
+		Body:          io.NopCloser(strings.NewReader("data: hello\n\n")),
+		ContentLength: -1,
+	}
+	resp.Header.Set("Content-Type", "text/event-stream")
+
+	srv.deanonymizeResponseBody(resp, "test-session")
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "hello") {
+		t.Errorf("expected body to contain 'hello', got %q", string(body))
+	}
+}
+
+func TestDeanonymizeResponseBody_GzipEncoded(t *testing.T) {
+	srv := newTestProxyServer(t)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("compressed body")) //nolint:errcheck
+	gw.Close()                          //nolint:errcheck
+
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   io.NopCloser(&buf),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Encoding", "gzip")
+
+	srv.deanonymizeResponseBody(resp, "test-session")
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "compressed body" {
+		t.Errorf("expected 'compressed body', got %q", string(body))
+	}
+}
+
+func TestDeanonymizeResponseBody_ReadError(t *testing.T) {
+	srv := newTestProxyServer(t)
+	resp := &http.Response{
+		Header: http.Header{},
+		Body:   errorReader{},
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	// Should not panic; body should be replaced with empty
+	srv.deanonymizeResponseBody(resp, "test-session")
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) != 0 {
+		t.Errorf("expected empty body on read error, got %q", string(body))
+	}
+}
+
+// --- recordMITMMetrics ---
+
+func TestRecordMITMMetrics_NilMetrics(_ *testing.T) {
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+	defer func() { _ = srv.Close() }()
+	// Should not panic with nil metrics
+	srv.recordMITMMetrics(false)
+	srv.recordMITMMetrics(true)
+}
+
+func TestRecordMITMMetrics_WithMetrics(t *testing.T) {
+	srv := newTestProxyServer(t)
+	srv.recordMITMMetrics(false) // anonymized
+	srv.recordMITMMetrics(true)  // auth
+
+	snap := srv.m.Snapshot()
+	if snap.Requests.Total != 2 {
+		t.Errorf("expected 2 total requests, got %d", snap.Requests.Total)
+	}
+}
+
+// --- ServeHTTP dispatching ---
+
+func TestServeHTTP_HTTP_Passthrough(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "backend response")
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://"+host+"/test", nil)
+	req.Host = host
+	req.URL.Host = host
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "backend response") {
+		t.Errorf("expected 'backend response', got %q", w.Body.String())
+	}
+}
+
+func TestServeHTTP_HTTP_AIAnonymization(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body) //nolint:errcheck
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	srv := newTestProxyServerAllowLocal(t, []string{host}, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://"+host+"/v1/chat",
+		strings.NewReader(`{"message":"hello"}`))
+	req.Host = host
+	req.URL.Host = host
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServeHTTP_HTTP_AuthPassthrough(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "auth OK")
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	srv := newTestProxyServerAllowLocal(t, []string{host}, []string{host})
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://"+host+"/oauth/callback", nil)
+	req.Host = host
+	req.URL.Host = host
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleHTTP_PrivateHostBlocked(t *testing.T) {
+	srv := newTestProxyServer(t)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://10.0.0.52:8080/test", nil)
+	req.Host = "10.0.0.52:8080"
+	req.URL.Host = "10.0.0.52:8080"
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for private host, got %d", w.Code)
+	}
+}
+
+func TestHandleHTTP_UpstreamError(t *testing.T) {
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	// Point to a non-existent backend
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://localhost:1/nonexistent", nil)
+	req.Host = "localhost:1"
+	req.URL.Host = "localhost:1"
+
+	w := httptest.NewRecorder()
+	srv.handleHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestHandleHTTP_EmptyBody_AIRequest(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	srv := newTestProxyServerAllowLocal(t, []string{host}, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://"+host+"/v1/models", nil)
+	req.Host = host
+	req.URL.Host = host
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// --- handleTunnel / CONNECT ---
+
+func TestServeHTTP_CONNECT_PrivateHost(t *testing.T) {
+	srv := newTestProxyServer(t)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://10.0.0.52:443", nil)
+	req.Host = "10.0.0.52:443"
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// handleOpaqueTunnel should block private addresses
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for CONNECT to private host, got %d", w.Code)
+	}
+}
+
+// --- anonymizeRequestBody ---
+
+func TestAnonymizeRequestBody_NilBody(t *testing.T) {
+	srv := newTestProxyServer(t)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	sessionID, err := srv.anonymizeRequestBody(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sessionID != "" {
+		t.Errorf("expected empty sessionID for nil body, got %q", sessionID)
+	}
+}
+
+func TestAnonymizeRequestBody_ZeroContentLength(t *testing.T) {
+	srv := newTestProxyServer(t)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com",
+		strings.NewReader(""))
+	req.ContentLength = 0
+	sessionID, err := srv.anonymizeRequestBody(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sessionID != "" {
+		t.Errorf("expected empty sessionID for zero content length, got %q", sessionID)
+	}
+}
+
+func TestAnonymizeRequestBody_ValidBody(t *testing.T) {
+	srv := newTestProxyServer(t)
+	body := `{"prompt":"test message"}`
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com",
+		strings.NewReader(body))
+	req.ContentLength = int64(len(body))
+	sessionID, err := srv.anonymizeRequestBody(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sessionID == "" {
+		t.Error("expected non-empty sessionID")
+	}
+	// Verify body was replaced
+	newBody, _ := io.ReadAll(req.Body)
+	if len(newBody) == 0 {
+		t.Error("expected non-empty body after anonymization")
+	}
+	srv.anon.DeleteSession(sessionID)
+}
+
+func TestAnonymizeRequestBody_ReadError(t *testing.T) {
+	srv := newTestProxyServer(t)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com", errorReader{})
+	req.ContentLength = 100
+	_, err := srv.anonymizeRequestBody(req)
+	if err == nil {
+		t.Error("expected error for read error")
+	}
+}
+
+// --- forward with response decompression ---
+
+func TestForward_WithGzipResponse(t *testing.T) {
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	gw.Write([]byte(`{"result":"ok"}`)) //nolint:errcheck
+	gw.Close()                          //nolint:errcheck
+	gzData := gzBuf.Bytes()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		w.Write(gzData) //nolint:errcheck
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	srv := newTestProxyServerAllowLocal(t, []string{host}, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://"+host+"/v1/chat",
+		strings.NewReader(`{"message":"hello"}`))
+	req.Host = host
+	req.URL.Host = host
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{"message":"hello"}`))
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// --- New with CA files ---
+
+func TestNew_WithInvalidCAFiles(t *testing.T) {
+	cfg := &config.Config{
+		OllamaEndpoint: "http://localhost:11434",
+		OllamaModel:    "test",
+		CACertFile:     "/nonexistent/cert.pem",
+		CAKeyFile:      "/nonexistent/key.pem",
+		EnabledPacks:   []string{"GLOBAL"},
+	}
+	domains := management.NewDomainRegistry(cfg, "")
+	srv := New(cfg, domains, nil)
+	defer func() { _ = srv.Close() }()
+	if srv.ca != nil {
+		t.Error("expected nil CA with nonexistent cert files")
+	}
+}
+
+// --- Close ---
+
+func TestServer_Close(t *testing.T) {
+	srv := newTestProxyServer(t)
+	if err := srv.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// --- ssrfSafeDialContext edge cases ---
+
+func TestSsrfSafeDialContext_NoPort(t *testing.T) {
+	dialer := &net.Dialer{Timeout: 1}
+	dialFn := ssrfSafeDialContext(dialer)
+	// Address without port — falls back to plain DialContext
+	_, err := dialFn(t.Context(), "tcp", "invalid-no-port")
+	if err == nil {
+		t.Error("expected error for address without port")
+	}
+}
+
+// --- handleHTTP with host from URL ---
+
+func TestHandleHTTP_HostFromURL(t *testing.T) {
+	// When req.Host is empty, handleHTTP should fall back to URL.Host for domain matching.
+	// We can't test a real round-trip to localhost (SSRF), but we can verify the code path
+	// by using a private host that should be blocked — the key is it takes the URL.Host path.
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://10.0.0.52:8080/test", nil)
+	req.Host = "" // empty host, should fall back to URL.Host
+	req.URL.Host = "10.0.0.52:8080"
+
+	w := httptest.NewRecorder()
+	srv.handleHTTP(w, req)
+
+	// Private host gets blocked — but it exercises the host-from-URL code path
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for private host via URL, got %d", w.Code)
+	}
+}
+
+// --- forward sets scheme ---
+
+func TestForward_SetsScheme(t *testing.T) {
+	// When URL.Scheme is empty, forward() should default to "http"
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://10.0.0.52:8080/test", nil)
+	req.URL.Scheme = ""
+	req.URL.Host = "10.0.0.52:8080"
+
+	w := httptest.NewRecorder()
+	srv.forward(w, req, "")
+
+	// Private host gets blocked, but the code path that sets scheme is exercised
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for private host, got %d", w.Code)
+	}
+}
+
+// --- serveMITMRequest (integration) ---
+
+func TestServeMITMRequest_Integration(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body) //nolint:errcheck
+	}))
+	defer backend.Close()
+
+	backendHost := strings.TrimPrefix(backend.URL, "https://")
+	srv := newTestProxyServerAllowLocal(t, []string{backendHost}, nil)
+	srv.transport, _ = backend.Client().Transport.(*http.Transport)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", backend.URL+"/v1/chat",
+		strings.NewReader(`{"prompt":"test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{"prompt":"test"}`))
+
+	rw := httptest.NewRecorder()
+	ctx := mitmContext{host: backendHost, domain: backendHost, remoteHash: "test"}
+
+	srv.serveMITMRequest(rw, req, ctx)
+
+	if rw.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+}
+
+func TestServeMITMRequest_AuthPassthrough(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "auth pass")
+	}))
+	defer backend.Close()
+
+	backendHost := strings.TrimPrefix(backend.URL, "https://")
+	srv := newTestProxyServerAllowLocal(t, []string{backendHost}, []string{backendHost})
+	srv.transport, _ = backend.Client().Transport.(*http.Transport)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", backend.URL+"/anything", nil)
+	rw := httptest.NewRecorder()
+	ctx := mitmContext{host: backendHost, domain: backendHost, remoteHash: "test"}
+
+	srv.serveMITMRequest(rw, req, ctx)
+
+	if rw.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rw.Code)
+	}
+}
+
+// --- handleHTTP metrics and logging branches ---
+
+func TestHandleHTTP_PassthroughMetrics(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	host := backendHostPort(t, backend.URL, "http")
+	// Non-AI, non-auth domain: exercises the passthrough metrics path
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://"+host+"/test", nil)
+	req.Host = host
+	req.URL.Host = host
+
+	w := httptest.NewRecorder()
+	srv.handleHTTP(w, req)
+
+	snap := srv.m.Snapshot()
+	if snap.Requests.Passthrough == 0 {
+		t.Error("expected passthrough counter to be incremented")
+	}
+}
+
+func TestHandleHTTP_AIAnonymizationError(t *testing.T) {
+	host := "example.com:80"
+	srv := newTestProxyServerAllowLocal(t, []string{"example.com"}, nil)
+
+	// AI request with body that causes read error
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://"+host+"/v1/chat", errorReader{})
+	req.Host = host
+	req.URL.Host = host
+	req.ContentLength = 100
+
+	w := httptest.NewRecorder()
+	srv.handleHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413, got %d", w.Code)
+	}
+}
+
+// --- handleTunnel dispatch ---
+
+func TestHandleTunnel_NonAIDomain(t *testing.T) {
+	srv := newTestProxyServer(t)
+	// CONNECT to private IP — goes through handleOpaqueTunnel path
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://10.0.0.52:443", nil)
+	req.Host = "10.0.0.52:443"
+
+	w := httptest.NewRecorder()
+	srv.handleTunnel(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleTunnel_AIDomainWithoutCA(t *testing.T) {
+	srv := newTestProxyServer(t)
+	// CA is nil, so even AI domain goes to opaque tunnel
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://api.openai.com:443", nil)
+	req.Host = "api.openai.com:443"
+
+	w := httptest.NewRecorder()
+	srv.handleTunnel(w, req)
+
+	// Should try opaque tunnel (which will fail to dial, returning 502)
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", w.Code)
+	}
+}
+
+// --- ssrfSafeDialContext additional coverage ---
+
+func TestSsrfSafeDialContext_ResolvesToPrivate(t *testing.T) {
+	dialer := &net.Dialer{Timeout: 1e9}
+	dialFn := ssrfSafeDialContext(dialer)
+
+	// localhost resolves to 127.0.0.1 or ::1, both private
+	_, err := dialFn(t.Context(), "tcp", "localhost:80")
+	if err == nil {
+		t.Fatal("expected error dialing localhost")
+	}
+}
+
+func TestForwardMITMRequest_UpstreamError(t *testing.T) {
+	srv := newTestProxyServerAllowLocal(t, nil, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "https://localhost:1/fail", nil)
+	req.RequestURI = ""
+	rw := httptest.NewRecorder()
+
+	srv.forwardMITMRequest(rw, req, "")
+
+	if rw.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", rw.Code)
 	}
 }
