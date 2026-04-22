@@ -91,6 +91,7 @@ import-ca-linux:
 
 # Import CA into Windows trust store (requires elevated PowerShell)
 import-ca-windows:
+	@test -n "$(CA_CERT)" || { echo "Error: CA_CERT is not set. Run 'make generate-ca' first or set CA_CERT=path/to/ca.pem."; exit 1; }
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/import-ca.ps1 -CaPath "$(CA_CERT)"
 
 # Quick smoke test against a running proxy
