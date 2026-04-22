@@ -1,6 +1,6 @@
 module ai-anonymizing-proxy
 
-go 1.26.1
+go 1.26.2
 
 require (
 	go.etcd.io/bbolt v1.4.3
