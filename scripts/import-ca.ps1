@@ -38,11 +38,18 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 # Read the certificate file — convert PEM to DER if needed
-$rawContent = [System.IO.File]::ReadAllText($resolvedPath)
+$rawContent = [System.IO.File]::ReadAllText($resolvedPath).TrimStart([char]0xFEFF)
 if ($rawContent -match '-----BEGIN CERTIFICATE-----') {
+    if (($rawContent | Select-String -Pattern '-----BEGIN CERTIFICATE-----' -AllMatches).Matches.Count -gt 1) {
+        Write-Error "PEM file contains multiple certificates. Provide a single CA certificate."
+        exit 1
+    }
     $base64 = $rawContent -replace '-----BEGIN CERTIFICATE-----' -replace '-----END CERTIFICATE-----' -replace '\s'
     $derBytes = [Convert]::FromBase64String($base64)
-    $tempDer = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'ai-proxy-ca.cer')
+    $tempDer = [System.IO.Path]::Combine(
+        [System.IO.Path]::GetTempPath(),
+        "ai-proxy-ca-$PID.cer"
+    )
     [System.IO.File]::WriteAllBytes($tempDer, $derBytes)
     $importPath = $tempDer
 } else {
@@ -73,6 +80,9 @@ try {
         exit 1
     }
     Write-Output "CA trusted on Windows (thumbprint: $($cert.Thumbprint))."
+} catch {
+    Write-Error "Failed to import CA certificate: $_"
+    exit 1
 } finally {
     if ($tempDer -and (Test-Path -LiteralPath $tempDer)) {
         Remove-Item -LiteralPath $tempDer -Force
