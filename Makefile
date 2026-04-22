@@ -89,10 +89,10 @@ import-ca-linux:
 	sudo update-ca-certificates
 	@echo "CA trusted on Linux."
 
-# Import CA into Windows trust store (run from elevated prompt)
+# Import CA into Windows trust store (requires elevated PowerShell)
 import-ca-windows:
-	@echo "Run from an elevated Command Prompt:"
-	@echo "  certutil -addstore -f \"ROOT\" $(CA_CERT)"
+	@test -n "$(CA_CERT)" || { echo "Error: CA_CERT is not set. Run 'make generate-ca' first or set CA_CERT=path/to/ca.pem."; exit 1; }
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/import-ca.ps1 -CaPath "$(CA_CERT)"
 
 # Quick smoke test against a running proxy
 smoke:
