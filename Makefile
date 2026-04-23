@@ -96,11 +96,15 @@ import-ca-windows:
 
 # --- User-scope CA trust (no admin / no sudo required) ---
 
-# Trust the proxy CA for the current user only (no sudo, no admin).
-# Use this for a zero-admin setup, e.g. VS Code users without root.
+# Trust the proxy CA for the current user only. No sudo required.
+# May prompt for keychain password. For zero-admin setup, e.g. VS Code users without root.
 import-ca-macos-user:
+	@if [ -z "$(CA_CERT)" ] || [ ! -f "$(CA_CERT)" ]; then \
+		echo "CA_CERT not found at '$(CA_CERT)'. Generate it first with 'make gen-ca'."; \
+		exit 1; \
+	fi
 	security add-trusted-cert -d -r trustRoot \
-		-k "$(HOME)/Library/Keychains/login.keychain-db" $(CA_CERT)
+		-k "$(HOME)/Library/Keychains/login.keychain-db" "$(CA_CERT)"
 	@echo "CA trusted on macOS (current user)."
 
 # Linux has no user-writable system CA store. Set NODE_EXTRA_CA_CERTS,
@@ -117,7 +121,6 @@ import-ca-linux-user:
 # Uses Cert:\CurrentUser\Root instead of Cert:\LocalMachine\Root.
 import-ca-windows-user:
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/import-ca.ps1 -CaPath "$(CA_CERT)" -Scope User
-	@echo "CA trusted on Windows (current user)."
 
 # Quick smoke test against a running proxy
 smoke:

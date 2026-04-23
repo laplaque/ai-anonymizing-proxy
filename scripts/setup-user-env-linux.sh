@@ -2,8 +2,8 @@
 # setup-user-env-linux.sh — guided installer for per-user CA trust env vars.
 #
 # Linux has no user-writable system CA store. This script sets the three
-# environment variables that most runtimes (Node.js, Python/requests, curl,
-# Go) honour for custom CA bundles:
+# environment variables that most runtimes (Node.js, Python/requests, curl)
+# and indirectly Go (via SSL_CERT_FILE) honour for custom CA bundles:
 #
 #   NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, SSL_CERT_FILE
 #
@@ -36,7 +36,7 @@ USAGE:
   setup-user-env-linux.sh --help
 
 OPTIONS:
-  --ca-path <path>   Absolute path to the CA certificate (required).
+  --ca-path <path>   Path to the CA certificate (resolved to absolute).
   --dry-run          Print intended changes without writing anything.
   --yes, -y          Non-interactive — apply all recommended changes.
   --help, -h         Show this help and exit.
@@ -60,6 +60,9 @@ USAGE
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ca-path)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --ca-path requires a value." >&2; exit 1
+            fi
             CA_PATH="$2"
             shift 2
             ;;
@@ -89,13 +92,14 @@ if [[ -z "$CA_PATH" ]]; then
     exit 1
 fi
 
-# Resolve to absolute path
-CA_PATH="$(cd "$(dirname "$CA_PATH")" && pwd)/$(basename "$CA_PATH")"
-
+# Check existence before resolving (avoids cryptic cd error for bad directories)
 if [[ ! -f "$CA_PATH" ]]; then
     echo "Error: CA certificate not found: $CA_PATH" >&2
     exit 1
 fi
+
+# Resolve to absolute path
+CA_PATH="$(cd "$(dirname "$CA_PATH")" && pwd)/$(basename "$CA_PATH")"
 
 # --- Helpers ---
 confirm() {
@@ -122,7 +126,7 @@ step1_env_conf() {
     echo ""
 
     if [[ -f "$ENV_FILE" ]]; then
-        existing_path=$(grep -oP '(?<=NODE_EXTRA_CA_CERTS=).*' "$ENV_FILE" 2>/dev/null || true)
+        existing_path=$(sed -n 's/^NODE_EXTRA_CA_CERTS=//p' "$ENV_FILE" 2>/dev/null || true)
         if [[ "$existing_path" == "$CA_PATH" ]]; then
             echo "Already set up with the same CA path. Skipping."
             return
@@ -162,7 +166,7 @@ step1_env_conf() {
     CHANGED_FILES+=("$ENV_FILE")
 }
 
-# --- Step 2 & 3: Shell rc ---
+# --- Step 2: Shell rc ---
 detect_shell_target() {
     local shell_name
     shell_name="$(basename "${SHELL:-}")"
@@ -211,10 +215,35 @@ step2_shell_rc() {
     echo "Target: $target"
     echo ""
 
-    # Idempotence check
+    # Idempotence check — also detect stale CA path
     if [[ -f "$target" ]] && grep -qF "$MARKER" "$target"; then
-        echo "Marker already present in $target. Skipping."
-        return
+        if [[ "$shell_name" == "fish" ]]; then
+            existing_rc_path=$(sed -n 's/^set -gx NODE_EXTRA_CA_CERTS "\(.*\)"/\1/p' "$target" 2>/dev/null || true)
+        else
+            existing_rc_path=$(sed -n 's/^export NODE_EXTRA_CA_CERTS="\(.*\)"/\1/p' "$target" 2>/dev/null || true)
+        fi
+        if [[ "$existing_rc_path" == "$CA_PATH" ]]; then
+            echo "Marker already present in $target with correct CA path. Skipping."
+            return
+        fi
+        echo "Marker present in $target but with a different CA path:"
+        echo "  Current:  $existing_rc_path"
+        echo "  Proposed: $CA_PATH"
+        echo ""
+        if $DRY_RUN; then
+            echo "[dry-run] Would replace CA path block in $target"
+            return
+        fi
+        if ! confirm "Replace the existing block?"; then
+            echo "Skipped."
+            return
+        fi
+        # Remove old block (marker line + next 3 export/set lines) and re-append
+        if [[ "$shell_name" == "fish" ]]; then
+            sed -i.bak "/$MARKER/,+3d" "$target" && rm -f "$target.bak"
+        else
+            sed -i.bak "/$MARKER/,+3d" "$target" && rm -f "$target.bak"
+        fi
     fi
 
     local block
