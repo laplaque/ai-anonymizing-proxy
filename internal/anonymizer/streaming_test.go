@@ -83,7 +83,7 @@ func readStreamResult(t *testing.T, sseInput string, tokenMap map[string]string)
 	a.sessionMu.Unlock()
 
 	src := io.NopCloser(strings.NewReader(sseInput))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck
 
 	got, err := io.ReadAll(rc)
@@ -480,7 +480,7 @@ func TestHandleStreamEndNonEOFError(t *testing.T) {
 		err:  errFail,
 	}
 
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	_, err := io.ReadAll(rc)
 	if err == nil {
 		t.Fatal("expected error from non-EOF read failure, got nil")
@@ -507,7 +507,7 @@ func TestStreamingDeanonymizeVerboseLogging(t *testing.T) {
 	prefix := strings.Repeat("v", tokenSuffixLen+10)
 	sseInput := makeSSETextDelta(prefix+token+" end") + "\n"
 	src := io.NopCloser(strings.NewReader(sseInput))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck
 
 	got, err := io.ReadAll(rc)
@@ -763,7 +763,7 @@ func TestProcessTextDeltaVerboseReplacementInFlush(t *testing.T) {
 		makeSSETextDelta(padding2+"end") + "\n"
 
 	src := io.NopCloser(strings.NewReader(sseInput))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck
 
 	got, err := io.ReadAll(rc)
@@ -775,8 +775,45 @@ func TestProcessTextDeltaVerboseReplacementInFlush(t *testing.T) {
 	}
 }
 
-// TestProcessJSONDeltaVerboseReplacement covers the verbose logging path in
-// processJSONDelta when a token is actually replaced.
+// TestProcessJSONDeltaVerboseReplacementInFlush covers the verbose logging path
+// in processJSONDelta when a token falls entirely within the flush zone. This
+// differs from TestProcessJSONDeltaVerboseReplacement which only delivers
+// prefix+token in one event (keeping the token in the suffix guard). Here two
+// events are used so that by the time the second event is processed the token
+// is past the suffix guard.
+func TestProcessJSONDeltaVerboseReplacementInFlush(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "alice@example.com"
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true)
+	sessionID := "verbose-json-flush"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{token: original}
+	a.sessionMu.Unlock()
+
+	// First event: prefix + token + extra padding — enough that the token sits
+	// entirely before the suffix guard when the second event arrives.
+	prefix := strings.Repeat("j", tokenSuffixLen+len(token)+5)
+	sseInput := makeSSEJsonDelta(prefix+token) +
+		makeSSEJsonDelta(strings.Repeat("k", tokenSuffixLen+5)+"end") +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading output: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("json delta verbose flush: token not replaced:\n%s", string(got))
+	}
+	if strings.Contains(string(got), token) {
+		t.Errorf("json delta verbose flush: unreplaced token in output:\n%s", string(got))
+	}
+}
 func TestProcessJSONDeltaVerboseReplacement(t *testing.T) {
 	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "alice@example.com"
@@ -794,7 +831,7 @@ func TestProcessJSONDeltaVerboseReplacement(t *testing.T) {
 		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
 
 	src := io.NopCloser(strings.NewReader(sseInput))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck
 
 	got, err := io.ReadAll(rc)
@@ -825,7 +862,7 @@ func TestHandleStreamEndNonEOFWithPartialLine(t *testing.T) {
 		err:  errFail,
 	}
 
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	_, err := io.ReadAll(rc)
 	if err == nil || !strings.Contains(err.Error(), "broken pipe") {
 		t.Errorf("expected 'broken pipe' error, got: %v", err)
