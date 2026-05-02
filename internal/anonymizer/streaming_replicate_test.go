@@ -72,6 +72,7 @@ func TestReplicateStreamingVerboseLogging(t *testing.T) {
 	}
 }
 
+// TestReplicateStreamingDoneEvent verifies that the Replicate done event
 // ("data: {}") triggers a flush of any pending accumulator content and then
 // passes through unchanged.
 func TestReplicateStreamingDoneEvent(t *testing.T) {

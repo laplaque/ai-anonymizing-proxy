@@ -76,10 +76,7 @@ func (g *geminiDeanonymizer) ProcessDataPayload(payload []byte) bool {
 	}
 
 	envelope.Candidates[0].Content.Parts[0].Text = replaced
-	newPayload, err := json.Marshal(envelope)
-	if err != nil {
-		return false
-	}
+	newPayload, _ := json.Marshal(envelope) // error impossible: only string/int fields
 
 	writePipe(g.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
 

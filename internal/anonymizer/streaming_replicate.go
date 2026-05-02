@@ -30,7 +30,7 @@ func (r *replicateDeanonymizer) ProcessDataPayload(payload []byte) bool {
 		return true
 	}
 
-	r.textAccum.WriteString(string(payload))
+	r.textAccum.WriteString(text)
 	accumulated := r.textAccum.String()
 
 	flushUpTo := safeCutPoint(accumulated)

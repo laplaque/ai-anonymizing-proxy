@@ -43,9 +43,11 @@ func TestPassthroughFlushIsNoOp(t *testing.T) {
 	}
 }
 
-// because passthroughDeanonymizer writes each event immediately without
-// accumulation, a token split across two events is NOT rejoined and therefore
-// NOT replaced. This is the documented trade-off for unknown providers.
+// TestPassthroughStreamingNoAccumulation verifies that the passthrough provider
+// does not rejoin tokens split across events — this is the documented trade-off
+// for unknown providers. Because passthroughDeanonymizer writes each event
+// immediately without accumulation, a token split across two events is NOT
+// replaced.
 func TestPassthroughStreamingNoAccumulation(t *testing.T) {
 	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "user@example.com"

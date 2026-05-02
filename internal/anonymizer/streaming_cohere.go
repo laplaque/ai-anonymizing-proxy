@@ -82,10 +82,7 @@ func (c *cohereDeanonymizer) ProcessDataPayload(payload []byte) bool {
 	}
 
 	envelope.Delta.Message.Content.Text = replaced
-	newPayload, err := json.Marshal(envelope)
-	if err != nil {
-		return false
-	}
+	newPayload, _ := json.Marshal(envelope) // error impossible: only string/int fields
 
 	writePipe(c.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
 
