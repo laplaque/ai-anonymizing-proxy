@@ -133,8 +133,8 @@ sequenceDiagram
     API-->>P: response
 
     alt streaming (SSE)
-        P->>A: StreamingDeanonymize(body, sessionID)
-        Note over A: snapshot token map under read lock
+        P->>A: StreamingDeanonymize(body, sessionID, domain)
+        Note over A: snapshot token map, select provider for domain
         A-->>P: io.ReadCloser (tokens replaced on-the-fly)
     else buffered
         P->>A: DeanonymizeText(body, sessionID)
@@ -152,39 +152,47 @@ starts, so a `DeleteSession` call that races with streaming cannot cause missed 
 
 ## Streaming deanonymization
 
-The Anthropic API delivers one or two characters per `text_delta` SSE event, meaning a single
-token like `[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple events:
+AI API providers deliver streaming responses in different SSE formats. A token like
+`[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple SSE events, making raw
+byte replacement impossible. `StreamingDeanonymize` uses a provider-aware interface to handle
+each format correctly:
 
-```
-{"type":"text_delta","text":"[PII_EMA"}
-{"type":"text_delta","text":"IL_c160f8cc4b2e1a3d]"}
-```
+| Provider | Domains | SSE format | Text field |
+|----------|---------|------------|------------|
+| Anthropic | `api.anthropic.com` | `content_block_delta` events | `delta.text`, `delta.thinking`, `delta.partial_json` |
+| OpenAI | `api.openai.com`, `api.mistral.ai`, `api.together.xyz`, `api.perplexity.ai`, `api.huggingface.co` | `chat.completion.chunk` | `choices[0].delta.content` |
+| Gemini | `generativelanguage.googleapis.com` | `GenerateContentResponse` | `candidates[0].content.parts[0].text` |
+| Cohere | `api.cohere.ai` | `content-delta` events | `delta.message.content.text` |
+| Replicate | `api.replicate.com` | Plain text SSE | `data` field (plain text) |
+| Passthrough | Unknown domains | Raw replacement | Entire payload |
 
-Raw byte replacement cannot match tokens split this way. `StreamingDeanonymize` delegates to a
-pipeline of small helper functions (in `streaming.go`) that each handle one concern:
+The `StreamingDeanonymizer` interface has two methods:
+
+- `ProcessDataPayload(payload []byte) bool` — handles the bytes after `data: ` in an SSE line.
+  Returns `true` if handled, `false` to fall back to raw token replacement.
+- `Flush()` — emits any remaining accumulated text at stream end.
+
+The shared framework (`streaming.go`) handles concerns common to all providers:
 
 1. **Line assembly** (`readLoop` → `assembleLines`) — reads raw bytes from the source, splits
    on newlines, strips `\r`, and dispatches complete lines.
 2. **Line classification** (`processLine`) — routes each SSE line: comments and empty lines
-   pass through verbatim; non-`data:` lines go through the replacer; `data:` lines are parsed
-   as JSON.
-3. **Text accumulation** (`processTextDelta`) — accumulates text across consecutive
-   `content_block_delta` / `text_delta` **and** `thinking_delta` events, tracks the content
-   block index, and flushes safe prefixes.
-4. **Safe flush boundary** (`safeCutPoint`) — calculates how many accumulated bytes can be
+   pass through verbatim; non-`data:` lines go through the replacer; `data:` lines are
+   delegated to the provider's `ProcessDataPayload`.
+3. **Safe flush boundary** (`safeCutPoint`) — calculates how many accumulated bytes can be
    flushed without splitting a partial token. A `tokenSuffixLen` of 33 bytes is retained in
    the accumulator — enough to cover the longest possible token
    (`[PII_CREDITCARD_XXXXXXXXXXXXXXXX]` = 33 chars).
-5. **Remainder flush** (`flushRemainder`) — when a non-text-delta event arrives or the stream
-   ends, any text still in the accumulator is emitted as a synthetic `content_block_delta`
-   targeting the correct content block index.
-6. **Stream end** (`handleStreamEnd`) — flushes partial lines and accumulated text at EOF or on
-   read error.
+4. **Stream end** (`handleStreamEnd`) — flushes partial lines and calls `provider.Flush()`
+   at EOF or on read error.
 
-A `streamContext` struct holds the shared mutable state for a single invocation: the pipe
-writer, replacer, text accumulator, last-seen content block index, and logging configuration.
-The replacer is applied on **all** passthrough paths (non-JSON lines, non-delta events, etc.)
-so tokens embedded anywhere in the SSE stream are deanonymized.
+Each provider implementation accumulates text fragments, applies `safeCutPoint` to determine
+safe flush boundaries, performs token replacement via the shared `strings.Replacer`, and
+re-serializes the output in the provider's native SSE format.
+
+A `streamContext` struct holds the shared framework state: the pipe writer, replacer, and
+provider instance. The replacer is applied on **all** passthrough paths (non-JSON lines,
+non-delta events, etc.) so tokens embedded anywhere in the SSE stream are deanonymized.
 
 ---
 

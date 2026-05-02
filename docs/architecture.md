@@ -73,7 +73,7 @@ sequenceDiagram
         P->>API: POST /v1/messages (anonymized, real TLS)
         API-->>P: response
         alt SSE / text/event-stream
-            P->>A: StreamingDeanonymize(body, sessionID)
+            P->>A: StreamingDeanonymize(body, sessionID, domain)
             A-->>C: token replacements streamed on-the-fly
         else buffered response
             P->>A: DeanonymizeText(body, sessionID)
@@ -235,26 +235,33 @@ Each request gets a random `sessionID`. The token→original map is stored in
 `anonymizer.sessions[sessionID]` during anonymization and deleted after the response is delivered.
 
 For SSE (`Content-Type: text/event-stream`), `StreamingDeanonymize` wraps the response body in a
-pipe-based reader. Because the Anthropic API delivers one or two characters per `text_delta`
-event, a single token like `[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple
-events.
+pipe-based reader. AI API providers deliver text content in different SSE formats, and a single
+token like `[PII_EMAIL_c160f8cc4b2e1a3d]` frequently arrives split across multiple events.
 
-The streaming logic is decomposed into small, independently testable helpers in
-`internal/anonymizer/streaming.go`:
+The streaming system uses a provider-aware `StreamingDeanonymizer` interface to handle each
+provider's SSE format. The `domain` parameter selects the appropriate implementation:
+
+| Provider | Text field | Domains |
+|----------|------------|---------|
+| Anthropic | `delta.text` / `delta.thinking` | `api.anthropic.com` |
+| OpenAI | `choices[0].delta.content` | `api.openai.com`, `api.mistral.ai`, `api.together.xyz`, `api.perplexity.ai`, `api.huggingface.co` |
+| Gemini | `candidates[0].content.parts[0].text` | `generativelanguage.googleapis.com` |
+| Cohere | `delta.message.content.text` | `api.cohere.ai` |
+| Replicate | Plain text in `data` | `api.replicate.com` |
+| Passthrough | Raw replacement | Unknown domains |
+
+The shared framework in `internal/anonymizer/streaming.go` handles SSE framing:
 
 | Helper | Responsibility |
 |---|---|
 | `readLoop` | Top-level goroutine: reads chunks from the source and dispatches complete lines |
 | `assembleLines` | Splits raw bytes on newlines, strips `\r`, dispatches to `processLine` |
-| `processLine` | Classifies each SSE line (comment, non-data, JSON data) and routes accordingly |
-| `processTextDelta` | Accumulates text across `text_delta` / `thinking_delta` events, flushes safe prefixes |
+| `processLine` | Classifies each SSE line (comment, non-data, data) and delegates data payloads to the provider |
 | `safeCutPoint` | Calculates how many accumulated bytes can be flushed without splitting a partial token |
-| `flushRemainder` | Emits a synthetic `content_block_delta` carrying any text still in the accumulator |
-| `handleStreamEnd` | Flushes partial lines and accumulated text at EOF or on read error |
+| `handleStreamEnd` | Flushes partial lines and calls `provider.Flush()` at EOF or on read error |
 
-A `streamContext` struct holds the mutable state shared across these helpers for a single
-streaming invocation, including the `lastIndex` field that tracks the most recently seen
-content block index so that flush events target the correct block (thinking vs. text).
+Provider-specific implementations live in separate files (`streaming_anthropic.go`,
+`streaming_openai.go`, etc.) and handle JSON parsing, text accumulation, and re-serialization.
 
 The 33-byte suffix guard (`tokenSuffixLen`) is retained in the accumulator — enough to cover
 the longest possible token (`[PII_CREDITCARD_XXXXXXXXXXXXXXXX]` = 33 chars). Non-delta events (ping,

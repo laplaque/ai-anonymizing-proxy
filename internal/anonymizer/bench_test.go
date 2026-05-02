@@ -164,7 +164,7 @@ func BenchmarkStreamingFlush(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		r := mockReadCloser{strings.NewReader(sseChunk)}
-		rc := a.StreamingDeanonymize(r, sessionID)
+		rc := a.StreamingDeanonymize(r, sessionID, "api.anthropic.com")
 		_, _ = io.Copy(io.Discard, rc)
 		_ = rc.Close()
 	}
@@ -184,7 +184,7 @@ func BenchmarkStreamingFlushNoTokens(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		r := mockReadCloser{strings.NewReader(sseChunk)}
-		rc := a.StreamingDeanonymize(r, sessionID)
+		rc := a.StreamingDeanonymize(r, sessionID, "api.anthropic.com")
 		_, _ = io.Copy(io.Discard, rc)
 		_ = rc.Close()
 	}
@@ -216,7 +216,7 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" final 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		r := mockReadCloser{strings.NewReader(sseChunk)}
-		rc := a.StreamingDeanonymize(r, sessionID)
+		rc := a.StreamingDeanonymize(r, sessionID, "api.anthropic.com")
 		_, _ = io.Copy(io.Discard, rc)
 		_ = rc.Close()
 	}

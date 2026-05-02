@@ -102,7 +102,7 @@ func TestStreamingDeanonymizeRoundTrip(t *testing.T) {
 	}
 
 	src := io.NopCloser(strings.NewReader(anonymized))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck // test cleanup
 
 	got, err := io.ReadAll(rc)
@@ -120,7 +120,7 @@ func TestStreamingDeanonymizeNoTokens(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(text))
 	// session with no replacements: should get back the original reader unchanged
-	rc := a.StreamingDeanonymize(src, "empty-session")
+	rc := a.StreamingDeanonymize(src, "empty-session", "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck // test cleanup
 
 	got, err := io.ReadAll(rc)
@@ -670,7 +670,7 @@ func TestStreamingDeanonymizeChunkBoundary(t *testing.T) {
 	// Deliver the anonymized content one byte per Read to force every possible
 	// token split across chunk boundaries.
 	src := &bytewiseReader{data: []byte(anonymized)}
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck // test cleanup
 
 	got, err := io.ReadAll(rc)
@@ -1243,7 +1243,7 @@ func TestStreamingDeanonymizeWithMetrics(t *testing.T) {
 
 	sseInput := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"
 	src := io.NopCloser(strings.NewReader(sseInput))
-	rc := a.StreamingDeanonymize(src, sessionID)
+	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
 	defer rc.Close() //nolint:errcheck
 	io.ReadAll(rc)   //nolint:errcheck
 
