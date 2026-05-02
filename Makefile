@@ -29,7 +29,7 @@ lint:
 
 security:
 	@echo "Running gosec security scanner..."
-	gosec -exclude=G104,G304,G703,G706 ./...
+	gosec -exclude=G104,G304,G703,G706 $$(go list -f '{{.Dir}}' ./...)
 
 vulncheck:
 	@echo "Running govulncheck..."
