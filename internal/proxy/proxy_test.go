@@ -719,13 +719,13 @@ func TestDeanonymizeResponseBody_NoSessionID(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader("body")),
 	}
 	// Should not panic or modify when sessionID is empty
-	srv.deanonymizeResponseBody(resp, "")
+	srv.deanonymizeResponseBody(resp, "", "")
 }
 
 func TestDeanonymizeResponseBody_NilResp(t *testing.T) {
 	srv := newTestProxyServer(t)
 	// Should not panic
-	srv.deanonymizeResponseBody(nil, "session123")
+	srv.deanonymizeResponseBody(nil, "session123", "")
 }
 
 func TestDeanonymizeResponseBody_NonStreaming(t *testing.T) {
@@ -737,7 +737,7 @@ func TestDeanonymizeResponseBody_NonStreaming(t *testing.T) {
 	}
 	resp.Header.Set("Content-Type", "application/json")
 
-	srv.deanonymizeResponseBody(resp, "test-session")
+	srv.deanonymizeResponseBody(resp, "test-session", "")
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "hello world" {
 		t.Errorf("expected 'hello world', got %q", string(body))
@@ -753,7 +753,7 @@ func TestDeanonymizeResponseBody_Streaming(t *testing.T) {
 	}
 	resp.Header.Set("Content-Type", "text/event-stream")
 
-	srv.deanonymizeResponseBody(resp, "test-session")
+	srv.deanonymizeResponseBody(resp, "test-session", "")
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "hello") {
 		t.Errorf("expected body to contain 'hello', got %q", string(body))
@@ -779,7 +779,7 @@ func TestDeanonymizeResponseBody_GzipEncoded(t *testing.T) {
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Encoding", "gzip")
 
-	srv.deanonymizeResponseBody(resp, "test-session")
+	srv.deanonymizeResponseBody(resp, "test-session", "")
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "compressed body" {
 		t.Errorf("expected 'compressed body', got %q", string(body))
@@ -794,7 +794,7 @@ func TestDeanonymizeResponseBody_ReadError(t *testing.T) {
 	}
 	resp.Header.Set("Content-Type", "application/json")
 	// Should not panic; body should be replaced with empty
-	srv.deanonymizeResponseBody(resp, "test-session")
+	srv.deanonymizeResponseBody(resp, "test-session", "")
 	body, _ := io.ReadAll(resp.Body)
 	if len(body) != 0 {
 		t.Errorf("expected empty body on read error, got %q", string(body))
@@ -1152,7 +1152,7 @@ func TestForward_SetsScheme(t *testing.T) {
 	req.URL.Host = "10.0.0.52:8080"
 
 	w := httptest.NewRecorder()
-	srv.forward(w, req, "")
+	srv.forward(w, req, "", "")
 
 	// Private host gets blocked, but the code path that sets scheme is exercised
 	if w.Code != http.StatusForbidden {
@@ -1311,7 +1311,7 @@ func TestForwardMITMRequest_UpstreamError(t *testing.T) {
 	req.RequestURI = ""
 	rw := httptest.NewRecorder()
 
-	srv.forwardMITMRequest(rw, req, "")
+	srv.forwardMITMRequest(rw, req, "", "")
 
 	if rw.Code != http.StatusBadGateway {
 		t.Errorf("expected 502, got %d", rw.Code)

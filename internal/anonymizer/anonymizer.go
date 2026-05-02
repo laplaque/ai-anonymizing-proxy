@@ -625,30 +625,23 @@ func (a *Anonymizer) DeleteSession(sessionID string) {
 }
 
 // StreamingDeanonymize wraps src in a reader that replaces PII tokens on-the-fly
-// for Anthropic SSE streams.
+// for provider-specific SSE streams.
 //
-// The Anthropic API streams one or two characters per text_delta event, which
-// means a single PII token like [PII_EMAIL_c160f8cc4b2e1a3d] frequently arrives split across
-// multiple SSE events:
+// AI API providers stream text content in different SSE formats. The domain
+// parameter selects the appropriate provider implementation:
+//   - api.anthropic.com: content_block_delta with text_delta/thinking_delta
+//   - api.openai.com (and compatible): choices[0].delta.content
+//   - generativelanguage.googleapis.com: candidates[0].content.parts[0].text
+//   - api.cohere.ai: content-delta with delta.message.content.text
+//   - api.replicate.com: plain text in data field
+//   - unknown domains: raw token replacement (passthrough)
 //
-//	{"type":"text_delta","text":"[PII_78cabb"}
-//	{"type":"text_delta","text":"39]"}
-//
-// Raw byte replacement on the SSE envelope cannot match tokens split this way.
-// This function therefore:
-//  1. Buffers incoming bytes line by line.
-//  2. For each complete "data: {...}" SSE line, parses the JSON.
-//  3. If the event is a content_block_delta / text_delta, it accumulates the
-//     text content into a per-stream text buffer.
-//  4. After each text_delta, it checks whether the accumulated buffer contains
-//     complete tokens and flushes any replaced text back into the JSON, re-
-//     serializing the SSE line before writing it downstream.
-//  5. Non-text-delta lines (ping, message_start, thinking_delta, etc.) are
-//     passed through verbatim.
+// Token splits across SSE events are handled by accumulating text fragments
+// and using safeCutPoint to determine safe flush boundaries.
 //
 // A snapshot of the session token map is taken immediately (under the read
 // lock) so the goroutine is unaffected by a later DeleteSession call.
-func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) io.ReadCloser {
+func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string, domain string) io.ReadCloser {
 	a.sessionMu.RLock()
 	rawMap := a.sessions[sessionID]
 	tokenMap := make(map[string]string, len(rawMap))
@@ -675,12 +668,18 @@ func (a *Anonymizer) StreamingDeanonymize(src io.ReadCloser, sessionID string) i
 	replacer := strings.NewReplacer(pairs...)
 
 	pr, pw := io.Pipe()
-	ctx := &streamContext{
+	opts := streamDeanonymizerOpts{
 		pw:         pw,
 		replacer:   replacer,
 		sessionID:  sessionID,
 		verbose:    a.verbose,
 		tokenCount: len(tokenMap),
+	}
+	provider := NewStreamingDeanonymizer(ProviderForDomain(domain), opts)
+	ctx := &streamContext{
+		pw:       pw,
+		replacer: replacer,
+		provider: provider,
 	}
 	go readLoop(src, ctx)
 	return pr

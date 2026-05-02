@@ -299,7 +299,7 @@ func (s *Server) serveMITMRequest(rw http.ResponseWriter, req *http.Request, ctx
 		defer s.anon.DeleteSession(sessionID)
 	}
 
-	s.forwardMITMRequest(rw, req, sessionID)
+	s.forwardMITMRequest(rw, req, sessionID, ctx.domain)
 }
 
 // recordMITMMetrics records metrics for a MITM request.
@@ -337,7 +337,7 @@ func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Reques
 }
 
 // forwardMITMRequest forwards the request upstream and writes the response.
-func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, sessionID string) {
+func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, sessionID string, domain string) {
 	removeHopByHop(req.Header)
 	upstreamStart := time.Now()
 	resp, err := s.transport.RoundTrip(req)
@@ -354,7 +354,7 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	// De-anonymize response before returning to client
-	s.deanonymizeResponseBody(resp, sessionID)
+	s.deanonymizeResponseBody(resp, sessionID, domain)
 
 	removeHopByHop(resp.Header)
 	copyHeader(rw.Header(), resp.Header)
@@ -454,10 +454,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request
-	s.forward(w, r, sessionID)
+	s.forward(w, r, sessionID, domain)
 }
 
-func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID string, domain string) {
 	// Ensure the URL is absolute
 	if r.URL.Scheme == "" {
 		r.URL.Scheme = "http"
@@ -490,7 +490,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	defer resp.Body.Close() //nolint:errcheck // best-effort close
 
 	// De-anonymize response before returning to client
-	s.deanonymizeResponseBody(resp, sessionID)
+	s.deanonymizeResponseBody(resp, sessionID, domain)
 
 	removeHopByHop(resp.Header)
 	copyHeader(w.Header(), resp.Header)
@@ -536,7 +536,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	return sessionID, nil
 }
 
-func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) {
+func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, domain string) {
 	if sessionID == "" || resp == nil || resp.Body == nil {
 		log.Printf("[DEANON] skipping: sessionID=%q resp=%v bodyNil=%v", sessionID, resp == nil, resp != nil && resp.Body == nil)
 		return
@@ -557,7 +557,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string) 
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
 	// Wrap the body in a pipe-based reader that replaces tokens on-the-fly.
 	if streaming {
-		resp.Body = s.anon.StreamingDeanonymize(resp.Body, sessionID)
+		resp.Body = s.anon.StreamingDeanonymize(resp.Body, sessionID, domain)
 		resp.ContentLength = -1 // length is unknown; let the client stream
 		return
 	}
