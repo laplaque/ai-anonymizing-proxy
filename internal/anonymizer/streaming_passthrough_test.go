@@ -42,6 +42,7 @@ func TestPassthroughFlushIsNoOp(t *testing.T) {
 		t.Error("expected non-empty output from passthrough")
 	}
 }
+
 // because passthroughDeanonymizer writes each event immediately without
 // accumulation, a token split across two events is NOT rejoined and therefore
 // NOT replaced. This is the documented trade-off for unknown providers.
@@ -62,7 +63,7 @@ func TestPassthroughStreamingNoAccumulation(t *testing.T) {
 	// The test asserts the known limitation rather than expecting success.
 	if strings.Contains(got, original) {
 		// If this assertion starts failing it means passthrough gained
-		// accumulation — update this test to reflect the new behaviour.
+		// accumulation — update this test to reflect the new behavior.
 		t.Logf("Passthrough unexpectedly replaced a split token — accumulation may have been added")
 	}
 	// Both halves must be present in the output (they pass through as-is).

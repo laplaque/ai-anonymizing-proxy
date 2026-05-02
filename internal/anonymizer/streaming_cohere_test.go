@@ -102,7 +102,7 @@ func TestCohereStreamingNonContentEvent(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Accumulate a token via a content-delta, then send a non-content event.
-	sseInput := makeCohereContentDelta("hi " + token) +
+	sseInput := makeCohereContentDelta("hi "+token) +
 		makeCohereNonContentEvent("message-end") +
 		"\n"
 
@@ -120,7 +120,7 @@ func TestCohereStreamingNonContentEvent(t *testing.T) {
 }
 
 // makeCohereEmptyTextDelta builds a Cohere content-delta event whose text
-// field is empty. Some Cohere implementations emit this for chunking artefacts.
+// field is empty. Some Cohere implementations emit this for chunking artifacts.
 func makeCohereEmptyTextDelta() string {
 	type cohereContentInner struct {
 		Text string `json:"text,omitempty"`
@@ -174,7 +174,7 @@ func TestCohereStreamingEmptyTextDelta(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Accumulate a token, send an empty-text content-delta, then EOF flush.
-	sseInput := makeCohereContentDelta("hi " + token) +
+	sseInput := makeCohereContentDelta("hi "+token) +
 		makeCohereEmptyTextDelta() +
 		"\n"
 

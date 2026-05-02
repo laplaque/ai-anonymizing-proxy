@@ -38,7 +38,7 @@ func makeOpenAITextDelta(content string) string {
 }
 
 // makeOpenAIFinishChunk builds a chunk whose finish_reason is set to "stop",
-// signalling the end of the stream.
+// signaling the end of the stream.
 func makeOpenAIFinishChunk() string {
 	reason := "stop"
 	type delta struct{}
@@ -195,7 +195,7 @@ func TestOpenAIStreamingFinishReason(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Short content — stays in accumulator, then finish chunk triggers flush.
-	sseInput := makeOpenAITextDelta("greet " + token) +
+	sseInput := makeOpenAITextDelta("greet "+token) +
 		makeOpenAIFinishChunk() +
 		"\n"
 
@@ -214,9 +214,9 @@ func TestOpenAIStreamingFinishReason(t *testing.T) {
 // metadata as a trailing chunk after the last content chunk.
 func makeOpenAIEmptyChoicesChunk() string {
 	type chunk struct {
-		ID      string        `json:"id"`
-		Object  string        `json:"object"`
-		Choices []struct{}    `json:"choices"`
+		ID      string     `json:"id"`
+		Object  string     `json:"object"`
+		Choices []struct{} `json:"choices"`
 	}
 	c := chunk{ID: "chatcmpl-usage", Object: "chat.completion.chunk", Choices: []struct{}{}}
 	b, _ := json.Marshal(c)
@@ -232,7 +232,7 @@ func TestOpenAIStreamingEmptyChoicesFlush(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Short content accumulates, then the empty-choices chunk triggers a flush.
-	sseInput := makeOpenAITextDelta("hi " + token) +
+	sseInput := makeOpenAITextDelta("hi "+token) +
 		makeOpenAIEmptyChoicesChunk() +
 		"\n"
 

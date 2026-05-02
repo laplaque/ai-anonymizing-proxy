@@ -71,6 +71,7 @@ func TestReplicateStreamingVerboseLogging(t *testing.T) {
 		t.Errorf("Replicate verbose: token not replaced:\n%s", got)
 	}
 }
+
 // ("data: {}") triggers a flush of any pending accumulator content and then
 // passes through unchanged.
 func TestReplicateStreamingDoneEvent(t *testing.T) {
@@ -79,7 +80,7 @@ func TestReplicateStreamingDoneEvent(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Accumulate some text then send the done payload.
-	sseInput := makeReplicatePlainDelta("hi " + token) +
+	sseInput := makeReplicatePlainDelta("hi "+token) +
 		"data: {}\n\n"
 
 	got := readStreamResultForDomain(t, sseInput, tokenMap, replicateDomain)

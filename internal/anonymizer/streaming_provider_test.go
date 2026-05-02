@@ -51,8 +51,8 @@ func readStreamResultVerbose(t *testing.T, sseInput string, tokenMap map[string]
 // expected provider and that unknown domains fall back to ProviderPassthrough.
 func TestProviderForDomain(t *testing.T) {
 	cases := []struct {
-		domain   string
-		want     Provider
+		domain string
+		want   Provider
 	}{
 		{"api.anthropic.com", ProviderAnthropic},
 		{"api.openai.com", ProviderOpenAI},

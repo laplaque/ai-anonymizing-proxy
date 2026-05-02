@@ -98,7 +98,7 @@ func TestGeminiStreamingEmptyCandidates(t *testing.T) {
 	tokenMap := map[string]string{token: original}
 
 	// Accumulate some text, then send an empty-candidates chunk.
-	sseInput := makeGeminiTextDelta("hi " + token) +
+	sseInput := makeGeminiTextDelta("hi "+token) +
 		makeGeminiEmptyCandidates() +
 		"\n"
 
@@ -169,7 +169,7 @@ func TestGeminiStreamingEmptyTextPart(t *testing.T) {
 	// First accumulate a token, then send a chunk with empty text — the empty
 	// chunk should pass through (covering the text=="" branch) and the
 	// subsequent EOF flush should replace the accumulated token.
-	sseInput := makeGeminiTextDelta("hi " + token) +
+	sseInput := makeGeminiTextDelta("hi "+token) +
 		makeGeminiEmptyTextPart() +
 		"\n"
 
