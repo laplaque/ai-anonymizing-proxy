@@ -20,6 +20,21 @@ type sseDelta struct {
 	PartialJSON string `json:"partial_json,omitempty"`
 }
 
+// agentContentBlock represents a text block within a Managed Agents event.
+type agentContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// agentEventEnvelope parses agent-level SSE events from the Managed Agents API.
+// Events like agent.message and agent.tool_result carry content arrays with text.
+type agentEventEnvelope struct {
+	Type    string              `json:"type"`
+	ID      string              `json:"id"`
+	Content []agentContentBlock `json:"content,omitempty"`
+	Input   json.RawMessage     `json:"input,omitempty"`
+}
+
 // anthropicDeanonymizer handles Anthropic's SSE format: content_block_delta
 // events with text_delta, thinking_delta, and input_json_delta sub-types.
 type anthropicDeanonymizer struct {
@@ -58,6 +73,12 @@ func (a *anthropicDeanonymizer) ProcessDataPayload(payload []byte) bool {
 	if isJSONDelta {
 		a.processJSONDelta(&envelope)
 		return true
+	}
+
+	// Managed Agents API events: extract and replace text in content blocks.
+	if strings.HasPrefix(envelope.Type, "agent.") {
+		a.Flush()
+		return a.processAgentEvent(payload)
 	}
 
 	// Non-delta event: flush accumulators, then pass through with replacement.
@@ -128,6 +149,104 @@ func (a *anthropicDeanonymizer) processJSONDelta(envelope *sseEnvelope) {
 	remaining := accumulated[flushUpTo:]
 	a.jsonAccum.Reset()
 	a.jsonAccum.WriteString(remaining)
+}
+
+// processAgentEvent handles Managed Agents API events (agent.message,
+// agent.tool_result, agent.mcp_tool_result, agent.tool_use, etc.).
+// Events with content[] arrays get targeted text replacement; tool_use events
+// get raw replacement on the serialized input; all others pass through with
+// raw replacement on the full payload.
+func (a *anthropicDeanonymizer) processAgentEvent(payload []byte) bool {
+	var agent agentEventEnvelope
+	if err := json.Unmarshal(payload, &agent); err != nil {
+		return false
+	}
+
+	switch agent.Type {
+	case "agent.message", "agent.tool_result", "agent.mcp_tool_result":
+		return a.processAgentContentEvent(payload, &agent)
+	case "agent.tool_use", "agent.custom_tool_use", "agent.mcp_tool_use":
+		return a.processAgentInputEvent(payload, &agent)
+	default:
+		// agent.thinking, session.*, span.*, etc. — no text to accumulate.
+		writePipe(a.opts.pw,
+			[]byte(a.opts.replacer.Replace(sseDataPrefix+string(payload))),
+			[]byte("\n"))
+		return true
+	}
+}
+
+// processAgentContentEvent replaces PII tokens in content[].text fields of
+// agent.message, agent.tool_result, and agent.mcp_tool_result events.
+func (a *anthropicDeanonymizer) processAgentContentEvent(payload []byte, agent *agentEventEnvelope) bool {
+	if len(agent.Content) == 0 {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+
+	replaced := false
+	for i := range agent.Content {
+		if agent.Content[i].Type != "text" || agent.Content[i].Text == "" {
+			continue
+		}
+		original := agent.Content[i].Text
+		agent.Content[i].Text = a.opts.replacer.Replace(original)
+		if agent.Content[i].Text != original {
+			replaced = true
+		}
+	}
+
+	if !replaced {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+
+	// Re-serialize from a raw map to preserve all fields we didn't parse.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+	contentBytes, _ := json.Marshal(agent.Content)
+	raw["content"] = contentBytes
+	out, _ := json.Marshal(raw)
+	writePipe(a.opts.pw, []byte(sseDataPrefix), out, []byte("\n"))
+
+	if a.opts.verbose {
+		log.Printf("[DEANON] agent content replaced: sessionID=%s type=%s", a.opts.sessionID, agent.Type)
+	}
+	return true
+}
+
+// processAgentInputEvent replaces PII tokens in the serialized input field
+// of agent.tool_use, agent.custom_tool_use, and agent.mcp_tool_use events.
+func (a *anthropicDeanonymizer) processAgentInputEvent(payload []byte, agent *agentEventEnvelope) bool {
+	if len(agent.Input) == 0 {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+
+	original := string(agent.Input)
+	replaced := a.opts.replacer.Replace(original)
+	if replaced == original {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+
+	// Patch the input field in a raw map to preserve all other fields.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+	raw["input"] = json.RawMessage(replaced)
+	out, _ := json.Marshal(raw)
+	writePipe(a.opts.pw, []byte(sseDataPrefix), out, []byte("\n"))
+
+	if a.opts.verbose {
+		log.Printf("[DEANON] agent input replaced: sessionID=%s type=%s", a.opts.sessionID, agent.Type)
+	}
+	return true
 }
 
 // Flush emits any remaining accumulated text and JSON with token replacement.
