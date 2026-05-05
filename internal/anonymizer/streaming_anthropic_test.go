@@ -202,6 +202,93 @@ func TestAgentCustomToolUseInputReplacement(t *testing.T) {
 	}
 }
 
+// makeAgentMCPToolUse builds an SSE line for an agent.mcp_tool_use event.
+func makeAgentMCPToolUse(name string, input map[string]any) string {
+	event := map[string]any{
+		"type":            "agent.mcp_tool_use",
+		"id":              "evt_test_mtu",
+		"name":            name,
+		"mcp_server_name": "test-server",
+		"input":           input,
+		"processed_at":    "2026-05-01T10:00:06Z",
+	}
+	b, _ := json.Marshal(event)
+	return "data: " + string(b) + "\n"
+}
+
+func TestAgentMCPToolUseInputReplacement(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	input := map[string]any{"query": "find " + token}
+	sseInput := makeAgentMCPToolUse("search_docs", input)
+	got := readStreamResult(t, sseInput+"\n", tokenMap)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("agent.mcp_tool_use input token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("agent.mcp_tool_use still contains token:\n%s", got)
+	}
+}
+
+func TestAgentToolUseNestedInputReplacement(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	input := map[string]any{
+		"options": map[string]any{
+			"recipient": token,
+			"cc":        []any{"other@example.com", token},
+		},
+	}
+	sseInput := makeAgentToolUse("send_email", input)
+	got := readStreamResult(t, sseInput+"\n", tokenMap)
+
+	if strings.Contains(got, token) {
+		t.Errorf("nested input token not replaced:\n%s", got)
+	}
+}
+
+func TestAgentMessageMixedContentBlocks(t *testing.T) {
+	// Verify that non-text content blocks (image, document) are preserved
+	// when a text block in the same array triggers replacement.
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	event := map[string]any{
+		"type": "agent.message",
+		"id":   "evt_mixed",
+		"content": []map[string]any{
+			{"type": "text", "text": "Hello " + token},
+			{"type": "image", "source": map[string]any{"type": "url", "url": "https://example.com/img.png"}},
+			{"type": "text", "text": "No PII here"},
+		},
+		"processed_at": "2026-05-01T10:00:00Z",
+	}
+	b, _ := json.Marshal(event)
+	sseInput := "data: " + string(b) + "\n"
+
+	got := readStreamResult(t, sseInput+"\n", tokenMap)
+
+	if strings.Contains(got, token) {
+		t.Errorf("token not replaced in mixed content:\n%s", got)
+	}
+	if !strings.Contains(got, original) {
+		t.Errorf("original not present in mixed content:\n%s", got)
+	}
+	// The image block must survive re-serialization.
+	if !strings.Contains(got, "https://example.com/img.png") {
+		t.Errorf("image block lost during re-serialization:\n%s", got)
+	}
+	if !strings.Contains(got, "No PII here") {
+		t.Errorf("second text block lost:\n%s", got)
+	}
+}
+
 func TestAgentThinkingPassthrough(t *testing.T) {
 	tokenMap := map[string]string{}
 

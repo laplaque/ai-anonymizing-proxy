@@ -168,7 +168,7 @@ func (a *anthropicDeanonymizer) processAgentEvent(payload []byte) bool {
 	case "agent.tool_use", "agent.custom_tool_use", "agent.mcp_tool_use":
 		return a.processAgentInputEvent(payload, &agent)
 	default:
-		// agent.thinking, session.*, span.*, etc. — no text to accumulate.
+		// agent.thinking and other unknown agent.* events — no text to accumulate.
 		writePipe(a.opts.pw,
 			[]byte(a.opts.replacer.Replace(sseDataPrefix+string(payload))),
 			[]byte("\n"))
@@ -178,22 +178,56 @@ func (a *anthropicDeanonymizer) processAgentEvent(payload []byte) bool {
 
 // processAgentContentEvent replaces PII tokens in content[].text fields of
 // agent.message, agent.tool_result, and agent.mcp_tool_result events.
-func (a *anthropicDeanonymizer) processAgentContentEvent(payload []byte, agent *agentEventEnvelope) bool {
-	if len(agent.Content) == 0 {
+// It uses raw JSON patching on individual content blocks to preserve all
+// fields on non-text block types (image, document, etc.).
+func (a *anthropicDeanonymizer) processAgentContentEvent(payload []byte, _ *agentEventEnvelope) bool {
+	// Parse the envelope as raw map to preserve all top-level fields.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return false
+	}
+
+	contentRaw, ok := raw["content"]
+	if !ok {
+		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
+		return true
+	}
+
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(contentRaw, &blocks); err != nil || len(blocks) == 0 {
 		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
 		return true
 	}
 
 	replaced := false
-	for i := range agent.Content {
-		if agent.Content[i].Type != "text" || agent.Content[i].Text == "" {
+	for i, block := range blocks {
+		var blockMap map[string]json.RawMessage
+		if err := json.Unmarshal(block, &blockMap); err != nil {
 			continue
 		}
-		original := agent.Content[i].Text
-		agent.Content[i].Text = a.opts.replacer.Replace(original)
-		if agent.Content[i].Text != original {
-			replaced = true
+		typeRaw, hasType := blockMap["type"]
+		textRaw, hasText := blockMap["text"]
+		if !hasType || !hasText {
+			continue
 		}
+
+		var blockType, blockText string
+		if err := json.Unmarshal(typeRaw, &blockType); err != nil || blockType != "text" {
+			continue
+		}
+		if err := json.Unmarshal(textRaw, &blockText); err != nil || blockText == "" {
+			continue
+		}
+
+		newText := a.opts.replacer.Replace(blockText)
+		if newText == blockText {
+			continue
+		}
+
+		replaced = true
+		newTextBytes, _ := json.Marshal(newText)
+		blockMap["text"] = newTextBytes
+		blocks[i], _ = json.Marshal(blockMap)
 	}
 
 	if !replaced {
@@ -201,45 +235,51 @@ func (a *anthropicDeanonymizer) processAgentContentEvent(payload []byte, agent *
 		return true
 	}
 
-	// Re-serialize from a raw map to preserve all fields we didn't parse.
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
-		return true
-	}
-	contentBytes, _ := json.Marshal(agent.Content)
+	contentBytes, _ := json.Marshal(blocks)
 	raw["content"] = contentBytes
 	out, _ := json.Marshal(raw)
 	writePipe(a.opts.pw, []byte(sseDataPrefix), out, []byte("\n"))
 
 	if a.opts.verbose {
-		log.Printf("[DEANON] agent content replaced: sessionID=%s type=%s", a.opts.sessionID, agent.Type)
+		log.Printf("[DEANON] agent content replaced: sessionID=%s type=%s", a.opts.sessionID, raw["type"])
 	}
 	return true
 }
 
-// processAgentInputEvent replaces PII tokens in the serialized input field
-// of agent.tool_use, agent.custom_tool_use, and agent.mcp_tool_use events.
+// processAgentInputEvent replaces PII tokens in the input field of
+// agent.tool_use, agent.custom_tool_use, and agent.mcp_tool_use events.
+// It parses input as a JSON object, walks all string values with the
+// replacer, and re-serializes to preserve JSON validity when restored
+// PII values contain special characters.
 func (a *anthropicDeanonymizer) processAgentInputEvent(payload []byte, agent *agentEventEnvelope) bool {
 	if len(agent.Input) == 0 {
 		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
 		return true
 	}
 
-	original := string(agent.Input)
-	replaced := a.opts.replacer.Replace(original)
-	if replaced == original {
+	var inputMap map[string]any
+	if err := json.Unmarshal(agent.Input, &inputMap); err != nil {
+		// Not a JSON object — fall back to raw replacement on the full payload.
+		writePipe(a.opts.pw,
+			[]byte(a.opts.replacer.Replace(sseDataPrefix+string(payload))),
+			[]byte("\n"))
+		return true
+	}
+
+	replaced := replaceStringValues(inputMap, a.opts.replacer)
+	if !replaced {
 		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
 		return true
 	}
 
-	// Patch the input field in a raw map to preserve all other fields.
+	// Patch the input field in a raw map to preserve all other envelope fields.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		writePipe(a.opts.pw, []byte(sseDataPrefix), payload, []byte("\n"))
 		return true
 	}
-	raw["input"] = json.RawMessage(replaced)
+	inputBytes, _ := json.Marshal(inputMap)
+	raw["input"] = inputBytes
 	out, _ := json.Marshal(raw)
 	writePipe(a.opts.pw, []byte(sseDataPrefix), out, []byte("\n"))
 
@@ -247,6 +287,56 @@ func (a *anthropicDeanonymizer) processAgentInputEvent(payload []byte, agent *ag
 		log.Printf("[DEANON] agent input replaced: sessionID=%s type=%s", a.opts.sessionID, agent.Type)
 	}
 	return true
+}
+
+// replaceStringValues recursively walks a parsed JSON object and applies
+// the replacer to all string values. Returns true if any value was changed.
+func replaceStringValues(obj map[string]any, replacer *strings.Replacer) bool {
+	changed := false
+	for k, v := range obj {
+		switch val := v.(type) {
+		case string:
+			replaced := replacer.Replace(val)
+			if replaced != val {
+				obj[k] = replaced
+				changed = true
+			}
+		case map[string]any:
+			if replaceStringValues(val, replacer) {
+				changed = true
+			}
+		case []any:
+			if replaceSliceValues(val, replacer) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// replaceSliceValues recursively walks a JSON array and applies the
+// replacer to all string values. Returns true if any value was changed.
+func replaceSliceValues(arr []any, replacer *strings.Replacer) bool {
+	changed := false
+	for i, v := range arr {
+		switch val := v.(type) {
+		case string:
+			replaced := replacer.Replace(val)
+			if replaced != val {
+				arr[i] = replaced
+				changed = true
+			}
+		case map[string]any:
+			if replaceStringValues(val, replacer) {
+				changed = true
+			}
+		case []any:
+			if replaceSliceValues(val, replacer) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // Flush emits any remaining accumulated text and JSON with token replacement.
