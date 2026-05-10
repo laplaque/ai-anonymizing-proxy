@@ -278,3 +278,28 @@ func TestOpenAIStreamingVerboseLogging(t *testing.T) {
 		t.Errorf("OpenAI verbose: token not replaced:\n%s", string(got))
 	}
 }
+
+// TestOpenAIStreamingViaAggregatorDomain verifies that streaming
+// deanonymization works when the upstream is reached via an aggregator
+// domain (OpenRouter, Portkey) or a non-OpenAI provider that uses the
+// OpenAI SSE format (Groq).
+func TestOpenAIStreamingViaAggregatorDomain(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+	prefix := strings.Repeat("x", tokenSuffixLen+10)
+	sseInput := makeOpenAITextDelta(prefix+token+" end") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+	for _, domain := range []string{"openrouter.ai", "api.portkey.ai", "api.groq.com"} {
+		t.Run(domain, func(t *testing.T) {
+			got := readStreamResultForDomain(t, sseInput, tokenMap, domain)
+			if !strings.Contains(got, original) {
+				t.Errorf("%s: token not replaced in output:\n%s", domain, got)
+			}
+			if strings.Contains(got, token) {
+				t.Errorf("%s: unreplaced token found in output:\n%s", domain, got)
+			}
+		})
+	}
+}
