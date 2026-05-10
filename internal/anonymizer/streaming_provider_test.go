@@ -63,6 +63,14 @@ func TestProviderForDomain(t *testing.T) {
 		{"generativelanguage.googleapis.com", ProviderGemini},
 		{"api.cohere.ai", ProviderCohere},
 		{"api.replicate.com", ProviderReplicate},
+		// New providers (Phase 1)
+		{"api.groq.com", ProviderOpenAI},
+		{"api.deepseek.com", ProviderOpenAI},
+		{"api.fireworks.ai", ProviderOpenAI},
+		{"api.x.ai", ProviderOpenAI},
+		{"api.endpoints.anyscale.com", ProviderOpenAI},
+		{"openrouter.ai", ProviderOpenAI},
+		{"api.portkey.ai", ProviderOpenAI},
 		// Unknown domains must fall back to passthrough.
 		{"unknown.example.com", ProviderPassthrough},
 		{"", ProviderPassthrough},

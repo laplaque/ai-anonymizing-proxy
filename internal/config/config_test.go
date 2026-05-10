@@ -334,6 +334,38 @@ func TestResolvePIIInstruction_NoDefault(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigNewDomains verifies that the Phase 1 aggregator and
+// provider domains all appear in the default AIAPIDomains slice, and that
+// the new oauth2.googleapis.com entry appears in AuthDomains.
+func TestDefaultConfigNewDomains(t *testing.T) {
+	cfg := defaults()
+	requiredAPI := []string{
+		"api.groq.com", "api.deepseek.com", "api.fireworks.ai",
+		"api.x.ai", "api.endpoints.anyscale.com",
+		"openrouter.ai", "api.portkey.ai",
+	}
+	apiSet := make(map[string]bool, len(cfg.AIAPIDomains))
+	for _, d := range cfg.AIAPIDomains {
+		apiSet[d] = true
+	}
+	for _, d := range requiredAPI {
+		if !apiSet[d] {
+			t.Errorf("missing default AI API domain: %s", d)
+		}
+	}
+
+	requiredAuth := []string{"oauth2.googleapis.com"}
+	authSet := make(map[string]bool, len(cfg.AuthDomains))
+	for _, d := range cfg.AuthDomains {
+		authSet[d] = true
+	}
+	for _, d := range requiredAuth {
+		if !authSet[d] {
+			t.Errorf("missing default auth domain: %s", d)
+		}
+	}
+}
+
 func TestLoad_ReturnsNonNil(t *testing.T) {
 	cfg := Load()
 	if cfg == nil {
