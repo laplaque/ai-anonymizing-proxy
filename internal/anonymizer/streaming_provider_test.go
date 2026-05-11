@@ -71,6 +71,30 @@ func TestProviderForDomain(t *testing.T) {
 		{"api.endpoints.anyscale.com", ProviderOpenAI},
 		{"openrouter.ai", ProviderOpenAI},
 		{"api.portkey.ai", ProviderOpenAI},
+		// Phase 3: prefix wildcards (Azure, Vertex)
+		{"myresource.openai.azure.com", ProviderOpenAI},
+		{"eastus2.openai.azure.com", ProviderOpenAI},
+		// Synthetic 4-label Vertex domains (real ones use hyphens — see
+		// domainmatch_test.go and the package README for the full
+		// explanation).
+		{"region.aiplatform.googleapis.com", ProviderGemini},
+		{"anything.aiplatform.googleapis.com", ProviderGemini},
+		// Real Vertex regional URLs are 3 labels and don't match the glob;
+		// they fall through to passthrough until users register them
+		// explicitly.
+		{"us-central1-aiplatform.googleapis.com", ProviderPassthrough},
+		{"europe-west1-aiplatform.googleapis.com", ProviderPassthrough},
+		// Phase 3: infix wildcards (Bedrock)
+		{"bedrock-runtime.us-east-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-runtime.eu-west-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-runtime.ap-southeast-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-agent-runtime.us-east-1.amazonaws.com", ProviderPassthrough},
+		// Non-matches — must NOT resolve to a glob provider.
+		// (passthrough is also the default fallback, but the assertion is
+		// that these do not get routed to OpenAI/Gemini despite sharing
+		// suffixes with the glob patterns.)
+		{"ec2.us-east-1.amazonaws.com", ProviderPassthrough},
+		{"s3.amazonaws.com", ProviderPassthrough},
 		// Unknown domains must fall back to passthrough.
 		{"unknown.example.com", ProviderPassthrough},
 		{"", ProviderPassthrough},

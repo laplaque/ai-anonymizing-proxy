@@ -110,6 +110,14 @@ func defaults() *Config {
 			"api.endpoints.anyscale.com",
 			"openrouter.ai",
 			"api.portkey.ai",
+			// Azure OpenAI: {resource}.openai.azure.com
+			"*.openai.azure.com",
+			// Vertex AI: regional ({region}-aiplatform.googleapis.com) and global
+			"*.aiplatform.googleapis.com",
+			"aiplatform.googleapis.com",
+			// Amazon Bedrock: bedrock-runtime.{region}.amazonaws.com
+			"bedrock-runtime.*.amazonaws.com",
+			"bedrock-agent-runtime.*.amazonaws.com",
 		},
 		AuthDomains: []string{
 			"accounts.google.com",

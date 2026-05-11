@@ -3,6 +3,8 @@ package anonymizer
 import (
 	"io"
 	"strings"
+
+	"ai-anonymizing-proxy/internal/domainmatch"
 )
 
 // Provider identifies an AI API provider's SSE streaming format.
@@ -68,11 +70,32 @@ var domainToProvider = map[string]Provider{
 	"api.portkey.ai":                    ProviderOpenAI,
 }
 
+// globProviders maps segment-glob domain patterns to their streaming format.
+// Checked after the exact domainToProvider lookup misses. Bedrock entries
+// use ProviderPassthrough because the SSE format depends on the invoked
+// model (Anthropic vs OpenAI-compatible) which is not known from the
+// destination domain alone.
+var globProviders = []struct {
+	glob     domainmatch.DomainGlob
+	provider Provider
+}{
+	{domainmatch.Parse("*.openai.azure.com"), ProviderOpenAI},
+	{domainmatch.Parse("*.aiplatform.googleapis.com"), ProviderGemini},
+	{domainmatch.Parse("bedrock-runtime.*.amazonaws.com"), ProviderPassthrough},
+	{domainmatch.Parse("bedrock-agent-runtime.*.amazonaws.com"), ProviderPassthrough},
+}
+
 // ProviderForDomain returns the streaming Provider for a given API domain.
+// Exact-match domains are checked first, then segment-glob patterns.
 // Unknown domains return ProviderPassthrough.
 func ProviderForDomain(domain string) Provider {
 	if p, ok := domainToProvider[domain]; ok {
 		return p
+	}
+	for _, gp := range globProviders {
+		if gp.glob.Match(domain) {
+			return gp.provider
+		}
 	}
 	return ProviderPassthrough
 }
