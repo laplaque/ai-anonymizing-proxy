@@ -458,6 +458,98 @@ func makeOpenAIBothFieldsDelta(reasoning, content string) string {
 	return "data: " + string(b) + "\n"
 }
 
+// TestDeepSeekReasoningVerboseLogging exercises the verbose-mode log line in
+// emitReasoning's mid-stream replacement branch — the last uncovered statement
+// on the reasoning rehydration path. Mirrors TestOpenAIStreamingVerboseLogging
+// for the reasoning_content field.
+func TestDeepSeekReasoningVerboseLogging(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true)
+	sessionID := "deepseek-verbose"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{token: original}
+	a.sessionMu.Unlock()
+
+	// Prefix large enough that the token + its suffix-guard clear safeCutPoint,
+	// so the mid-stream replacement branch (with the verbose log) runs.
+	prefix := strings.Repeat("v", tokenSuffixLen+len(token)+5)
+	sseInput := makeOpenAIReasoningDelta(prefix+token) +
+		makeOpenAIReasoningDelta(strings.Repeat("w", tokenSuffixLen+5)+"end") +
+		"\n"
+
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID, deepSeekDomain)
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading streaming output: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("DeepSeek verbose reasoning: token not replaced:\n%s", string(got))
+	}
+}
+
+// TestDeepSeekReasoningShortFragmentHeld directly exercises emitReasoning's
+// `if flushUpTo == 0 { return }` early-return branch. The reasoning fragment
+// is short enough (≤ tokenSuffixLen bytes) that safeCutPoint returns 0, so the
+// mid-stream emit must write nothing and the fragment must be held entirely in
+// reasoningAccum until EOF, when Flush emits the synthetic chunk.
+func TestDeepSeekReasoningShortFragmentHeld(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// 3 + 28 = 31 bytes, ≤ tokenSuffixLen (33), so safeCutPoint == 0.
+	fragment := "Hi " + token
+	if len(fragment) > tokenSuffixLen {
+		t.Fatalf("test setup: fragment len %d exceeds tokenSuffixLen %d", len(fragment), tokenSuffixLen)
+	}
+	sseInput := makeOpenAIReasoningDelta(fragment)
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("short fragment: original not present after Flush:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("short fragment: raw token leaked:\n%s", got)
+	}
+
+	// Assert exactly one reasoning_content data chunk appears in output, which
+	// must be the synthetic Flush emission. If the early-return had instead
+	// written a mid-stream chunk, we'd see two (mid-stream + flush) or — given
+	// the input was uncuttable — one mid-stream chunk and an empty accumulator.
+	// Either deviation breaks the held-fragment guarantee.
+	count := 0
+	for _, line := range strings.Split(got, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var env openAIEnvelope
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &env); err != nil {
+			continue
+		}
+		if len(env.Choices) == 0 || env.Choices[0].Delta.ReasoningContent == "" {
+			continue
+		}
+		count++
+		emitted := env.Choices[0].Delta.ReasoningContent
+		if !strings.Contains(emitted, original) {
+			t.Errorf("reasoning chunk missing replaced original: %q", emitted)
+		}
+		if strings.Contains(emitted, token) {
+			t.Errorf("reasoning chunk carries unreplaced token: %q", emitted)
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one reasoning data chunk (Flush emission), got %d:\n%s", count, got)
+	}
+}
+
 // TestDeepSeekBothFieldsStructuralIsolation verifies that a single input chunk
 // carrying both reasoning_content and content produces two separate output
 // chunks — one with the replaced reasoning, one with the replaced content —
