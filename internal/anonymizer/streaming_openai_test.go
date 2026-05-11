@@ -279,6 +279,177 @@ func TestOpenAIStreamingVerboseLogging(t *testing.T) {
 	}
 }
 
+// makeOpenAIReasoningDelta builds a single SSE line carrying an OpenAI-format
+// chat.completion.chunk whose delta carries DeepSeek's reasoning_content field.
+func makeOpenAIReasoningDelta(reasoning string) string {
+	type delta struct {
+		ReasoningContent string `json:"reasoning_content,omitempty"`
+	}
+	type choice struct {
+		Index        int     `json:"index"`
+		Delta        delta   `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	}
+	type chunk struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Choices []choice `json:"choices"`
+	}
+	c := chunk{
+		ID:     "chatcmpl-ds-test",
+		Object: "chat.completion.chunk",
+		Choices: []choice{{
+			Index:        0,
+			Delta:        delta{ReasoningContent: reasoning},
+			FinishReason: nil,
+		}},
+	}
+	b, _ := json.Marshal(c)
+	return "data: " + string(b) + "\n"
+}
+
+const deepSeekDomain = "api.deepseek.com"
+
+// TestDeepSeekReasoningContentDeanonymized verifies that a PII token contained
+// in reasoning_content is replaced just like the standard content field.
+func TestDeepSeekReasoningContentDeanonymized(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("r", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+token+" thinking done") +
+		makeOpenAITextDelta("The answer is 42.") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("reasoning_content token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("unreplaced token in reasoning output:\n%s", got)
+	}
+	if !strings.Contains(got, "The answer is 42.") {
+		t.Errorf("content text missing from output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningTokenSplit verifies that a token split across two
+// reasoning_content chunks is reassembled and replaced.
+func TestDeepSeekReasoningTokenSplit(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("s", tokenSuffixLen+10)
+	mid := len(token) / 2
+	sseInput := makeOpenAIReasoningDelta(prefix+token[:mid]) +
+		makeOpenAIReasoningDelta(token[mid:]+" end") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("split reasoning token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("unreplaced token in split reasoning output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningThenContent verifies that PII tokens in both the
+// reasoning phase and the content phase are replaced in a full DeepSeek
+// session.
+func TestDeepSeekReasoningThenContent(t *testing.T) {
+	tokenR := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	origR := "earl@example.com"
+	tokenC := "[PII_PHONE_a1b2c3d4e5f67890]"
+	origC := "+49 171 1234567"
+	tokenMap := map[string]string{tokenR: origR, tokenC: origC}
+
+	prefix := strings.Repeat("a", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+"Let me think about "+tokenR) +
+		makeOpenAITextDelta(prefix+"Contact "+tokenC+" for details.") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, origR) {
+		t.Errorf("reasoning token not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, origC) {
+		t.Errorf("content token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, tokenR) || strings.Contains(got, tokenC) {
+		t.Errorf("unreplaced tokens in output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningEOFFlush verifies that reasoning content held in the
+// accumulator (shorter than tokenSuffixLen, no finish chunk) is flushed on EOF.
+func TestDeepSeekReasoningEOFFlush(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	sseInput := makeOpenAIReasoningDelta("Think about " + token)
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("EOF flush: reasoning token not replaced:\n%s", got)
+	}
+}
+
+// TestDeepSeekKeepAliveComment verifies that SSE keep-alive comment lines
+// interleaved between reasoning chunks do not disrupt accumulation.
+func TestDeepSeekKeepAliveComment(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("k", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+token[:15]) +
+		": keep-alive\n" +
+		makeOpenAIReasoningDelta(token[15:]+" done") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("keep-alive: token not replaced:\n%s", got)
+	}
+}
+
+// TestOpenAIUnchangedByReasoningField re-runs the canonical OpenAI token-split
+// scenario against api.openai.com to confirm the reasoning_content addition
+// caused no regression on the standard OpenAI path.
+func TestOpenAIUnchangedByReasoningField(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "user@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("x", tokenSuffixLen+10)
+	mid := len(token) / 2
+	sseInput := makeOpenAITextDelta(prefix+token[:mid]) +
+		makeOpenAITextDelta(token[mid:]+" world") +
+		"\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, openAIDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("regression: OpenAI token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("regression: unreplaced token in OpenAI output:\n%s", got)
+	}
+}
+
 // TestOpenAIStreamingViaAggregatorDomain verifies that streaming
 // deanonymization works when the upstream is reached via every Phase 1
 // aggregator domain (OpenRouter, Portkey) or non-OpenAI provider that
