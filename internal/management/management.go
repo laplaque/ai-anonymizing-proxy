@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/domainmatch"
 	"ai-anonymizing-proxy/internal/metrics"
 )
 
@@ -39,15 +40,26 @@ type Server struct {
 // It is shared between the proxy and management server.
 // Changes are persisted to disk via atomic file writes so they
 // survive proxy restarts.
+//
+// Entries fall into two buckets:
+//   - exact-match domains, stored in the domains map for O(1) lookup
+//   - segment-glob patterns (containing one or more "*" labels), stored
+//     in the globs slice and scanned linearly on lookup
+//
+// Has() checks the exact-match map first, so an exact entry always wins
+// over an overlapping glob.
 type DomainRegistry struct {
 	mu          sync.RWMutex
-	domains     map[string]bool
-	persistPath string // empty = no persistence
+	domains     map[string]bool          // exact matches
+	globs       []domainmatch.DomainGlob // segment-glob patterns
+	persistPath string                   // empty = no persistence
 }
 
 // NewDomainRegistry creates a registry seeded from the config defaults.
 // If persistPath is non-empty and the file exists, its contents take
 // precedence over config defaults (it represents runtime overrides).
+// Patterns containing "*" segments are routed to the glob slice; all
+// others are stored as exact matches.
 func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
 	r := &DomainRegistry{
 		domains:     make(map[string]bool, len(cfg.AIAPIDomains)),
@@ -60,7 +72,7 @@ func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
 		switch {
 		case err == nil:
 			for _, d := range domains {
-				r.domains[d] = true
+				r.addEntryLocked(d)
 			}
 			log.Printf("[DOMAINS] Loaded %d domains from %s", len(domains), persistPath)
 			return r
@@ -71,46 +83,80 @@ func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
 
 	// Fall back to config defaults
 	for _, d := range cfg.AIAPIDomains {
-		r.domains[d] = true
+		r.addEntryLocked(d)
 	}
 	return r
 }
 
+// addEntryLocked routes a single pattern into the appropriate bucket.
+// Caller must hold r.mu (or be in a constructor where no concurrent
+// access is possible). Duplicate globs are silently dropped.
+func (r *DomainRegistry) addEntryLocked(pattern string) {
+	if domainmatch.IsGlob(pattern) {
+		for _, g := range r.globs {
+			if g.Raw() == pattern {
+				return
+			}
+		}
+		r.globs = append(r.globs, domainmatch.Parse(pattern))
+		return
+	}
+	r.domains[pattern] = true
+}
+
 // Has returns true if the domain is registered as an AI API domain.
+// Exact matches take precedence over glob matches.
 func (r *DomainRegistry) Has(domain string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.domains[domain]
+	if r.domains[domain] {
+		return true
+	}
+	for _, g := range r.globs {
+		if g.Match(domain) {
+			return true
+		}
+	}
+	return false
 }
 
-// Add adds a domain to the registry and persists to disk.
+// Add adds a domain or glob pattern to the registry and persists to disk.
+// Patterns containing "*" segments are stored as globs; others as exact matches.
 func (r *DomainRegistry) Add(domain string) {
 	r.mu.Lock()
-	r.domains[domain] = true
+	r.addEntryLocked(domain)
 	snapshot := r.snapshotLocked()
 	r.mu.Unlock()
 	r.persist(snapshot)
 }
 
-// Remove removes a domain from the registry and persists to disk.
+// Remove removes a domain or glob pattern from the registry and persists to disk.
+// For glob patterns, the raw pattern string must match exactly (e.g.
+// removing "bedrock-runtime.*.amazonaws.com" — passing a concrete domain
+// like "bedrock-runtime.us-east-1.amazonaws.com" will not remove the glob).
 func (r *DomainRegistry) Remove(domain string) {
 	r.mu.Lock()
-	delete(r.domains, domain)
+	if domainmatch.IsGlob(domain) {
+		for i, g := range r.globs {
+			if g.Raw() == domain {
+				r.globs = append(r.globs[:i], r.globs[i+1:]...)
+				break
+			}
+		}
+	} else {
+		delete(r.domains, domain)
+	}
 	snapshot := r.snapshotLocked()
 	r.mu.Unlock()
 	r.persist(snapshot)
 }
 
-// All returns a sorted slice of all registered domains.
+// All returns a sorted slice of all registered domains and glob patterns.
+// Glob patterns appear with their original "*" segments intact.
 func (r *DomainRegistry) All() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]string, 0, len(r.domains))
-	for d := range r.domains {
-		out = append(out, d)
-	}
-	sort.Strings(out)
-	return out
+	return r.snapshotLocked()
 }
 
 // loadFromDisk reads the persisted domain list from disk.
@@ -126,12 +172,15 @@ func (r *DomainRegistry) loadFromDisk() ([]string, error) {
 	return domains, nil
 }
 
-// snapshotLocked returns a sorted copy of the current domain set.
-// Caller must hold r.mu.
+// snapshotLocked returns a sorted copy of the current domain set,
+// combining exact matches and glob patterns. Caller must hold r.mu.
 func (r *DomainRegistry) snapshotLocked() []string {
-	out := make([]string, 0, len(r.domains))
+	out := make([]string, 0, len(r.domains)+len(r.globs))
 	for d := range r.domains {
 		out = append(out, d)
+	}
+	for _, g := range r.globs {
+		out = append(out, g.Raw())
 	}
 	sort.Strings(out)
 	return out
@@ -221,14 +270,29 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// domainRegexp validates a DNS hostname (RFC 952 / RFC 1123).
-var domainRegexp = regexp.MustCompile(
-	`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`,
+// domainLabelRegexp validates a single DNS label (RFC 952 / RFC 1123).
+// Labels must be 1-63 chars, start/end alphanumeric, with hyphens allowed
+// in the middle.
+var domainLabelRegexp = regexp.MustCompile(
+	`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`,
 )
 
-// validDomain checks that the domain is a syntactically valid hostname.
+// validDomain checks that d is a syntactically valid hostname or glob pattern.
+// A "*" segment between dots is accepted as a wildcard (segment-glob);
+// other segments must be valid DNS labels.
 func validDomain(d string) bool {
-	return len(d) <= 253 && domainRegexp.MatchString(d)
+	if len(d) == 0 || len(d) > 253 {
+		return false
+	}
+	for _, seg := range strings.Split(d, ".") {
+		if seg == "*" {
+			continue
+		}
+		if !domainLabelRegexp.MatchString(seg) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
