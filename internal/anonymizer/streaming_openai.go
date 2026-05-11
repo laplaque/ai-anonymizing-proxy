@@ -85,38 +85,60 @@ func (o *openAIDeanonymizer) ProcessDataPayload(payload []byte) bool {
 	}
 
 	if choice.Delta.ReasoningContent != "" {
-		o.reasoningAccum.WriteString(choice.Delta.ReasoningContent)
-		accumulated := o.reasoningAccum.String()
+		o.emitReasoning(&envelope, choice, choice.Delta.ReasoningContent)
+	}
+	if choice.Delta.Content != "" {
+		o.emitContent(&envelope, choice, choice.Delta.Content)
+	}
+	return true
+}
 
-		flushUpTo := safeCutPoint(accumulated)
-		if flushUpTo == 0 {
-			return true
-		}
+// emitReasoning accumulates a reasoning fragment and, when past the suffix
+// guard, emits a fresh envelope whose delta carries only the replaced
+// reasoning_content. Other delta fields (content, role, tool_calls, …) are
+// never copied into a reasoning emission.
+func (o *openAIDeanonymizer) emitReasoning(envelope *openAIEnvelope, choice *openAIChoice, fragment string) {
+	o.reasoningAccum.WriteString(fragment)
+	accumulated := o.reasoningAccum.String()
 
-		toReplace := accumulated[:flushUpTo]
-		replaced := o.opts.replacer.Replace(toReplace)
-		if toReplace != replaced && o.opts.verbose {
-			log.Printf("[DEANON] openai reasoning replaced: sessionID=%s tokens=%d", o.opts.sessionID, o.opts.tokenCount)
-		}
-
-		choice.Delta.ReasoningContent = replaced
-		newPayload, _ := json.Marshal(envelope) // error impossible: only string/int fields
-
-		writePipe(o.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
-
-		remaining := accumulated[flushUpTo:]
-		o.reasoningAccum.Reset()
-		o.reasoningAccum.WriteString(remaining)
-		return true
+	flushUpTo := safeCutPoint(accumulated)
+	if flushUpTo == 0 {
+		return
 	}
 
-	// Accumulate content text.
-	o.textAccum.WriteString(choice.Delta.Content)
+	toReplace := accumulated[:flushUpTo]
+	replaced := o.opts.replacer.Replace(toReplace)
+	if toReplace != replaced && o.opts.verbose {
+		log.Printf("[DEANON] openai reasoning replaced: sessionID=%s tokens=%d", o.opts.sessionID, o.opts.tokenCount)
+	}
+
+	out := openAIEnvelope{
+		ID:     envelope.ID,
+		Object: envelope.Object,
+		Choices: []openAIChoice{{
+			Index:        choice.Index,
+			Delta:        openAIDelta{ReasoningContent: replaced},
+			FinishReason: choice.FinishReason,
+		}},
+	}
+	newPayload, _ := json.Marshal(out) // error impossible: only string/int fields
+	writePipe(o.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
+
+	remaining := accumulated[flushUpTo:]
+	o.reasoningAccum.Reset()
+	o.reasoningAccum.WriteString(remaining)
+}
+
+// emitContent accumulates a content fragment and, when past the suffix guard,
+// emits a fresh envelope whose delta carries only the replaced content. Other
+// delta fields are never copied into a content emission.
+func (o *openAIDeanonymizer) emitContent(envelope *openAIEnvelope, choice *openAIChoice, fragment string) {
+	o.textAccum.WriteString(fragment)
 	accumulated := o.textAccum.String()
 
 	flushUpTo := safeCutPoint(accumulated)
 	if flushUpTo == 0 {
-		return true
+		return
 	}
 
 	toReplace := accumulated[:flushUpTo]
@@ -125,16 +147,21 @@ func (o *openAIDeanonymizer) ProcessDataPayload(payload []byte) bool {
 		log.Printf("[DEANON] openai text replaced: sessionID=%s tokens=%d", o.opts.sessionID, o.opts.tokenCount)
 	}
 
-	// Re-serialize with replaced content.
-	choice.Delta.Content = replaced
-	newPayload, _ := json.Marshal(envelope) // error impossible: only string/int fields
-
+	out := openAIEnvelope{
+		ID:     envelope.ID,
+		Object: envelope.Object,
+		Choices: []openAIChoice{{
+			Index:        choice.Index,
+			Delta:        openAIDelta{Content: replaced},
+			FinishReason: choice.FinishReason,
+		}},
+	}
+	newPayload, _ := json.Marshal(out) // error impossible: only string/int fields
 	writePipe(o.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
 
 	remaining := accumulated[flushUpTo:]
 	o.textAccum.Reset()
 	o.textAccum.WriteString(remaining)
-	return true
 }
 
 // Flush emits any remaining accumulated reasoning and content as synthetic

@@ -426,6 +426,122 @@ func TestDeepSeekKeepAliveComment(t *testing.T) {
 	}
 }
 
+// makeOpenAIBothFieldsDelta builds a single SSE chunk whose delta carries both
+// reasoning_content and content in the same payload. The OpenAI/DeepSeek wire
+// format keeps the two fields in distinct chunks, but the parser must still
+// emit two structurally-isolated output chunks if a payload ever carries both.
+func makeOpenAIBothFieldsDelta(reasoning, content string) string {
+	type delta struct {
+		ReasoningContent string `json:"reasoning_content,omitempty"`
+		Content          string `json:"content,omitempty"`
+	}
+	type choice struct {
+		Index        int     `json:"index"`
+		Delta        delta   `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	}
+	type chunk struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Choices []choice `json:"choices"`
+	}
+	c := chunk{
+		ID:     "chatcmpl-ds-both",
+		Object: "chat.completion.chunk",
+		Choices: []choice{{
+			Index:        0,
+			Delta:        delta{ReasoningContent: reasoning, Content: content},
+			FinishReason: nil,
+		}},
+	}
+	b, _ := json.Marshal(c)
+	return "data: " + string(b) + "\n"
+}
+
+// TestDeepSeekBothFieldsStructuralIsolation verifies that a single input chunk
+// carrying both reasoning_content and content produces two separate output
+// chunks — one with the replaced reasoning, one with the replaced content —
+// and that neither output chunk carries the other field's text. This guards
+// against accidental field-leakage as new delta fields are added.
+func TestDeepSeekBothFieldsStructuralIsolation(t *testing.T) {
+	tokenR := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	origR := "earl@example.com"
+	tokenC := "[PII_PHONE_a1b2c3d4e5f67890]"
+	origC := "+49 171 1234567"
+	tokenMap := map[string]string{tokenR: origR, tokenC: origC}
+
+	prefix := strings.Repeat("b", tokenSuffixLen+10)
+	reasoningText := prefix + "reasoning marker " + tokenR + " "
+	contentText := prefix + "content marker " + tokenC + " "
+
+	sseInput := makeOpenAIBothFieldsDelta(reasoningText, contentText) +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	// Both originals must be present after deanonymization.
+	if !strings.Contains(got, origR) {
+		t.Errorf("reasoning original not present:\n%s", got)
+	}
+	if !strings.Contains(got, origC) {
+		t.Errorf("content original not present:\n%s", got)
+	}
+	// No raw tokens may remain.
+	if strings.Contains(got, tokenR) || strings.Contains(got, tokenC) {
+		t.Errorf("unreplaced token in output:\n%s", got)
+	}
+
+	// Each emitted SSE chunk must carry at most one of reasoning_content /
+	// content. We locate the data lines and assert structural isolation.
+	dataLines := strings.Split(got, "\n")
+	sawReasoningChunk := false
+	sawContentChunk := false
+	for _, line := range dataLines {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var env openAIEnvelope
+		if err := json.Unmarshal([]byte(payload), &env); err != nil {
+			continue
+		}
+		if len(env.Choices) == 0 {
+			continue
+		}
+		d := env.Choices[0].Delta
+		hasR := d.ReasoningContent != ""
+		hasC := d.Content != ""
+		if hasR && hasC {
+			t.Errorf("emitted chunk carries both reasoning_content and content:\n%s", payload)
+		}
+		if hasR {
+			sawReasoningChunk = true
+			if strings.Contains(d.ReasoningContent, "content marker") {
+				t.Errorf("reasoning chunk leaked content text:\n%s", payload)
+			}
+			if strings.Contains(d.ReasoningContent, origC) || strings.Contains(d.ReasoningContent, tokenC) {
+				t.Errorf("reasoning chunk leaked content PII:\n%s", payload)
+			}
+		}
+		if hasC {
+			sawContentChunk = true
+			if strings.Contains(d.Content, "reasoning marker") {
+				t.Errorf("content chunk leaked reasoning text:\n%s", payload)
+			}
+			if strings.Contains(d.Content, origR) || strings.Contains(d.Content, tokenR) {
+				t.Errorf("content chunk leaked reasoning PII:\n%s", payload)
+			}
+		}
+	}
+	if !sawReasoningChunk {
+		t.Errorf("expected a reasoning-only output chunk, none seen:\n%s", got)
+	}
+	if !sawContentChunk {
+		t.Errorf("expected a content-only output chunk, none seen:\n%s", got)
+	}
+}
+
 // TestOpenAIUnchangedByReasoningField re-runs the canonical OpenAI token-split
 // scenario against api.openai.com to confirm the reasoning_content addition
 // caused no regression on the standard OpenAI path.
