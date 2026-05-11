@@ -279,6 +279,385 @@ func TestOpenAIStreamingVerboseLogging(t *testing.T) {
 	}
 }
 
+// makeOpenAIReasoningDelta builds a single SSE line carrying an OpenAI-format
+// chat.completion.chunk whose delta carries DeepSeek's reasoning_content field.
+func makeOpenAIReasoningDelta(reasoning string) string {
+	type delta struct {
+		ReasoningContent string `json:"reasoning_content,omitempty"`
+	}
+	type choice struct {
+		Index        int     `json:"index"`
+		Delta        delta   `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	}
+	type chunk struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Choices []choice `json:"choices"`
+	}
+	c := chunk{
+		ID:     "chatcmpl-ds-test",
+		Object: "chat.completion.chunk",
+		Choices: []choice{{
+			Index:        0,
+			Delta:        delta{ReasoningContent: reasoning},
+			FinishReason: nil,
+		}},
+	}
+	b, _ := json.Marshal(c)
+	return "data: " + string(b) + "\n"
+}
+
+const deepSeekDomain = "api.deepseek.com"
+
+// TestDeepSeekReasoningContentDeanonymized verifies that a PII token contained
+// in reasoning_content is replaced just like the standard content field.
+func TestDeepSeekReasoningContentDeanonymized(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("r", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+token+" thinking done") +
+		makeOpenAITextDelta("The answer is 42.") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("reasoning_content token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("unreplaced token in reasoning output:\n%s", got)
+	}
+	if !strings.Contains(got, "The answer is 42.") {
+		t.Errorf("content text missing from output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningTokenSplit verifies that a token split across two
+// reasoning_content chunks is reassembled and replaced.
+func TestDeepSeekReasoningTokenSplit(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("s", tokenSuffixLen+10)
+	mid := len(token) / 2
+	sseInput := makeOpenAIReasoningDelta(prefix+token[:mid]) +
+		makeOpenAIReasoningDelta(token[mid:]+" end") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("split reasoning token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("unreplaced token in split reasoning output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningThenContent verifies that PII tokens in both the
+// reasoning phase and the content phase are replaced in a full DeepSeek
+// session.
+func TestDeepSeekReasoningThenContent(t *testing.T) {
+	tokenR := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	origR := "earl@example.com"
+	tokenC := "[PII_PHONE_a1b2c3d4e5f67890]"
+	origC := "+49 171 1234567"
+	tokenMap := map[string]string{tokenR: origR, tokenC: origC}
+
+	prefix := strings.Repeat("a", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+"Let me think about "+tokenR) +
+		makeOpenAITextDelta(prefix+"Contact "+tokenC+" for details.") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, origR) {
+		t.Errorf("reasoning token not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, origC) {
+		t.Errorf("content token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, tokenR) || strings.Contains(got, tokenC) {
+		t.Errorf("unreplaced tokens in output:\n%s", got)
+	}
+}
+
+// TestDeepSeekReasoningEOFFlush verifies that reasoning content held in the
+// accumulator (shorter than tokenSuffixLen, no finish chunk) is flushed on EOF.
+func TestDeepSeekReasoningEOFFlush(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	sseInput := makeOpenAIReasoningDelta("Think about " + token)
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("EOF flush: reasoning token not replaced:\n%s", got)
+	}
+}
+
+// TestDeepSeekKeepAliveComment verifies that SSE keep-alive comment lines
+// interleaved between reasoning chunks do not disrupt accumulation.
+func TestDeepSeekKeepAliveComment(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("k", tokenSuffixLen+10)
+	sseInput := makeOpenAIReasoningDelta(prefix+token[:15]) +
+		": keep-alive\n" +
+		makeOpenAIReasoningDelta(token[15:]+" done") +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("keep-alive: token not replaced:\n%s", got)
+	}
+}
+
+// makeOpenAIBothFieldsDelta builds a single SSE chunk whose delta carries both
+// reasoning_content and content in the same payload. The OpenAI/DeepSeek wire
+// format keeps the two fields in distinct chunks, but the parser must still
+// emit two structurally-isolated output chunks if a payload ever carries both.
+func makeOpenAIBothFieldsDelta(reasoning, content string) string {
+	type delta struct {
+		ReasoningContent string `json:"reasoning_content,omitempty"`
+		Content          string `json:"content,omitempty"`
+	}
+	type choice struct {
+		Index        int     `json:"index"`
+		Delta        delta   `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	}
+	type chunk struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Choices []choice `json:"choices"`
+	}
+	c := chunk{
+		ID:     "chatcmpl-ds-both",
+		Object: "chat.completion.chunk",
+		Choices: []choice{{
+			Index:        0,
+			Delta:        delta{ReasoningContent: reasoning, Content: content},
+			FinishReason: nil,
+		}},
+	}
+	b, _ := json.Marshal(c)
+	return "data: " + string(b) + "\n"
+}
+
+// TestDeepSeekReasoningVerboseLogging exercises the verbose-mode log line in
+// emitReasoning's mid-stream replacement branch — the last uncovered statement
+// on the reasoning rehydration path. Mirrors TestOpenAIStreamingVerboseLogging
+// for the reasoning_content field.
+func TestDeepSeekReasoningVerboseLogging(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+
+	a := newTestAnonymizer()
+	a.SetVerbose(true)
+	sessionID := "deepseek-verbose"
+	a.sessionMu.Lock()
+	a.sessions[sessionID] = map[string]string{token: original}
+	a.sessionMu.Unlock()
+
+	// Prefix large enough that the token + its suffix-guard clear safeCutPoint,
+	// so the mid-stream replacement branch (with the verbose log) runs.
+	prefix := strings.Repeat("v", tokenSuffixLen+len(token)+5)
+	sseInput := makeOpenAIReasoningDelta(prefix+token) +
+		makeOpenAIReasoningDelta(strings.Repeat("w", tokenSuffixLen+5)+"end") +
+		"\n"
+
+	src := io.NopCloser(strings.NewReader(sseInput))
+	rc := a.StreamingDeanonymize(src, sessionID, deepSeekDomain)
+	defer rc.Close() //nolint:errcheck
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("reading streaming output: %v", err)
+	}
+	if !strings.Contains(string(got), original) {
+		t.Errorf("DeepSeek verbose reasoning: token not replaced:\n%s", string(got))
+	}
+}
+
+// TestDeepSeekReasoningShortFragmentHeld directly exercises emitReasoning's
+// `if flushUpTo == 0 { return }` early-return branch. The reasoning fragment
+// is short enough (≤ tokenSuffixLen bytes) that safeCutPoint returns 0, so the
+// mid-stream emit must write nothing and the fragment must be held entirely in
+// reasoningAccum until EOF, when Flush emits the synthetic chunk.
+func TestDeepSeekReasoningShortFragmentHeld(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "earl@example.com"
+	tokenMap := map[string]string{token: original}
+
+	// 3 + 28 = 31 bytes, ≤ tokenSuffixLen (33), so safeCutPoint == 0.
+	fragment := "Hi " + token
+	if len(fragment) > tokenSuffixLen {
+		t.Fatalf("test setup: fragment len %d exceeds tokenSuffixLen %d", len(fragment), tokenSuffixLen)
+	}
+	sseInput := makeOpenAIReasoningDelta(fragment)
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("short fragment: original not present after Flush:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("short fragment: raw token leaked:\n%s", got)
+	}
+
+	// Assert exactly one reasoning_content data chunk appears in output, which
+	// must be the synthetic Flush emission. If the early-return had instead
+	// written a mid-stream chunk, we'd see two (mid-stream + flush) or — given
+	// the input was uncuttable — one mid-stream chunk and an empty accumulator.
+	// Either deviation breaks the held-fragment guarantee.
+	count := 0
+	for _, line := range strings.Split(got, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var env openAIEnvelope
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &env); err != nil {
+			continue
+		}
+		if len(env.Choices) == 0 || env.Choices[0].Delta.ReasoningContent == "" {
+			continue
+		}
+		count++
+		emitted := env.Choices[0].Delta.ReasoningContent
+		if !strings.Contains(emitted, original) {
+			t.Errorf("reasoning chunk missing replaced original: %q", emitted)
+		}
+		if strings.Contains(emitted, token) {
+			t.Errorf("reasoning chunk carries unreplaced token: %q", emitted)
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one reasoning data chunk (Flush emission), got %d:\n%s", count, got)
+	}
+}
+
+// TestDeepSeekBothFieldsStructuralIsolation verifies that a single input chunk
+// carrying both reasoning_content and content produces two separate output
+// chunks — one with the replaced reasoning, one with the replaced content —
+// and that neither output chunk carries the other field's text. This guards
+// against accidental field-leakage as new delta fields are added.
+func TestDeepSeekBothFieldsStructuralIsolation(t *testing.T) {
+	tokenR := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	origR := "earl@example.com"
+	tokenC := "[PII_PHONE_a1b2c3d4e5f67890]"
+	origC := "+49 171 1234567"
+	tokenMap := map[string]string{tokenR: origR, tokenC: origC}
+
+	prefix := strings.Repeat("b", tokenSuffixLen+10)
+	reasoningText := prefix + "reasoning marker " + tokenR + " "
+	contentText := prefix + "content marker " + tokenC + " "
+
+	sseInput := makeOpenAIBothFieldsDelta(reasoningText, contentText) +
+		makeOpenAIFinishChunk() +
+		"data: [DONE]\n\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, deepSeekDomain)
+
+	// Both originals must be present after deanonymization.
+	if !strings.Contains(got, origR) {
+		t.Errorf("reasoning original not present:\n%s", got)
+	}
+	if !strings.Contains(got, origC) {
+		t.Errorf("content original not present:\n%s", got)
+	}
+	// No raw tokens may remain.
+	if strings.Contains(got, tokenR) || strings.Contains(got, tokenC) {
+		t.Errorf("unreplaced token in output:\n%s", got)
+	}
+
+	// Each emitted SSE chunk must carry at most one of reasoning_content /
+	// content. We locate the data lines and assert structural isolation.
+	dataLines := strings.Split(got, "\n")
+	sawReasoningChunk := false
+	sawContentChunk := false
+	for _, line := range dataLines {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var env openAIEnvelope
+		if err := json.Unmarshal([]byte(payload), &env); err != nil {
+			continue
+		}
+		if len(env.Choices) == 0 {
+			continue
+		}
+		d := env.Choices[0].Delta
+		hasR := d.ReasoningContent != ""
+		hasC := d.Content != ""
+		if hasR && hasC {
+			t.Errorf("emitted chunk carries both reasoning_content and content:\n%s", payload)
+		}
+		if hasR {
+			sawReasoningChunk = true
+			if strings.Contains(d.ReasoningContent, "content marker") {
+				t.Errorf("reasoning chunk leaked content text:\n%s", payload)
+			}
+			if strings.Contains(d.ReasoningContent, origC) || strings.Contains(d.ReasoningContent, tokenC) {
+				t.Errorf("reasoning chunk leaked content PII:\n%s", payload)
+			}
+		}
+		if hasC {
+			sawContentChunk = true
+			if strings.Contains(d.Content, "reasoning marker") {
+				t.Errorf("content chunk leaked reasoning text:\n%s", payload)
+			}
+			if strings.Contains(d.Content, origR) || strings.Contains(d.Content, tokenR) {
+				t.Errorf("content chunk leaked reasoning PII:\n%s", payload)
+			}
+		}
+	}
+	if !sawReasoningChunk {
+		t.Errorf("expected a reasoning-only output chunk, none seen:\n%s", got)
+	}
+	if !sawContentChunk {
+		t.Errorf("expected a content-only output chunk, none seen:\n%s", got)
+	}
+}
+
+// TestOpenAIUnchangedByReasoningField re-runs the canonical OpenAI token-split
+// scenario against api.openai.com to confirm the reasoning_content addition
+// caused no regression on the standard OpenAI path.
+func TestOpenAIUnchangedByReasoningField(t *testing.T) {
+	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
+	original := "user@example.com"
+	tokenMap := map[string]string{token: original}
+
+	prefix := strings.Repeat("x", tokenSuffixLen+10)
+	mid := len(token) / 2
+	sseInput := makeOpenAITextDelta(prefix+token[:mid]) +
+		makeOpenAITextDelta(token[mid:]+" world") +
+		"\n"
+
+	got := readStreamResultForDomain(t, sseInput, tokenMap, openAIDomain)
+
+	if !strings.Contains(got, original) {
+		t.Errorf("regression: OpenAI token not replaced:\n%s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("regression: unreplaced token in OpenAI output:\n%s", got)
+	}
+}
+
 // TestOpenAIStreamingViaAggregatorDomain verifies that streaming
 // deanonymization works when the upstream is reached via every Phase 1
 // aggregator domain (OpenRouter, Portkey) or non-OpenAI provider that

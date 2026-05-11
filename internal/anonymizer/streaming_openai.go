@@ -9,7 +9,7 @@ import (
 // openAIEnvelope is the minimal structure for OpenAI chat completion chunks.
 //
 // Used by: api.openai.com, api.mistral.ai, api.together.xyz,
-// api.perplexity.ai, api.huggingface.co
+// api.perplexity.ai, api.huggingface.co, api.deepseek.com
 type openAIEnvelope struct {
 	ID      string         `json:"id"`
 	Object  string         `json:"object"`
@@ -23,15 +23,22 @@ type openAIChoice struct {
 }
 
 type openAIDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Content          string `json:"content,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // openAIDeanonymizer handles the OpenAI chat completions SSE format.
+//
+// DeepSeek's deepseek-reasoner model adds a parallel reasoning_content field
+// carrying chain-of-thought text. Reasoning chunks arrive first, then content
+// chunks follow; the two never appear in the same chunk. Each is accumulated
+// in its own buffer and flushed via a synthetic chunk with the matching field.
 type openAIDeanonymizer struct {
-	opts      streamDeanonymizerOpts
-	textAccum strings.Builder
-	lastID    string // id from the most recent chunk for synthetic events
+	opts           streamDeanonymizerOpts
+	textAccum      strings.Builder
+	reasoningAccum strings.Builder
+	lastID         string // id from the most recent chunk for synthetic events
 }
 
 func newOpenAIDeanonymizer(opts streamDeanonymizerOpts) *openAIDeanonymizer {
@@ -68,8 +75,8 @@ func (o *openAIDeanonymizer) ProcessDataPayload(payload []byte) bool {
 		return true
 	}
 
-	// No content in delta (e.g. role-only first chunk) — pass through.
-	if choice.Delta.Content == "" {
+	// Neither content nor reasoning_content — role-only or other delta — pass through.
+	if choice.Delta.Content == "" && choice.Delta.ReasoningContent == "" {
 		writePipe(o.opts.pw,
 			[]byte(sseDataPrefix),
 			[]byte(o.opts.replacer.Replace(string(payload))),
@@ -77,13 +84,61 @@ func (o *openAIDeanonymizer) ProcessDataPayload(payload []byte) bool {
 		return true
 	}
 
-	// Accumulate content text.
-	o.textAccum.WriteString(choice.Delta.Content)
+	if choice.Delta.ReasoningContent != "" {
+		o.emitReasoning(&envelope, choice, choice.Delta.ReasoningContent)
+	}
+	if choice.Delta.Content != "" {
+		o.emitContent(&envelope, choice, choice.Delta.Content)
+	}
+	return true
+}
+
+// emitReasoning accumulates a reasoning fragment and, when past the suffix
+// guard, emits a fresh envelope whose delta carries only the replaced
+// reasoning_content. Other delta fields (content, role, tool_calls, …) are
+// never copied into a reasoning emission.
+func (o *openAIDeanonymizer) emitReasoning(envelope *openAIEnvelope, choice *openAIChoice, fragment string) {
+	o.reasoningAccum.WriteString(fragment)
+	accumulated := o.reasoningAccum.String()
+
+	flushUpTo := safeCutPoint(accumulated)
+	if flushUpTo == 0 {
+		return
+	}
+
+	toReplace := accumulated[:flushUpTo]
+	replaced := o.opts.replacer.Replace(toReplace)
+	if toReplace != replaced && o.opts.verbose {
+		log.Printf("[DEANON] openai reasoning replaced: sessionID=%s tokens=%d", o.opts.sessionID, o.opts.tokenCount)
+	}
+
+	out := openAIEnvelope{
+		ID:     envelope.ID,
+		Object: envelope.Object,
+		Choices: []openAIChoice{{
+			Index:        choice.Index,
+			Delta:        openAIDelta{ReasoningContent: replaced},
+			FinishReason: choice.FinishReason,
+		}},
+	}
+	newPayload, _ := json.Marshal(out) // error impossible: only string/int fields
+	writePipe(o.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
+
+	remaining := accumulated[flushUpTo:]
+	o.reasoningAccum.Reset()
+	o.reasoningAccum.WriteString(remaining)
+}
+
+// emitContent accumulates a content fragment and, when past the suffix guard,
+// emits a fresh envelope whose delta carries only the replaced content. Other
+// delta fields are never copied into a content emission.
+func (o *openAIDeanonymizer) emitContent(envelope *openAIEnvelope, choice *openAIChoice, fragment string) {
+	o.textAccum.WriteString(fragment)
 	accumulated := o.textAccum.String()
 
 	flushUpTo := safeCutPoint(accumulated)
 	if flushUpTo == 0 {
-		return true
+		return
 	}
 
 	toReplace := accumulated[:flushUpTo]
@@ -92,36 +147,60 @@ func (o *openAIDeanonymizer) ProcessDataPayload(payload []byte) bool {
 		log.Printf("[DEANON] openai text replaced: sessionID=%s tokens=%d", o.opts.sessionID, o.opts.tokenCount)
 	}
 
-	// Re-serialize with replaced content.
-	choice.Delta.Content = replaced
-	newPayload, _ := json.Marshal(envelope) // error impossible: only string/int fields
-
+	out := openAIEnvelope{
+		ID:     envelope.ID,
+		Object: envelope.Object,
+		Choices: []openAIChoice{{
+			Index:        choice.Index,
+			Delta:        openAIDelta{Content: replaced},
+			FinishReason: choice.FinishReason,
+		}},
+	}
+	newPayload, _ := json.Marshal(out) // error impossible: only string/int fields
 	writePipe(o.opts.pw, []byte(sseDataPrefix), newPayload, []byte("\n"))
 
 	remaining := accumulated[flushUpTo:]
 	o.textAccum.Reset()
 	o.textAccum.WriteString(remaining)
-	return true
 }
 
-// Flush emits any remaining accumulated text as a synthetic chunk.
+// Flush emits any remaining accumulated reasoning and content as synthetic
+// chunks. Reasoning is flushed first to preserve the arrival order DeepSeek
+// uses (reasoning phase then content phase).
 func (o *openAIDeanonymizer) Flush() {
-	if o.textAccum.Len() == 0 {
-		return
-	}
-	flushed := o.opts.replacer.Replace(o.textAccum.String())
-	if flushed != "" {
-		synth := openAIEnvelope{
-			ID:     o.lastID,
-			Object: "chat.completion.chunk",
-			Choices: []openAIChoice{{
-				Index: 0,
-				Delta: openAIDelta{Content: flushed},
-			}},
+	if o.reasoningAccum.Len() > 0 {
+		flushed := o.opts.replacer.Replace(o.reasoningAccum.String())
+		if flushed != "" {
+			synth := openAIEnvelope{
+				ID:     o.lastID,
+				Object: "chat.completion.chunk",
+				Choices: []openAIChoice{{
+					Index: 0,
+					Delta: openAIDelta{ReasoningContent: flushed},
+				}},
+			}
+			if b, err := json.Marshal(synth); err == nil {
+				writePipe(o.opts.pw, []byte(sseDataPrefix), b, []byte("\n\n"))
+			}
 		}
-		if b, err := json.Marshal(synth); err == nil {
-			writePipe(o.opts.pw, []byte(sseDataPrefix), b, []byte("\n\n"))
-		}
+		o.reasoningAccum.Reset()
 	}
-	o.textAccum.Reset()
+
+	if o.textAccum.Len() > 0 {
+		flushed := o.opts.replacer.Replace(o.textAccum.String())
+		if flushed != "" {
+			synth := openAIEnvelope{
+				ID:     o.lastID,
+				Object: "chat.completion.chunk",
+				Choices: []openAIChoice{{
+					Index: 0,
+					Delta: openAIDelta{Content: flushed},
+				}},
+			}
+			if b, err := json.Marshal(synth); err == nil {
+				writePipe(o.opts.pw, []byte(sseDataPrefix), b, []byte("\n\n"))
+			}
+		}
+		o.textAccum.Reset()
+	}
 }
