@@ -74,16 +74,24 @@ func TestProviderForDomain(t *testing.T) {
 		// Phase 3: prefix wildcards (Azure, Vertex)
 		{"myresource.openai.azure.com", ProviderOpenAI},
 		{"eastus2.openai.azure.com", ProviderOpenAI},
-		// Synthetic 4-label Vertex domains (real ones use hyphens — see
-		// domainmatch_test.go and the package README for the full
-		// explanation).
+		// Vertex AI: global endpoint (exact match in domainToProvider).
+		{"aiplatform.googleapis.com", ProviderGemini},
+		// Vertex AI regional endpoints — 3-label hyphen-prefix form
+		// matched by *-aiplatform.googleapis.com.
+		{"us-central1-aiplatform.googleapis.com", ProviderGemini},
+		{"europe-west1-aiplatform.googleapis.com", ProviderGemini},
+		{"us-east4-aiplatform.googleapis.com", ProviderGemini},
+		{"asia-northeast1-aiplatform.googleapis.com", ProviderGemini},
+		// Defensive 4-label form (also in globProviders).
 		{"region.aiplatform.googleapis.com", ProviderGemini},
 		{"anything.aiplatform.googleapis.com", ProviderGemini},
-		// Real Vertex regional URLs are 3 labels and don't match the glob;
-		// they fall through to passthrough until users register them
-		// explicitly.
-		{"us-central1-aiplatform.googleapis.com", ProviderPassthrough},
-		{"europe-west1-aiplatform.googleapis.com", ProviderPassthrough},
+		// Case folding (RFC 1035 §2.3.3) — DNS is case-insensitive.
+		{"API.Anthropic.com", ProviderAnthropic},
+		{"MyResource.OPENAI.azure.com", ProviderOpenAI},
+		{"US-EAST4-aiplatform.googleapis.com", ProviderGemini},
+		// Trailing-dot canonical form (RFC 1035 §3.1).
+		{"api.anthropic.com.", ProviderAnthropic},
+		{"us-central1-aiplatform.googleapis.com.", ProviderGemini},
 		// Phase 3: infix wildcards (Bedrock)
 		{"bedrock-runtime.us-east-1.amazonaws.com", ProviderPassthrough},
 		{"bedrock-runtime.eu-west-1.amazonaws.com", ProviderPassthrough},

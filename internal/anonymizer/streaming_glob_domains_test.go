@@ -29,15 +29,9 @@ func TestAzureOpenAIStreamingDeanonymize(t *testing.T) {
 }
 
 // TestVertexAIStreamingDeanonymize verifies that a Gemini-format SSE stream
-// routed through a domain matching the *.aiplatform.googleapis.com glob is
-// correctly deanonymized.
-//
-// NOTE: real Vertex regional URLs use hyphens
-// ({region}-aiplatform.googleapis.com) and have only 3 DNS labels, so they
-// do NOT match the 4-label *.aiplatform.googleapis.com glob under strict
-// segment-glob. This test uses a synthetic 4-label domain to exercise the
-// glob-routed path. See PR description for the recommendation to
-// users with regional Vertex endpoints.
+// routed through a real Vertex regional domain (matched by the
+// *-aiplatform.googleapis.com label-substring glob) is correctly
+// deanonymized.
 func TestVertexAIStreamingDeanonymize(t *testing.T) {
 	token := "[PII_EMAIL_c160f8cc4b2e1a3d]"
 	original := "earl@example.com"
@@ -49,13 +43,19 @@ func TestVertexAIStreamingDeanonymize(t *testing.T) {
 		makeGeminiEmptyCandidates() +
 		"\n"
 
-	got := readStreamResultForDomain(t, sseInput, tokenMap, "region.aiplatform.googleapis.com")
-
-	if !strings.Contains(got, original) {
-		t.Errorf("Vertex AI: token not replaced:\n%s", got)
-	}
-	if strings.Contains(got, token) {
-		t.Errorf("Vertex AI: unreplaced token:\n%s", got)
+	for _, domain := range []string{
+		"us-central1-aiplatform.googleapis.com", // regional, hyphen-prefix glob
+		"aiplatform.googleapis.com",             // global, exact match
+	} {
+		t.Run(domain, func(t *testing.T) {
+			got := readStreamResultForDomain(t, sseInput, tokenMap, domain)
+			if !strings.Contains(got, original) {
+				t.Errorf("Vertex AI %s: token not replaced:\n%s", domain, got)
+			}
+			if strings.Contains(got, token) {
+				t.Errorf("Vertex AI %s: unreplaced token:\n%s", domain, got)
+			}
+		})
 	}
 }
 

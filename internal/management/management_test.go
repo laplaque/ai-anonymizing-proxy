@@ -554,23 +554,66 @@ func TestValidDomain_Glob(t *testing.T) {
 		domain string
 		valid  bool
 	}{
+		// Bare-segment wildcards (3+ segments, non-trailing).
 		{"*.openai.azure.com", true},
 		{"bedrock-runtime.*.amazonaws.com", true},
 		{"bedrock-agent-runtime.*.amazonaws.com", true},
 		{"*.aiplatform.googleapis.com", true},
-		{"*", true},
 		{"a.*.b.*.c", true},
-		// Wildcards must be the entire segment, not a substring.
-		{"*foo.bar", false},
-		{"foo*.bar", false},
-		// Empty / malformed still rejected.
+		// Label-substring wildcards (Vertex hyphen-prefix and friends).
+		{"*-aiplatform.googleapis.com", true},
+		{"foo-*.example.com", true},
+		{"foo*bar.example.com", true},
+		// Catch-all rejections (defense-in-depth).
+		{"*", false},     // single segment — would match any 1-label host
+		{"*.com", false}, // 2 segments — would match every public hostname
+		{"*.*", false},   // 2 segments
+		{"foo.*", false}, // trailing wildcard is a TLD catch-all
+		{"foo.bar.*", false},
+		// Label-substring foot-guns.
+		{"**foo.bar.com", false}, // double "*" in one segment
+		{"foo**bar.example.com", false},
+		// Empty / malformed.
 		{".*.bar", false},
 		{"*..bar", false},
+		{"foo. *.bar", false}, // whitespace in segment
 	}
 	for _, tc := range cases {
 		if got := validDomain(tc.domain); got != tc.valid {
 			t.Errorf("validDomain(%q) = %v, want %v", tc.domain, got, tc.valid)
 		}
+	}
+}
+
+func TestDomainRegistry_RemoveMissReturnsFalse(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{"api.openai.com"}}
+	r := NewDomainRegistry(cfg, "")
+
+	if removed := r.Remove("never-registered.example.com"); removed {
+		t.Error("Remove of unknown exact domain should return false")
+	}
+	if removed := r.Remove("nope.*.amazonaws.com"); removed {
+		t.Error("Remove of unknown glob should return false")
+	}
+	if removed := r.Remove("api.openai.com"); !removed {
+		t.Error("Remove of known exact domain should return true")
+	}
+	// Second remove of the same entry should miss.
+	if removed := r.Remove("api.openai.com"); removed {
+		t.Error("second Remove should return false")
+	}
+}
+
+func TestHandleRemoveDomain_NotFound(t *testing.T) {
+	srv, _ := newTestServer("")
+	body := `{"domain":"never-registered.example.com"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown domain remove, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

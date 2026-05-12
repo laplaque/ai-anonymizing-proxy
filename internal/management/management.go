@@ -130,25 +130,35 @@ func (r *DomainRegistry) Add(domain string) {
 	r.persist(snapshot)
 }
 
-// Remove removes a domain or glob pattern from the registry and persists to disk.
-// For glob patterns, the raw pattern string must match exactly (e.g.
-// removing "bedrock-runtime.*.amazonaws.com" — passing a concrete domain
-// like "bedrock-runtime.us-east-1.amazonaws.com" will not remove the glob).
-func (r *DomainRegistry) Remove(domain string) {
+// Remove removes a domain or glob pattern from the registry and persists
+// to disk. For glob patterns, the raw pattern string must match exactly
+// (e.g. removing "bedrock-runtime.*.amazonaws.com" — passing a concrete
+// domain like "bedrock-runtime.us-east-1.amazonaws.com" will not remove
+// the glob). Returns true if an entry was removed; false on miss so the
+// management API can surface a typo as 404 rather than silent success.
+func (r *DomainRegistry) Remove(domain string) bool {
 	r.mu.Lock()
+	removed := false
 	if domainmatch.IsGlob(domain) {
 		for i, g := range r.globs {
 			if g.Raw() == domain {
 				r.globs = append(r.globs[:i], r.globs[i+1:]...)
+				removed = true
 				break
 			}
 		}
-	} else {
+	} else if _, ok := r.domains[domain]; ok {
 		delete(r.domains, domain)
+		removed = true
+	}
+	if !removed {
+		r.mu.Unlock()
+		return false
 	}
 	snapshot := r.snapshotLocked()
 	r.mu.Unlock()
 	r.persist(snapshot)
+	return true
 }
 
 // All returns a sorted slice of all registered domains and glob patterns.
@@ -277,23 +287,72 @@ var domainLabelRegexp = regexp.MustCompile(
 	`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`,
 )
 
-// validDomain checks that d is a syntactically valid hostname or glob pattern.
-// A "*" segment between dots is accepted as a wildcard (segment-glob);
-// other segments must be valid DNS labels.
+// validDomain checks that d is a syntactically valid hostname or glob
+// pattern. Wildcards are accepted in two forms:
+//   - bare "*" segment (segment-glob)
+//   - label-substring with one "*" inside a segment (e.g. "*-aiplatform")
+//
+// To stop a careless or compromised admin from registering catch-all
+// patterns that classify almost every outbound HTTPS connection as AI
+// traffic, the following are rejected even though they pass per-segment
+// syntax: any wildcard pattern with fewer than 3 segments
+// (blocks "*", "*.com", "*.*"); any pattern whose final segment is "*"
+// (blocks "foo.*"); and any pattern with an empty segment.
 func validDomain(d string) bool {
 	if len(d) == 0 || len(d) > 253 {
 		return false
 	}
-	for _, seg := range strings.Split(d, ".") {
+	segments := strings.Split(d, ".")
+	hasWildcard := false
+	for _, seg := range segments {
+		if seg == "" {
+			return false
+		}
 		if seg == "*" {
+			hasWildcard = true
+			continue
+		}
+		if strings.IndexByte(seg, '*') >= 0 {
+			// Label-substring wildcard: at most one "*", and the literal
+			// pieces around it must form valid label characters.
+			hasWildcard = true
+			idx := strings.IndexByte(seg, '*')
+			if strings.IndexByte(seg[idx+1:], '*') >= 0 {
+				return false
+			}
+			prefix, suffix := seg[:idx], seg[idx+1:]
+			if prefix == "" && suffix == "" {
+				continue // bare "*" already handled above; defensive
+			}
+			if prefix != "" && !labelPieceRegexp.MatchString(prefix) {
+				return false
+			}
+			if suffix != "" && !labelPieceRegexp.MatchString(suffix) {
+				return false
+			}
 			continue
 		}
 		if !domainLabelRegexp.MatchString(seg) {
 			return false
 		}
 	}
+	if hasWildcard {
+		if len(segments) < 3 {
+			return false // blocks "*", "*.com", "*.*"
+		}
+		if segments[len(segments)-1] == "*" {
+			return false // blocks "foo.*" — never want a catch-all TLD
+		}
+	}
 	return true
 }
+
+// labelPieceRegexp validates a fragment of a DNS label adjacent to a "*"
+// in a label-substring wildcard. Looser than domainLabelRegexp because a
+// fragment doesn't need start/end-anchored alphanumeric (the wildcard
+// fills the other side), but still rejects whitespace and label
+// separators.
+var labelPieceRegexp = regexp.MustCompile(`^[a-zA-Z0-9-]+$`)
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	type response struct {
@@ -362,7 +421,11 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid domain name", http.StatusBadRequest)
 		return
 	}
-	s.domains.Remove(req.Domain)
+	if !s.domains.Remove(req.Domain) {
+		log.Printf("[MANAGEMENT] Remove miss for unknown AI domain: %s", req.Domain)
+		http.Error(w, "domain not registered", http.StatusNotFound)
+		return
+	}
 	log.Printf("[MANAGEMENT] Removed AI domain: %s", req.Domain)
 	writeJSON(w, http.StatusOK, map[string]string{"removed": req.Domain})
 }
