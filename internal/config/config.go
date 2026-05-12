@@ -110,6 +110,21 @@ func defaults() *Config {
 			"api.endpoints.anyscale.com",
 			"openrouter.ai",
 			"api.portkey.ai",
+			// Azure OpenAI: {resource}.openai.azure.com
+			"*.openai.azure.com",
+			// Vertex AI:
+			//   global:   aiplatform.googleapis.com (exact)
+			//   regional: {region}-aiplatform.googleapis.com (3-label,
+			//             hyphen between region and "aiplatform" — see
+			//             https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations).
+			//   *.aiplatform.googleapis.com is kept defensively for any
+			//   future host that publishes a 4-label form.
+			"aiplatform.googleapis.com",
+			"*-aiplatform.googleapis.com",
+			"*.aiplatform.googleapis.com",
+			// Amazon Bedrock: bedrock-runtime.{region}.amazonaws.com
+			"bedrock-runtime.*.amazonaws.com",
+			"bedrock-agent-runtime.*.amazonaws.com",
 		},
 		AuthDomains: []string{
 			"accounts.google.com",

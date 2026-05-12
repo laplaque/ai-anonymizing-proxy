@@ -366,6 +366,31 @@ func TestDefaultConfigNewDomains(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigGlobDomains pins the Phase-3 segment-glob defaults
+// into the test suite. A future refactor that drops or renames any of
+// these entries will fail this test instead of silently degrading the
+// security-classifier surface.
+func TestDefaultConfigGlobDomains(t *testing.T) {
+	cfg := defaults()
+	required := []string{
+		"*.openai.azure.com",          // Azure OpenAI
+		"aiplatform.googleapis.com",   // Vertex AI global
+		"*-aiplatform.googleapis.com", // Vertex AI regional (hyphen-prefix)
+		"*.aiplatform.googleapis.com", // Vertex AI defensive 4-label form
+		"bedrock-runtime.*.amazonaws.com",
+		"bedrock-agent-runtime.*.amazonaws.com",
+	}
+	apiSet := make(map[string]bool, len(cfg.AIAPIDomains))
+	for _, d := range cfg.AIAPIDomains {
+		apiSet[d] = true
+	}
+	for _, d := range required {
+		if !apiSet[d] {
+			t.Errorf("missing Phase-3 default AI API domain: %s", d)
+		}
+	}
+}
+
 func TestLoad_ReturnsNonNil(t *testing.T) {
 	cfg := Load()
 	if cfg == nil {

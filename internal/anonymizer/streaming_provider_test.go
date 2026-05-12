@@ -71,6 +71,38 @@ func TestProviderForDomain(t *testing.T) {
 		{"api.endpoints.anyscale.com", ProviderOpenAI},
 		{"openrouter.ai", ProviderOpenAI},
 		{"api.portkey.ai", ProviderOpenAI},
+		// Phase 3: prefix wildcards (Azure, Vertex)
+		{"myresource.openai.azure.com", ProviderOpenAI},
+		{"eastus2.openai.azure.com", ProviderOpenAI},
+		// Vertex AI: global endpoint (exact match in domainToProvider).
+		{"aiplatform.googleapis.com", ProviderGemini},
+		// Vertex AI regional endpoints — 3-label hyphen-prefix form
+		// matched by *-aiplatform.googleapis.com.
+		{"us-central1-aiplatform.googleapis.com", ProviderGemini},
+		{"europe-west1-aiplatform.googleapis.com", ProviderGemini},
+		{"us-east4-aiplatform.googleapis.com", ProviderGemini},
+		{"asia-northeast1-aiplatform.googleapis.com", ProviderGemini},
+		// Defensive 4-label form (also in globProviders).
+		{"region.aiplatform.googleapis.com", ProviderGemini},
+		{"anything.aiplatform.googleapis.com", ProviderGemini},
+		// Case folding (RFC 1035 §2.3.3) — DNS is case-insensitive.
+		{"API.Anthropic.com", ProviderAnthropic},
+		{"MyResource.OPENAI.azure.com", ProviderOpenAI},
+		{"US-EAST4-aiplatform.googleapis.com", ProviderGemini},
+		// Trailing-dot canonical form (RFC 1035 §3.1).
+		{"api.anthropic.com.", ProviderAnthropic},
+		{"us-central1-aiplatform.googleapis.com.", ProviderGemini},
+		// Phase 3: infix wildcards (Bedrock)
+		{"bedrock-runtime.us-east-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-runtime.eu-west-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-runtime.ap-southeast-1.amazonaws.com", ProviderPassthrough},
+		{"bedrock-agent-runtime.us-east-1.amazonaws.com", ProviderPassthrough},
+		// Non-matches — must NOT resolve to a glob provider.
+		// (passthrough is also the default fallback, but the assertion is
+		// that these do not get routed to OpenAI/Gemini despite sharing
+		// suffixes with the glob patterns.)
+		{"ec2.us-east-1.amazonaws.com", ProviderPassthrough},
+		{"s3.amazonaws.com", ProviderPassthrough},
 		// Unknown domains must fall back to passthrough.
 		{"unknown.example.com", ProviderPassthrough},
 		{"", ProviderPassthrough},

@@ -62,6 +62,60 @@ func TestDomainRegistry_All_Sorted(t *testing.T) {
 	}
 }
 
+// TestDomainRegistry_HasCaseInsensitive verifies that the security-classifier
+// gate honors RFC 1035 §2.3.3 case-insensitivity end-to-end. The proxy hot
+// path passes through `r.Host` (whose case is client-controlled) verbatim;
+// a missed lookup here means anonymization is skipped entirely.
+func TestDomainRegistry_HasCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"api.openai.com",
+			"*.openai.azure.com",
+		},
+	}
+	r := NewDomainRegistry(cfg, "")
+
+	cases := []struct {
+		domain string
+		want   bool
+	}{
+		{"api.openai.com", true},
+		{"API.OpenAI.com", true},
+		{"API.OPENAI.COM", true},
+		{"api.openai.com.", true},             // trailing root-zone dot
+		{"API.OpenAI.com.", true},             // both
+		{"MyResource.OPENAI.azure.com", true}, // glob, mixed-case
+		{"api.anthropic.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.domain, func(t *testing.T) {
+			if got := r.Has(tc.domain); got != tc.want {
+				t.Errorf("Has(%q) = %v, want %v", tc.domain, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDomainRegistry_AddRemoveCaseInsensitive verifies that case-mixed
+// patterns added directly (not via the HTTP handlers, which already
+// lowercase) are canonicalized so subsequent lookups and removals see
+// the same key.
+func TestDomainRegistry_AddRemoveCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{}}
+	r := NewDomainRegistry(cfg, "")
+
+	r.Add("API.Example.com")
+	if !r.Has("api.example.com") {
+		t.Error("case-mixed Add did not canonicalize storage")
+	}
+	if !r.Remove("API.Example.com") {
+		t.Error("case-mixed Remove returned false")
+	}
+	if r.Has("api.example.com") {
+		t.Error("entry still present after Remove")
+	}
+}
+
 func TestDomainRegistry_Persistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "domains.json")
@@ -395,6 +449,305 @@ func TestDomainRegistry_PersistAtomicWrite(t *testing.T) {
 	for _, d := range domains {
 		if d == "test.example.com" {
 			t.Error("removed domain should not be in persist file")
+		}
+	}
+}
+
+// --- Glob domain tests ---
+
+func TestDomainRegistry_GlobHas(t *testing.T) {
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"api.openai.com",
+			"*.openai.azure.com",
+			"bedrock-runtime.*.amazonaws.com",
+		},
+	}
+	r := NewDomainRegistry(cfg, "")
+
+	cases := []struct {
+		domain string
+		want   bool
+	}{
+		// Exact match
+		{"api.openai.com", true},
+		// Prefix wildcard
+		{"myresource.openai.azure.com", true},
+		// Infix wildcard
+		{"bedrock-runtime.us-east-1.amazonaws.com", true},
+		{"bedrock-runtime.eu-west-1.amazonaws.com", true},
+		// Non-matches
+		{"openai.azure.com", false},
+		{"ec2.us-east-1.amazonaws.com", false},
+		{"api.anthropic.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.domain, func(t *testing.T) {
+			if got := r.Has(tc.domain); got != tc.want {
+				t.Errorf("Has(%q) = %v, want %v", tc.domain, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDomainRegistry_GlobAddRemove(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{"api.openai.com"}}
+	r := NewDomainRegistry(cfg, "")
+
+	r.Add("bedrock-runtime.*.amazonaws.com")
+	if !r.Has("bedrock-runtime.us-east-1.amazonaws.com") {
+		t.Error("glob not active after Add")
+	}
+
+	r.Remove("bedrock-runtime.*.amazonaws.com")
+	if r.Has("bedrock-runtime.us-east-1.amazonaws.com") {
+		t.Error("glob still active after Remove")
+	}
+
+	// Exact match unaffected
+	if !r.Has("api.openai.com") {
+		t.Error("exact match broken after glob remove")
+	}
+}
+
+func TestDomainRegistry_GlobPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "domains.json")
+
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"api.openai.com",
+			"*.openai.azure.com",
+			"bedrock-runtime.*.amazonaws.com",
+		},
+	}
+	r1 := NewDomainRegistry(cfg, path)
+	r1.Add("bedrock-agent-runtime.*.amazonaws.com")
+
+	// Reload from disk
+	r2 := NewDomainRegistry(&config.Config{}, path)
+	if !r2.Has("myresource.openai.azure.com") {
+		t.Error("prefix glob not persisted")
+	}
+	if !r2.Has("bedrock-runtime.us-east-1.amazonaws.com") {
+		t.Error("infix glob not persisted")
+	}
+	if !r2.Has("bedrock-agent-runtime.eu-west-1.amazonaws.com") {
+		t.Error("added glob not persisted")
+	}
+	if !r2.Has("api.openai.com") {
+		t.Error("exact domain not persisted")
+	}
+}
+
+func TestDomainRegistry_ExactPrecedence(t *testing.T) {
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"specific.openai.azure.com",
+			"*.openai.azure.com",
+		},
+	}
+	r := NewDomainRegistry(cfg, "")
+
+	if !r.Has("specific.openai.azure.com") {
+		t.Error("exact match failed")
+	}
+	if !r.Has("other.openai.azure.com") {
+		t.Error("glob match failed")
+	}
+}
+
+func TestDomainRegistry_GlobAll(t *testing.T) {
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"api.openai.com",
+			"*.openai.azure.com",
+			"bedrock-runtime.*.amazonaws.com",
+		},
+	}
+	r := NewDomainRegistry(cfg, "")
+
+	all := r.All()
+	expected := map[string]bool{
+		"api.openai.com":                  false,
+		"*.openai.azure.com":              false,
+		"bedrock-runtime.*.amazonaws.com": false,
+	}
+	for _, d := range all {
+		if _, ok := expected[d]; ok {
+			expected[d] = true
+		}
+	}
+	for d, found := range expected {
+		if !found {
+			t.Errorf("All() missing entry %q, got: %v", d, all)
+		}
+	}
+}
+
+func TestDomainRegistry_GlobDuplicateAdd(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{}}
+	r := NewDomainRegistry(cfg, "")
+	r.Add("bedrock-runtime.*.amazonaws.com")
+	r.Add("bedrock-runtime.*.amazonaws.com")
+
+	all := r.All()
+	count := 0
+	for _, d := range all {
+		if d == "bedrock-runtime.*.amazonaws.com" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 glob entry, got %d in: %v", count, all)
+	}
+}
+
+func TestValidDomain_Glob(t *testing.T) {
+	cases := []struct {
+		domain string
+		valid  bool
+	}{
+		// Bare-segment wildcards (3+ segments, non-trailing).
+		{"*.openai.azure.com", true},
+		{"bedrock-runtime.*.amazonaws.com", true},
+		{"bedrock-agent-runtime.*.amazonaws.com", true},
+		{"*.aiplatform.googleapis.com", true},
+		{"a.*.b.*.c", true},
+		// Label-substring wildcards (Vertex hyphen-prefix and friends).
+		{"*-aiplatform.googleapis.com", true},
+		{"foo-*.example.com", true},
+		{"foo*bar.example.com", true},
+		// Catch-all rejections (defense-in-depth).
+		{"*", false},     // single segment — would match any 1-label host
+		{"*.com", false}, // 2 segments — would match every public hostname
+		{"*.*", false},   // 2 segments
+		{"foo.*", false}, // trailing wildcard is a TLD catch-all
+		{"foo.bar.*", false},
+		// Multi-wildcard leading-segment catch-alls — match every <a>.<b>.com
+		// (or deeper) host on the public internet. (Note: a.*.b.*.c above
+		// is allowed because at least one leading segment is literal.)
+		{"*.*.com", false},
+		{"*.*.*.com", false},
+		{"*.*.aiplatform.googleapis.com", false},
+		// Label-substring foot-guns.
+		{"**foo.bar.com", false}, // double "*" in one segment
+		{"foo**bar.example.com", false},
+		// Empty / malformed.
+		{".*.bar", false},
+		{"*..bar", false},
+		{"foo. *.bar", false}, // whitespace in segment
+	}
+	for _, tc := range cases {
+		if got := validDomain(tc.domain); got != tc.valid {
+			t.Errorf("validDomain(%q) = %v, want %v", tc.domain, got, tc.valid)
+		}
+	}
+}
+
+func TestDomainRegistry_RemoveMissReturnsFalse(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{"api.openai.com"}}
+	r := NewDomainRegistry(cfg, "")
+
+	if removed := r.Remove("never-registered.example.com"); removed {
+		t.Error("Remove of unknown exact domain should return false")
+	}
+	if removed := r.Remove("nope.*.amazonaws.com"); removed {
+		t.Error("Remove of unknown glob should return false")
+	}
+	if removed := r.Remove("api.openai.com"); !removed {
+		t.Error("Remove of known exact domain should return true")
+	}
+	// Second remove of the same entry should miss.
+	if removed := r.Remove("api.openai.com"); removed {
+		t.Error("second Remove should return false")
+	}
+}
+
+func TestHandleRemoveDomain_NotFound(t *testing.T) {
+	srv, _ := newTestServer("")
+	body := `{"domain":"never-registered.example.com"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown domain remove, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Management API glob tests ---
+
+func TestHandleAddDomain_Glob(t *testing.T) {
+	srv, reg := newTestServer("")
+	body := `{"domain":"bedrock-runtime.*.amazonaws.com"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/add", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !reg.Has("bedrock-runtime.us-west-2.amazonaws.com") {
+		t.Error("glob domain did not match concrete region after Add")
+	}
+}
+
+func TestHandleRemoveDomain_Glob(t *testing.T) {
+	srv, reg := newTestServer("")
+	reg.Add("bedrock-runtime.*.amazonaws.com")
+	if !reg.Has("bedrock-runtime.us-east-1.amazonaws.com") {
+		t.Fatal("setup: glob not active before Remove")
+	}
+
+	body := `{"domain":"bedrock-runtime.*.amazonaws.com"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/domains/remove", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if reg.Has("bedrock-runtime.us-east-1.amazonaws.com") {
+		t.Error("glob still active after Remove")
+	}
+}
+
+func TestHandleListDomains_IncludesGlobs(t *testing.T) {
+	cfg := testConfig()
+	cfg.AIAPIDomains = append(cfg.AIAPIDomains,
+		"*.openai.azure.com",
+		"bedrock-runtime.*.amazonaws.com",
+	)
+	reg := NewDomainRegistry(cfg, "")
+	srv := New(cfg, reg, nil)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Domains []string `json:"aiApiDomains"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	wantGlobs := []string{"*.openai.azure.com", "bedrock-runtime.*.amazonaws.com"}
+	for _, g := range wantGlobs {
+		found := false
+		for _, d := range resp.Domains {
+			if d == g {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("status response missing glob %q, got: %v", g, resp.Domains)
 		}
 	}
 }

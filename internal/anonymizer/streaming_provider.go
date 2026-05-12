@@ -3,6 +3,8 @@ package anonymizer
 import (
 	"io"
 	"strings"
+
+	"ai-anonymizing-proxy/internal/domainmatch"
 )
 
 // Provider identifies an AI API provider's SSE streaming format.
@@ -57,6 +59,7 @@ var domainToProvider = map[string]Provider{
 	"api.perplexity.ai":                 ProviderOpenAI,
 	"api.huggingface.co":                ProviderOpenAI,
 	"generativelanguage.googleapis.com": ProviderGemini,
+	"aiplatform.googleapis.com":         ProviderGemini, // Vertex AI global endpoint
 	"api.cohere.ai":                     ProviderCohere,
 	"api.replicate.com":                 ProviderReplicate,
 	"api.groq.com":                      ProviderOpenAI,
@@ -68,11 +71,46 @@ var domainToProvider = map[string]Provider{
 	"api.portkey.ai":                    ProviderOpenAI,
 }
 
+// globProviders maps segment-glob domain patterns to their streaming format.
+// Checked after the exact domainToProvider lookup misses.
+//
+// Bedrock entries use ProviderPassthrough because the SSE format depends
+// on the invoked model (Anthropic vs OpenAI-compatible) which is not
+// known from the destination domain alone.
+//
+// Vertex AI uses *-aiplatform.googleapis.com (label-substring wildcard)
+// because Google's regional endpoint format is
+// {region}-aiplatform.googleapis.com (3 labels, hyphen between region
+// and "aiplatform"). The 4-label *.aiplatform.googleapis.com pattern is
+// kept defensively for any future host that might publish such a form.
+var globProviders = []struct {
+	glob     domainmatch.DomainGlob
+	provider Provider
+}{
+	{domainmatch.Parse("*.openai.azure.com"), ProviderOpenAI},
+	{domainmatch.Parse("*-aiplatform.googleapis.com"), ProviderGemini},
+	{domainmatch.Parse("*.aiplatform.googleapis.com"), ProviderGemini},
+	{domainmatch.Parse("bedrock-runtime.*.amazonaws.com"), ProviderPassthrough},
+	{domainmatch.Parse("bedrock-agent-runtime.*.amazonaws.com"), ProviderPassthrough},
+}
+
 // ProviderForDomain returns the streaming Provider for a given API domain.
-// Unknown domains return ProviderPassthrough.
+// Exact-match domains are checked first, then segment-glob patterns.
+// The domain is lowercased and a trailing "." stripped before lookup so
+// mixed-case Host headers and FQDN-canonical inputs route the same as
+// their canonical form. Unknown domains return ProviderPassthrough.
 func ProviderForDomain(domain string) Provider {
+	domain = strings.ToLower(domain)
+	if len(domain) > 1 && domain[len(domain)-1] == '.' {
+		domain = domain[:len(domain)-1]
+	}
 	if p, ok := domainToProvider[domain]; ok {
 		return p
+	}
+	for _, gp := range globProviders {
+		if gp.glob.Match(domain) {
+			return gp.provider
+		}
 	}
 	return ProviderPassthrough
 }
