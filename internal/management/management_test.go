@@ -62,6 +62,60 @@ func TestDomainRegistry_All_Sorted(t *testing.T) {
 	}
 }
 
+// TestDomainRegistry_HasCaseInsensitive verifies that the security-classifier
+// gate honors RFC 1035 §2.3.3 case-insensitivity end-to-end. The proxy hot
+// path passes through `r.Host` (whose case is client-controlled) verbatim;
+// a missed lookup here means anonymization is skipped entirely.
+func TestDomainRegistry_HasCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{
+		AIAPIDomains: []string{
+			"api.openai.com",
+			"*.openai.azure.com",
+		},
+	}
+	r := NewDomainRegistry(cfg, "")
+
+	cases := []struct {
+		domain string
+		want   bool
+	}{
+		{"api.openai.com", true},
+		{"API.OpenAI.com", true},
+		{"API.OPENAI.COM", true},
+		{"api.openai.com.", true},             // trailing root-zone dot
+		{"API.OpenAI.com.", true},             // both
+		{"MyResource.OPENAI.azure.com", true}, // glob, mixed-case
+		{"api.anthropic.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.domain, func(t *testing.T) {
+			if got := r.Has(tc.domain); got != tc.want {
+				t.Errorf("Has(%q) = %v, want %v", tc.domain, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDomainRegistry_AddRemoveCaseInsensitive verifies that case-mixed
+// patterns added directly (not via the HTTP handlers, which already
+// lowercase) are canonicalized so subsequent lookups and removals see
+// the same key.
+func TestDomainRegistry_AddRemoveCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{AIAPIDomains: []string{}}
+	r := NewDomainRegistry(cfg, "")
+
+	r.Add("API.Example.com")
+	if !r.Has("api.example.com") {
+		t.Error("case-mixed Add did not canonicalize storage")
+	}
+	if !r.Remove("API.Example.com") {
+		t.Error("case-mixed Remove returned false")
+	}
+	if r.Has("api.example.com") {
+		t.Error("entry still present after Remove")
+	}
+}
+
 func TestDomainRegistry_Persistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "domains.json")
@@ -570,6 +624,12 @@ func TestValidDomain_Glob(t *testing.T) {
 		{"*.*", false},   // 2 segments
 		{"foo.*", false}, // trailing wildcard is a TLD catch-all
 		{"foo.bar.*", false},
+		// Multi-wildcard leading-segment catch-alls — match every <a>.<b>.com
+		// (or deeper) host on the public internet. (Note: a.*.b.*.c above
+		// is allowed because at least one leading segment is literal.)
+		{"*.*.com", false},
+		{"*.*.*.com", false},
+		{"*.*.aiplatform.googleapis.com", false},
 		// Label-substring foot-guns.
 		{"**foo.bar.com", false}, // double "*" in one segment
 		{"foo**bar.example.com", false},

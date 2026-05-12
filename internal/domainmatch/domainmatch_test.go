@@ -106,6 +106,23 @@ func TestIsGlob(t *testing.T) {
 	}
 }
 
+func TestNormalizeHost(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"API.OpenAI.com", "api.openai.com"},
+		{"api.openai.com.", "api.openai.com"},
+		{"API.OPENAI.COM.", "api.openai.com"},
+		{"", ""},
+		{".", "."}, // single bare dot is preserved (degenerate edge)
+	}
+	for _, tc := range cases {
+		if got := NormalizeHost(tc.in); got != tc.want {
+			t.Errorf("NormalizeHost(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestDomainGlob_Raw(t *testing.T) {
 	pattern := "bedrock-runtime.*.amazonaws.com"
 	g := Parse(pattern)

@@ -102,6 +102,14 @@ func Parse(pattern string) DomainGlob {
 	}
 }
 
+// NormalizeHost lowercases h and strips a single trailing "." if present.
+// Used on both pattern and domain so callers can pass any DNS-form input.
+// Exported so the domain registry can canonicalize keys and inbound
+// lookups consistently with the matcher.
+func NormalizeHost(h string) string {
+	return normalizeHost(h)
+}
+
 // normalizeHost lowercases h and strips a single trailing "." if present.
 // Used on both pattern and domain so callers can pass any DNS-form input.
 func normalizeHost(h string) string {

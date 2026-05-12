@@ -90,8 +90,12 @@ func NewDomainRegistry(cfg *config.Config, persistPath string) *DomainRegistry {
 
 // addEntryLocked routes a single pattern into the appropriate bucket.
 // Caller must hold r.mu (or be in a constructor where no concurrent
-// access is possible). Duplicate globs are silently dropped.
+// access is possible). The pattern is canonicalized (lowercased,
+// trailing "." stripped) so direct callers, the persistence loader,
+// and the HTTP handlers all converge on the same map keys. Duplicate
+// globs are silently dropped.
 func (r *DomainRegistry) addEntryLocked(pattern string) {
+	pattern = domainmatch.NormalizeHost(pattern)
 	if domainmatch.IsGlob(pattern) {
 		for _, g := range r.globs {
 			if g.Raw() == pattern {
@@ -105,8 +109,12 @@ func (r *DomainRegistry) addEntryLocked(pattern string) {
 }
 
 // Has returns true if the domain is registered as an AI API domain.
-// Exact matches take precedence over glob matches.
+// Exact matches take precedence over glob matches. The inbound domain
+// is canonicalized (lowercased, trailing "." stripped) per RFC 1035
+// §2.3.3; the proxy hot path calls this with `r.Host` whose case is
+// client-controlled, so a non-canonical Host header must still resolve.
 func (r *DomainRegistry) Has(domain string) bool {
+	domain = domainmatch.NormalizeHost(domain)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.domains[domain] {
@@ -137,6 +145,7 @@ func (r *DomainRegistry) Add(domain string) {
 // the glob). Returns true if an entry was removed; false on miss so the
 // management API can surface a typo as 404 rather than silent success.
 func (r *DomainRegistry) Remove(domain string) bool {
+	domain = domainmatch.NormalizeHost(domain)
 	r.mu.Lock()
 	removed := false
 	if domainmatch.IsGlob(domain) {
@@ -342,6 +351,24 @@ func validDomain(d string) bool {
 		}
 		if segments[len(segments)-1] == "*" {
 			return false // blocks "foo.*" — never want a catch-all TLD
+		}
+		// Reject patterns that begin with two or more consecutive bare "*"
+		// segments. "*.*.com" or "*.*.aiplatform.googleapis.com" would
+		// otherwise pass and match every <a>.<b>...<eTLD> host on the
+		// public internet — the same class of foot-gun the "*.com"
+		// rejection guards against. A single leading "*" is fine
+		// ("*.openai.azure.com"), and interspersed wildcards anchored by
+		// literals ("a.*.b.*.c") are operationally meaningful.
+		consecutiveLeading := 0
+		for _, seg := range segments {
+			if seg == "*" {
+				consecutiveLeading++
+				continue
+			}
+			break
+		}
+		if consecutiveLeading >= 2 {
+			return false
 		}
 	}
 	return true

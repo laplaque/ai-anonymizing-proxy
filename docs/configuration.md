@@ -31,7 +31,12 @@ The file is optional — all fields have built-in defaults. Unknown fields are s
     "api.together.xyz",
     "api.perplexity.ai",
     "api.replicate.com",
-    "api.huggingface.co"
+    "api.huggingface.co",
+    "*.openai.azure.com",
+    "aiplatform.googleapis.com",
+    "*-aiplatform.googleapis.com",
+    "bedrock-runtime.*.amazonaws.com",
+    "bedrock-agent-runtime.*.amazonaws.com"
   ],
   "authDomains": [
     "accounts.google.com",
@@ -125,6 +130,46 @@ Detected PII is replaced with deterministic tokens of the form `[PII_<TYPE>_<16h
 e.g. `[PII_EMAIL_c160f8cc4b2e1a3d]`. The type label gives the LLM semantic context; the
 16-hex suffix is the first 16 characters of `md5(original_value)`. Maximum token length:
 33 bytes. See [anonymizer.md](anonymizer.md) for full details.
+
+## AI API domain matching (segment-glob)
+
+Entries in `aiApiDomains` are matched against the destination domain of every
+CONNECT request. The registry supports two forms:
+
+- **Exact match** — `api.openai.com` matches that one hostname.
+- **Segment-glob** — `*` is a wildcard. Two flavors:
+  - **Bare `*` segment** — matches exactly one DNS label of any value.
+    `*.openai.azure.com` matches `myresource.openai.azure.com`. Segment count
+    must match exactly; `evil.openai.azure.com.bad.com` does **not** match.
+  - **Label-substring `*`** — a single `*` inside a segment matches any
+    non-empty substring within that one label. `*-aiplatform.googleapis.com`
+    matches `us-east4-aiplatform.googleapis.com`. Used for Vertex AI's
+    regional URL form `{region}-aiplatform.googleapis.com`.
+
+Exact matches take precedence over glob matches. Matching is case-insensitive
+(per RFC 1035 §2.3.3) and a single trailing `.` on the inbound host is
+stripped (RFC 1035 §3.1 canonical FQDN).
+
+Patterns must be at least 3 segments, must not end in `*`, and must contain
+at least one non-`*` segment in the leading positions. `*`, `*.com`, `*.*`,
+`foo.*`, and `*.*.com` are all rejected at the management-API boundary to
+prevent catch-all mis-classification.
+
+### Default glob entries
+
+| Pattern | Provider | Streaming format | Notes |
+|---------|----------|------------------|-------|
+| `*.openai.azure.com` | Azure OpenAI | OpenAI SSE | `{resource}.openai.azure.com` |
+| `aiplatform.googleapis.com` | Vertex AI (global) | Gemini SSE | Exact match |
+| `*-aiplatform.googleapis.com` | Vertex AI (regional) | Gemini SSE | `{region}-aiplatform.googleapis.com` — label-substring wildcard |
+| `bedrock-runtime.*.amazonaws.com` | Amazon Bedrock | Passthrough | `bedrock-runtime.{region}.amazonaws.com` |
+| `bedrock-agent-runtime.*.amazonaws.com` | Amazon Bedrock Agents | Passthrough | `bedrock-agent-runtime.{region}.amazonaws.com` |
+
+**Bedrock uses passthrough deanonymization** (raw token replacement) rather
+than a format-aware SSE parser because the SSE shape depends on the invoked
+model (Anthropic models return Anthropic SSE; Meta/Mistral return
+OpenAI-compatible SSE). Routing by domain alone can't pick the right parser,
+so passthrough is the safe default.
 
 ## Auth bypass
 
