@@ -110,6 +110,7 @@ func defaults() *Config {
 			"api.endpoints.anyscale.com",
 			"openrouter.ai",
 			"api.portkey.ai",
+			"api.githubcopilot.com",
 			// Azure OpenAI: {resource}.openai.azure.com
 			"*.openai.azure.com",
 			// Vertex AI:
@@ -132,6 +133,7 @@ func defaults() *Config {
 			"auth0.com",
 			"okta.com",
 			"oauth2.googleapis.com",
+			"github.com",
 		},
 		AuthPaths: []string{
 			"/auth", "/login", "/signin", "/signup", "/register",
