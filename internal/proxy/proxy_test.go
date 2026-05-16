@@ -32,7 +32,7 @@ import (
 func TestIsAuthRequest_PathBypasses(t *testing.T) {
 	// Set up a server with /oauth as an auth path
 	cfg := &config.Config{
-		AuthDomains: []string{"auth.example.com"},
+		AuthDomains: []string{"auth.example.com", "github.com"},
 		AuthPaths:   []string{"/oauth", "/login", "/v1/auth"},
 	}
 	domains := management.NewDomainRegistry(cfg, "")
@@ -87,6 +87,15 @@ func TestIsAuthRequest_PathBypasses(t *testing.T) {
 		// Auth domains — always auth regardless of path
 		{"auth domain any path", "auth.example.com", "/anything", true},
 		{"auth domain non-auth path", "auth.example.com", "/api/v1", true},
+
+		// github.com auth-domain entry for Copilot device auth (PR #115).
+		// The first row pins the documented use case (Copilot device-auth
+		// handshake at /login/device/code). The second row pins the *actual*
+		// domain-only-bypass semantics of isAuthRequest: any AuthDomains
+		// entry matches every path, not just /login/*. A future refactor
+		// toward path-checking must not silently break Copilot device-auth.
+		{"github.com device-auth path", "github.com", "/login/device/code", true},
+		{"github.com any path (domain-only match)", "github.com", "/anything", true},
 
 		// Auth subdomain prefixes
 		{"auth subdomain auth.", "auth.openai.com", "/v1/chat", true},
