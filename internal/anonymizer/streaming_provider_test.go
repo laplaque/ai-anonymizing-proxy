@@ -71,6 +71,8 @@ func TestProviderForDomain(t *testing.T) {
 		{"api.endpoints.anyscale.com", ProviderOpenAI},
 		{"openrouter.ai", ProviderOpenAI},
 		{"api.portkey.ai", ProviderOpenAI},
+		// Phase 4: GitHub Copilot proprietary REST format — passthrough
+		{"api.githubcopilot.com", ProviderPassthrough},
 		// Phase 3: prefix wildcards (Azure, Vertex)
 		{"myresource.openai.azure.com", ProviderOpenAI},
 		{"eastus2.openai.azure.com", ProviderOpenAI},

@@ -391,6 +391,38 @@ func TestDefaultConfigGlobDomains(t *testing.T) {
 	}
 }
 
+// TestCopilotDomainRegistered verifies the GitHub Copilot domain appears in
+// the default AIAPIDomains slice.
+func TestCopilotDomainRegistered(t *testing.T) {
+	cfg := defaults()
+	found := false
+	for _, d := range cfg.AIAPIDomains {
+		if d == "api.githubcopilot.com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("api.githubcopilot.com not in default AIAPIDomains")
+	}
+}
+
+// TestGitHubAuthDomainRegistered verifies github.com appears in the default
+// AuthDomains slice so Copilot's device-auth flow bypasses anonymization.
+func TestGitHubAuthDomainRegistered(t *testing.T) {
+	cfg := defaults()
+	found := false
+	for _, d := range cfg.AuthDomains {
+		if d == "github.com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("github.com not in default AuthDomains")
+	}
+}
+
 func TestLoad_ReturnsNonNil(t *testing.T) {
 	cfg := Load()
 	if cfg == nil {

@@ -75,16 +75,16 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 
 ## 5. Known Issues
 
-| # | Issue | Packs | Status |
-|---|-------|-------|--------|
-| #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Resolved (PR) |
-| #68 | US address_us false-positives on German "ist" | US x DE | Open |
-| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Resolved (PR #75) |
-| #70 | GLOBAL api_key keywords steal SECRETS pattern matches (expanded scope: ghp_, JWT, AWS, DB, Bearer) | GLOBAL x SECRETS | Resolved — SECRETS runs before GLOBAL (#70) |
-| — | NL KvK 8-digit pattern is very broad | NL | By design (low confidence 0.45) |
-| — | SWIFT/BIC 8-char may match all-caps words | FINANCE_EU | By design (moderate confidence 0.65) |
-| — | ICD-10 without keyword context not detected | HEALTHCARE | By design (keyword gate) |
-| — | MRN format varies between hospital systems | HEALTHCARE | By design (3 common prefixes) |
+| # | Issue | Packs | Status | Test |
+|---|-------|-------|--------|------|
+| #67 | DE steuer_id/svnr lack space-tolerant regexes | DE | Resolved (PR) | `TestDESteuerIDPattern`, `TestDESVNRPattern` (`packs/de_test.go`) |
+| #68 | US address_us false-positives on German "ist" | US x DE | Resolved (5bcd2f5) | `TestUSAddressPattern` (subtests `German_ist`, `German_ist_2`, `German_Kunst`, `German_Durst`, `German_erst`, `German_Bist`) (`packs/us_test.go`) |
+| #69 | FR siren Luhn-invalid falls through to US ssn | FR x US | Resolved (PR #75) | `TestSIREN_SSN_CrossPattern` (`packs/us_test.go`); `TestFRSIRENPattern` (`packs/fr_test.go`) |
+| #70 | GLOBAL api_key keywords steal SECRETS pattern matches (expanded scope: ghp_, JWT, AWS, DB, Bearer) | GLOBAL x SECRETS | Resolved — SECRETS runs before GLOBAL (#70) | `TestSecretsPriorityOverGLOBAL` (`secrets_priority_report_test.go`) |
+| — | NL KvK 8-digit pattern is very broad | NL | By design (low confidence 0.45) | `TestNLKvKPattern` (`packs/nl_test.go`) |
+| — | SWIFT/BIC 8-char may match all-caps words | FINANCE_EU | By design (moderate confidence 0.65) | `TestFINANCEEUSWIFTBICPattern` (`packs/finance_eu_test.go`) |
+| — | ICD-10 without keyword context not detected | HEALTHCARE | By design (keyword gate) | `TestHEALTHCAREICD10Pattern` (`packs/healthcare_test.go`) |
+| — | MRN format varies between hospital systems | HEALTHCARE | By design (3 common prefixes) | `TestHEALTHCAREMRNPattern` (`packs/healthcare_test.go`) |
 
 ## 6. Test Inventory
 

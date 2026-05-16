@@ -69,6 +69,7 @@ var domainToProvider = map[string]Provider{
 	"api.endpoints.anyscale.com":        ProviderOpenAI,
 	"openrouter.ai":                     ProviderOpenAI,
 	"api.portkey.ai":                    ProviderOpenAI,
+	"api.githubcopilot.com":             ProviderPassthrough,
 }
 
 // globProviders maps segment-glob domain patterns to their streaming format.
