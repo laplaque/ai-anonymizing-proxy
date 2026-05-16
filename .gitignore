@@ -56,3 +56,6 @@ coverage.out
 .scannerwork/
 golangci-report.xml
 test-report.xml
+
+# Agentic coding
+js-code-sandbox/
