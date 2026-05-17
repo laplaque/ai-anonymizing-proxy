@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/envfile"
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
 	"ai-anonymizing-proxy/internal/mitm"
@@ -42,7 +43,14 @@ func main() {
 	generateCA := flag.Bool("generate-ca", false, "Generate a self-signed CA cert+key pair and exit.")
 	caCertOut := flag.String("ca-cert", "ca-cert.pem", "Output path for the generated CA certificate (with --generate-ca).")
 	caKeyOut := flag.String("ca-key", "ca-key.pem", "Output path for the generated CA private key (with --generate-ca).")
+	envFile := flag.String("env-file", "", "Path to a KEY=VALUE env file applied to the process environment before config load.")
 	flag.Parse()
+
+	if *envFile != "" {
+		if err := envfile.Apply(*envFile); err != nil {
+			log.Fatalf("[ENV] %v", err)
+		}
+	}
 
 	if *generateCA {
 		if err := runGenerateCA(*caCertOut, *caKeyOut); err != nil {
