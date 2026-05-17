@@ -101,7 +101,7 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 	proxyPort := freePort(t)
 	mgmtPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -148,10 +148,7 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 // the subprocess's srv.ListenAndServe() fails, exercising runHTTPServer's
 // log.Fatalf branch.
 func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("parent listen: %v", err)
-	}
+	ln := listenLocal(t)
 	defer func() { _ = ln.Close() }()
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
@@ -160,7 +157,7 @@ func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
 	proxyPort := addr.Port
 	mgmtPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -183,10 +180,7 @@ func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
 // so the subprocess's mgmt.ListenAndServe() fails, exercising runManagementAPI's
 // log.Fatalf branch.
 func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("parent listen: %v", err)
-	}
+	ln := listenLocal(t)
 	defer func() { _ = ln.Close() }()
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
@@ -195,7 +189,7 @@ func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
 	mgmtPort := addr.Port
 	proxyPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -224,7 +218,7 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
+	cmd := exec.Command(os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"os"
 	"syscall"
@@ -11,12 +10,9 @@ import (
 )
 
 func TestInstallShutdownHandler_GracefulOnSignal(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := listenLocal(t)
 	srv := &http.Server{
-		Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		Handler:           http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}),
 		ReadHeaderTimeout: 1 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
@@ -48,12 +44,9 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 	hung := make(chan struct{})
 	defer close(hung)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := listenLocal(t)
 	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Handler: http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			<-hung
 		}),
 		ReadHeaderTimeout: 1 * time.Second,

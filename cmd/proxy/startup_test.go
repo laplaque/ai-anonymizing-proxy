@@ -74,10 +74,7 @@ func TestStartManagementAPI_ServesRequests(t *testing.T) {
 
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
+	l := listenLocal(t)
 	addr, ok := l.Addr().(*net.TCPAddr)
 	if !ok {
 		_ = l.Close()
@@ -85,6 +82,20 @@ func freePort(t *testing.T) int {
 	}
 	_ = l.Close()
 	return addr.Port
+}
+
+// listenLocal binds an unused 127.0.0.1 port using a context-aware ListenConfig
+// (the form noctx accepts). Caller is responsible for Close.
+func listenLocal(t *testing.T) net.Listener {
+	t.Helper()
+	var lc net.ListenConfig
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	return ln
 }
 
 func pollUntilUp(url string, timeout time.Duration) (*http.Response, error) {
