@@ -1,0 +1,12 @@
+{
+  "proxyPort": 18080,
+  "managementPort": 18081,
+  "bindAddress": "127.0.0.1",
+  "useAIDetection": false,
+  "logLevel": "info",
+  "caCertFile": "/etc/ai-proxy/ca-cert.pem",
+  "caKeyFile": "/etc/ai-proxy/ca-key.pem",
+  "ollamaCacheFile": "/var/lib/ai-proxy/ollama-cache.db",
+  "enabledPacks": ["SECRETS", "GLOBAL", "DE"],
+  "packDecayRate": 0.05
+}

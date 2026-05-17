@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build an Apple Installer .pkg for ai-proxy.
+#
+# Required env vars (set by Makefile or CI):
+#   VERSION              — semver, no 'v' prefix
+#   ARCH                 — universal | arm64 | amd64 (default: universal)
+#
+# Required when SKIP_SIGN is unset (the release path):
+#   INSTALLER_IDENTITY   — name of "Developer ID Installer: ..." cert in keychain
+#   APPLICATION_IDENTITY — name of "Developer ID Application: ..." cert
+#
+# Optional:
+#   SKIP_SIGN=1          — build an unsigned PKG. Used by PR-event CI to
+#                          exercise the mechanical build path (payload staging,
+#                          lipo, pkgbuild, productbuild, distribution.xml
+#                          substitution) without requiring Apple signing
+#                          secrets. The resulting PKG cannot be installed on
+#                          a real Mac; it is for structural verification only.
+#                          See N1 in PR #123 review.
+#
+# Notarization is performed separately by notarize.sh (release path only).
+
+: "${VERSION:?VERSION required}"
+: "${ARCH:=universal}"
+SKIP_SIGN="${SKIP_SIGN:-0}"
+
+if [ "$SKIP_SIGN" != "1" ]; then
+  : "${INSTALLER_IDENTITY:?INSTALLER_IDENTITY required (set SKIP_SIGN=1 for unsigned dry-run)}"
+  : "${APPLICATION_IDENTITY:?APPLICATION_IDENTITY required (set SKIP_SIGN=1 for unsigned dry-run)}"
+fi
+
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+STAGING="$ROOT/build/macos/pkg-staging"
+DIST="$ROOT/dist"
+PKG_ID="com.ai-anonymizing-proxy.pkg"
+
+rm -rf "$STAGING"
+mkdir -p "$STAGING" "$DIST" "$ROOT/bin"
+
+# 1. Build binary (universal by default)
+case "$ARCH" in
+  universal)
+    GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" \
+      -o "$ROOT/bin/ai-proxy-amd64" ./cmd/proxy
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" \
+      -o "$ROOT/bin/ai-proxy-arm64" ./cmd/proxy
+    lipo -create -output "$ROOT/bin/ai-proxy" \
+      "$ROOT/bin/ai-proxy-amd64" "$ROOT/bin/ai-proxy-arm64"
+    ;;
+  arm64|amd64)
+    GOOS=darwin GOARCH="$ARCH" CGO_ENABLED=0 go build -ldflags="-s -w" \
+      -o "$ROOT/bin/ai-proxy" ./cmd/proxy
+    ;;
+  *)
+    echo "Unknown ARCH: $ARCH" >&2
+    exit 1
+    ;;
+esac
+
+# 2. Sign the binary with Developer ID Application + hardened runtime
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "SKIP_SIGN=1 — skipping codesign on binary."
+else
+  codesign --sign "$APPLICATION_IDENTITY" \
+    --options runtime --timestamp --force \
+    "$ROOT/bin/ai-proxy"
+fi
+
+# 3. Stage payload
+install -d -m 0755 "$STAGING/usr/local/bin"
+install -m 0755 "$ROOT/bin/ai-proxy" "$STAGING/usr/local/bin/ai-proxy"
+
+install -d -m 0755 "$STAGING/Library/LaunchDaemons"
+install -m 0644 "$ROOT/packaging/macos/pkg/com.ai-anonymizing-proxy.plist" \
+  "$STAGING/Library/LaunchDaemons/com.ai-anonymizing-proxy.plist"
+
+install -d -m 0755 "$STAGING/etc/ai-proxy"
+install -m 0644 "$ROOT/packaging/macos/pkg/proxy-config.json.default" \
+  "$STAGING/etc/ai-proxy/proxy-config.json"
+install -m 0644 "$ROOT/packaging/macos/pkg/ai-proxy.env" \
+  "$STAGING/etc/ai-proxy/ai-proxy.env"
+
+# Ship the uninstall script — pkgbuild has no native uninstall hook on macOS.
+install -d -m 0755 "$STAGING/usr/local/share/ai-proxy"
+install -m 0755 "$ROOT/packaging/macos/pkg/scripts/preuninstall" \
+  "$STAGING/usr/local/share/ai-proxy/uninstall.sh"
+
+# 4. Build the component package
+COMPONENT="$DIST/ai-proxy-component.pkg"
+pkgbuild \
+  --root "$STAGING" \
+  --identifier "$PKG_ID" \
+  --version "$VERSION" \
+  --install-location "/" \
+  --scripts "$ROOT/packaging/macos/pkg/scripts" \
+  "$COMPONENT"
+
+# 5. Build the distribution package (signed with Developer ID Installer on
+# release; unsigned on PR dry-run).
+# Render distribution.xml with the real version so pkgutil --pkg-info and
+# Installer.app upgrade-detection logic see a meaningful version number.
+DIST_XML="$ROOT/build/macos/distribution.xml"
+mkdir -p "$(dirname "$DIST_XML")"
+sed "s/__PKG_VERSION__/${VERSION}/g" \
+  "$ROOT/packaging/macos/pkg/distribution.xml" > "$DIST_XML"
+
+PRODUCT="$DIST/ai-proxy-${VERSION}-${ARCH}.pkg"
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "SKIP_SIGN=1 — building unsigned distribution PKG."
+  productbuild \
+    --distribution "$DIST_XML" \
+    --package-path "$DIST" \
+    "$PRODUCT"
+else
+  productbuild \
+    --distribution "$DIST_XML" \
+    --package-path "$DIST" \
+    --sign "$INSTALLER_IDENTITY" \
+    "$PRODUCT"
+fi
+
+# Component package is an intermediate; the distribution PKG is the deliverable.
+rm -f "$COMPONENT"
+
+# 6. Verify signature (release path only — pkgutil --check-signature on an
+# unsigned PKG would exit non-zero by design).
+if [ "$SKIP_SIGN" != "1" ]; then
+  pkgutil --check-signature "$PRODUCT"
+fi
+
+echo "Built $PRODUCT"
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "Unsigned — for structural verification only. Do NOT distribute."
+else
+  echo "Next: notarize.sh"
+fi

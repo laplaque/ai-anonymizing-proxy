@@ -1,0 +1,27 @@
+#!/bin/bash
+set -eu
+
+# pkgbuild has no native uninstall hook on macOS. This script ships at
+# /usr/local/share/ai-proxy/uninstall.sh and is also wired as the component
+# preuninstall script for future installer hooks that may invoke it.
+
+# Stop the daemon.
+/bin/launchctl bootout system/com.ai-anonymizing-proxy 2>/dev/null || \
+  /bin/launchctl unload /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>/dev/null || true
+
+# Remove CA from System keychain.
+if [ -f /etc/ai-proxy/ca-cert.pem ]; then
+  SHA=$(/usr/bin/openssl x509 -in /etc/ai-proxy/ca-cert.pem -noout -fingerprint -sha1 \
+        | sed 's/.*=//; s/://g')
+  /usr/bin/security delete-certificate -Z "$SHA" /Library/Keychains/System.keychain 2>/dev/null || true
+fi
+
+# Remove the LaunchDaemon plist.
+rm -f /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist
+
+# User data under /etc/ai-proxy is preserved — admin's call to remove.
+echo "ai-proxy: service stopped and CA trust removed."
+echo "ai-proxy: /etc/ai-proxy preserved. Run 'sudo rm -rf /etc/ai-proxy' to purge config."
+echo "ai-proxy: forget the package receipt with 'sudo pkgutil --forget com.ai-anonymizing-proxy.pkg'"
+
+exit 0
