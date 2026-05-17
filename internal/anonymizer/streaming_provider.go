@@ -70,6 +70,13 @@ var domainToProvider = map[string]Provider{
 	"openrouter.ai":                     ProviderOpenAI,
 	"api.portkey.ai":                    ProviderOpenAI,
 	"api.githubcopilot.com":             ProviderPassthrough,
+	// Cloudflare AI Gateway proxies to multiple upstream providers
+	// (OpenAI, Anthropic, Google, etc.) behind a single domain, with the
+	// SSE format determined by the path (.../openai/..., .../anthropic/...,
+	// .../compat/...). The proxy routes by domain only, so passthrough
+	// (raw token replacement) is the safe default that works regardless
+	// of which upstream format is in use.
+	"gateway.ai.cloudflare.com": ProviderPassthrough,
 }
 
 // globProviders maps segment-glob domain patterns to their streaming format.
