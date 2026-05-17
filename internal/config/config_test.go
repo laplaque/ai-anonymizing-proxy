@@ -407,6 +407,22 @@ func TestCopilotDomainRegistered(t *testing.T) {
 	}
 }
 
+// TestCloudflareGatewayDomainRegistered verifies the Cloudflare AI Gateway
+// domain appears in the default AIAPIDomains slice.
+func TestCloudflareGatewayDomainRegistered(t *testing.T) {
+	cfg := defaults()
+	found := false
+	for _, d := range cfg.AIAPIDomains {
+		if d == "gateway.ai.cloudflare.com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("gateway.ai.cloudflare.com not in default AIAPIDomains")
+	}
+}
+
 // TestGitHubAuthDomainRegistered verifies github.com appears in the default
 // AuthDomains slice so Copilot's device-auth flow bypasses anonymization.
 func TestGitHubAuthDomainRegistered(t *testing.T) {

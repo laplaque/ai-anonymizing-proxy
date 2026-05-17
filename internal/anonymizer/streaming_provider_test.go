@@ -73,6 +73,11 @@ func TestProviderForDomain(t *testing.T) {
 		{"api.portkey.ai", ProviderOpenAI},
 		// Phase 4: GitHub Copilot proprietary REST format — passthrough
 		{"api.githubcopilot.com", ProviderPassthrough},
+		// Phase 5: Cloudflare AI Gateway — passthrough (multiple upstream
+		// formats behind one domain).
+		{"gateway.ai.cloudflare.com", ProviderPassthrough},
+		{"GATEWAY.AI.CLOUDFLARE.COM", ProviderPassthrough},
+		{"gateway.ai.cloudflare.com.", ProviderPassthrough},
 		// Phase 3: prefix wildcards (Azure, Vertex)
 		{"myresource.openai.azure.com", ProviderOpenAI},
 		{"eastus2.openai.azure.com", ProviderOpenAI},

@@ -111,6 +111,10 @@ func defaults() *Config {
 			"openrouter.ai",
 			"api.portkey.ai",
 			"api.githubcopilot.com",
+			// Cloudflare AI Gateway: fixed domain with user-specific path
+			// segments (/v1/{account_id}/{gateway_id}/...). The proxy
+			// routes by domain only, so the variable paths don't matter.
+			"gateway.ai.cloudflare.com",
 			// Azure OpenAI: {resource}.openai.azure.com
 			"*.openai.azure.com",
 			// Vertex AI:
