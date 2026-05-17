@@ -48,12 +48,27 @@ fi
 rollback_ca_trust() {
   # See linux postinstall.sh — same rationale: trusted CA without a running
   # interceptor is the failure mode that lets PII flow out unanonymized.
+  # Exit code MUST reflect actual System keychain state, not intent: if the
+  # delete fails or the cert is still trusted after, the caller (and the
+  # operator) must see a distinct failure, not a successful-rollback signal.
   SHA=$(/usr/bin/openssl x509 -in /etc/ai-proxy/ca-cert.pem -noout -fingerprint -sha1 2>/dev/null \
         | sed 's/.*=//; s/://g' || true)
-  if [ -n "$SHA" ]; then
-    /usr/bin/security delete-certificate -Z "$SHA" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
-    echo "ai-proxy: CA removed from System keychain to prevent trust-without-interception." >&2
+  if [ -z "$SHA" ]; then
+    echo "ai-proxy: ROLLBACK FAILED — could not compute CA fingerprint to delete." >&2
+    echo "ai-proxy:   manual remediation: 'sudo security delete-certificate -c \"ai-proxy CA\" /Library/Keychains/System.keychain'" >&2
+    return 1
   fi
+  /usr/bin/security delete-certificate -Z "$SHA" /Library/Keychains/System.keychain >/dev/null 2>&1
+  # Verify the cert is actually gone — delete-certificate exit code alone is
+  # insufficient (it returns 0 even when the cert never existed).
+  if /usr/bin/security find-certificate -Z "$SHA" /Library/Keychains/System.keychain >/dev/null 2>&1; then
+    echo "ai-proxy: ROLLBACK FAILED — CA $SHA still trusted in System keychain after delete attempt." >&2
+    echo "ai-proxy:   PII MAY LEAK. Manual remediation required:" >&2
+    echo "ai-proxy:     sudo security delete-certificate -Z $SHA /Library/Keychains/System.keychain" >&2
+    return 1
+  fi
+  echo "ai-proxy: CA $SHA removed from System keychain (trust-without-interception averted)." >&2
+  return 0
 }
 
 # Trust the CA in the System keychain.
@@ -66,11 +81,23 @@ if [ -f /etc/ai-proxy/ca-cert.pem ]; then
     /etc/ai-proxy/ca-cert.pem
 fi
 
-# Bootstrap the LaunchDaemon.
-if ! /bin/launchctl bootstrap system /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>/dev/null; then
-  if ! /bin/launchctl load -w /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>/dev/null; then
-    echo "ai-proxy postinstall: failed to load LaunchDaemon. Rolling back CA trust." >&2
-    rollback_ca_trust
+# Bootstrap the LaunchDaemon. Capture stderr so the diagnostic survives the
+# fallback path — silencing it would lose the actual error.
+bootstrap_err=$(/bin/launchctl bootstrap system \
+  /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>&1) || bootstrap_rc=$?
+if [ "${bootstrap_rc:-0}" -ne 0 ]; then
+  load_err=$(/bin/launchctl load -w \
+    /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>&1) || load_rc=$?
+  if [ "${load_rc:-0}" -ne 0 ]; then
+    echo "ai-proxy postinstall: LaunchDaemon failed to load." >&2
+    echo "ai-proxy:   launchctl bootstrap: $bootstrap_err" >&2
+    echo "ai-proxy:   launchctl load -w:   $load_err" >&2
+    echo "ai-proxy: rolling back CA trust to avoid trust-without-interception." >&2
+    if ! rollback_ca_trust; then
+      # Rollback itself failed — exit with a distinct code so the operator can
+      # tell "service down, CA cleaned" (1) from "service down, CA STILL TRUSTED" (2).
+      exit 2
+    fi
     exit 1
   fi
 fi
