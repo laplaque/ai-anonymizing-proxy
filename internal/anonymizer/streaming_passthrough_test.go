@@ -44,9 +44,9 @@ func TestPassthroughFlushIsNoOp(t *testing.T) {
 }
 
 // TestPassthroughFlushDirect calls Flush directly on the deanonymizer to pin
-// the no-op contract (and to ensure the function body is exercised for the
-// delta-coverage gate).
-func TestPassthroughFlushDirect(t *testing.T) {
+// the no-op contract. The function body is empty, so this test asserts only
+// that the call does not panic.
+func TestPassthroughFlushDirect(_ *testing.T) {
 	d := &passthroughDeanonymizer{}
 	d.Flush()
 }
