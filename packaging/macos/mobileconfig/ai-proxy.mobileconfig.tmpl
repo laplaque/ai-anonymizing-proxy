@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadDisplayName</key><string>AI Anonymizing Proxy</string>
+  <key>PayloadDescription</key><string>Trusts the ai-proxy CA and routes HTTP/HTTPS through the local proxy.</string>
+  <key>PayloadIdentifier</key><string>com.ai-anonymizing-proxy.profile</string>
+  <key>PayloadOrganization</key><string>laplaque</string>
+  <key>PayloadUUID</key><string>__PROFILE_UUID__</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadScope</key><string>System</string>
+  <key>PayloadRemovalDisallowed</key><false/>
+  <key>PayloadContent</key>
+  <array>
+    <!-- CA trust payload -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.security.root</string>
+      <key>PayloadIdentifier</key><string>com.ai-anonymizing-proxy.ca</string>
+      <key>PayloadUUID</key><string>__CA_PAYLOAD_UUID__</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadDisplayName</key><string>ai-proxy CA</string>
+      <key>PayloadCertificateFileName</key><string>ai-proxy-ca.cer</string>
+      <key>PayloadContent</key>
+      <data>__CA_DER_BASE64__</data>
+    </dict>
+    <!-- Global HTTP proxy payload -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.proxy.http.global</string>
+      <key>PayloadIdentifier</key><string>com.ai-anonymizing-proxy.proxy</string>
+      <key>PayloadUUID</key><string>__PROXY_PAYLOAD_UUID__</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadDisplayName</key><string>ai-proxy HTTP Proxy</string>
+      <key>ProxyType</key><string>Manual</string>
+      <key>ProxyServer</key><string>127.0.0.1</string>
+      <key>ProxyServerPort</key><integer>18080</integer>
+      <key>ProxyCaptiveLoginAllowed</key><true/>
+    </dict>
+  </array>
+</dict>
+</plist>
