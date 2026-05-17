@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -106,6 +108,68 @@ func TestPrintBanner_ZeroValueConfig_DoesNotPanic(t *testing.T) {
 		}
 	}()
 	_ = captureStdout(t, func() { printBanner(&config.Config{}) })
+}
+
+// TestRunGenerateCA exercises the helper invoked by main() under
+// --generate-ca: it writes the cert+key pair to the given paths, rejects
+// empty paths, and surfaces filesystem errors. The "unwritable cert dir"
+// case lifts coverage of the mitm.GenerateCA error branch.
+func TestRunGenerateCA(t *testing.T) {
+	cases := []struct {
+		name    string
+		cert    string
+		key     string
+		wantErr bool
+	}{
+		{name: "writes cert and key", cert: "ca.pem", key: "ca.key"},
+		{name: "empty cert path", cert: "", key: "ca.key", wantErr: true},
+		{name: "empty key path", cert: "ca.pem", key: "", wantErr: true},
+		{name: "unwritable cert dir", cert: "missing/dir/ca.pem", key: "ca.key", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var certPath, keyPath string
+			if tc.cert != "" {
+				certPath = filepath.Join(dir, tc.cert)
+			}
+			if tc.key != "" {
+				keyPath = filepath.Join(dir, tc.key)
+			}
+
+			err := runGenerateCA(certPath, keyPath)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("runGenerateCA err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+
+			certPEM, err := os.ReadFile(certPath) //nolint:gosec // test-only path under t.TempDir()
+			if err != nil {
+				t.Fatalf("read cert: %v", err)
+			}
+			block, _ := pem.Decode(certPEM)
+			if block == nil {
+				t.Fatal("cert file is not PEM-encoded")
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatalf("parse cert: %v", err)
+			}
+			if !cert.IsCA {
+				t.Error("generated certificate is not a CA")
+			}
+
+			info, err := os.Stat(keyPath)
+			if err != nil {
+				t.Fatalf("stat key: %v", err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("key perms = %o, want 0600", info.Mode().Perm())
+			}
+		})
+	}
 }
 
 // TestMain_HelperProcess_Lifecycle re-execs this test binary as the proxy
@@ -241,6 +305,53 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "no PII detection packs enabled") {
 		t.Errorf("expected guard message in output, got:\n%s", out)
+	}
+}
+
+// TestMain_HelperProcess_GenerateCA re-execs this test binary with
+// --generate-ca and asserts the cert+key pair are written to the given paths.
+// Exercises main()'s flag-parsing dispatch and the success branch of the
+// --generate-ca subcommand end-to-end.
+func TestMain_HelperProcess_GenerateCA(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "ca.pem")
+	key := filepath.Join(dir, "ca.key")
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
+		"--generate-ca", "--ca-cert", cert, "--ca-key", key)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd.Dir = dir
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("--generate-ca: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(cert); err != nil {
+		t.Errorf("cert not written: %v", err)
+	}
+	if _, err := os.Stat(key); err != nil {
+		t.Errorf("key not written: %v", err)
+	}
+}
+
+// TestMain_HelperProcess_GenerateCA_Fatal re-execs this test binary with
+// --generate-ca and an empty --ca-cert path so runGenerateCA returns an
+// error and main()'s [CA] log.Fatalf fires.
+func TestMain_HelperProcess_GenerateCA_Fatal(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "ca.key")
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
+		"--generate-ca", "--ca-cert=", "--ca-key", key)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd.Dir = dir
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success\n%s", out)
+	}
+	if !strings.Contains(string(out), "[CA]") {
+		t.Errorf("expected '[CA]' in output, got:\n%s", out)
 	}
 }
 

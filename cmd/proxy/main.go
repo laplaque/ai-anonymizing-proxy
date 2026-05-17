@@ -23,6 +23,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -33,10 +34,23 @@ import (
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
+	"ai-anonymizing-proxy/internal/mitm"
 	"ai-anonymizing-proxy/internal/proxy"
 )
 
 func main() {
+	generateCA := flag.Bool("generate-ca", false, "Generate a self-signed CA cert+key pair and exit.")
+	caCertOut := flag.String("ca-cert", "ca-cert.pem", "Output path for the generated CA certificate (with --generate-ca).")
+	caKeyOut := flag.String("ca-key", "ca-key.pem", "Output path for the generated CA private key (with --generate-ca).")
+	flag.Parse()
+
+	if *generateCA {
+		if err := runGenerateCA(*caCertOut, *caKeyOut); err != nil {
+			log.Fatalf("[CA] %v", err)
+		}
+		return
+	}
+
 	cfg := config.Load()
 
 	if len(cfg.EnabledPacks) == 0 {
@@ -61,6 +75,19 @@ func main() {
 	go installShutdownHandler(quit, srv, 15*time.Second)
 
 	runHTTPServer(srv)
+}
+
+// runGenerateCA writes a freshly generated CA cert+key to the given paths.
+// Used by package post-install scripts for unattended CA bootstrap.
+func runGenerateCA(certPath, keyPath string) error {
+	if certPath == "" || keyPath == "" {
+		return fmt.Errorf("--ca-cert and --ca-key paths must be non-empty")
+	}
+	if err := mitm.GenerateCA(certPath, keyPath); err != nil {
+		return fmt.Errorf("generate CA: %w", err)
+	}
+	fmt.Printf("CA certificate: %s\nCA private key: %s\n", certPath, keyPath)
+	return nil
 }
 
 func printBanner(cfg *config.Config) {
