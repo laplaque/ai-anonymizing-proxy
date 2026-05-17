@@ -235,6 +235,30 @@ tail -n 200 /var/log/ai-proxy/stderr.log
 | Daemon running but HTTPS sites fail with TLS errors | CA not in System keychain. | `sudo security find-certificate -c "ai-proxy" -p /Library/Keychains/System.keychain` — empty output means trust did not install. Re-run postinstall. |
 | Profile install silently does nothing | Profile not signed, or signed by a non-trusted cert. | `plutil -lint ai-proxy-*.mobileconfig` + `security cms -D -i ai-proxy-*.mobileconfig`. |
 
+## Pre-tag verification ritual
+
+CI cannot verify that the `.mobileconfig` actually causes a profile-enrolled macOS host's CFNetwork stack to route HTTPS through `127.0.0.1:18080` — the workflow runs on a GitHub-hosted runner with no profile installed. Before every `v*` tag push, execute this ritual on a Tart VM, Apple Silicon test host, or MDM-enrolled device. Tracked in issue [#125](https://github.com/laplaque/ai-anonymizing-proxy/issues/125); the `Notarize PKG` step in `release-macos-pkg.yml` references it.
+
+```bash
+# 1. Install PKG + profile
+sudo installer -pkg dist/ai-proxy-<version>-universal.pkg -target /
+sudo profiles install -path dist/ai-proxy-<version>.mobileconfig
+
+# 2. Confirm both are active
+sudo launchctl print system/com.ai-anonymizing-proxy | grep state
+sudo profiles list | grep ai-anonymizing-proxy
+
+# 3. HTTPS interception test — note the absence of --proxy on curl
+curl -k https://httpbin.org/get
+
+# 4. Verify the daemon logged the connection
+tail -n 20 /var/log/ai-proxy/stdout.log | grep httpbin.org
+```
+
+**Pass criterion:** step 4 returns at least one log line referencing `httpbin.org`, proving the profile's global HTTP proxy payload caused CFNetwork to route the unproxied `curl` through the daemon.
+
+Record the result (macOS version + log excerpt) on issue #125 before tagging. If the payload shape needs adjustment for a new macOS major version (e.g., HTTPSEnable / HTTPSProxy keys), open a follow-up PR before the tag.
+
 ## Source
 
 - PKG: `packaging/macos/pkg/` (`build.sh`, `distribution.xml`, `scripts/{postinstall,preuninstall}`, `notarize.sh`)

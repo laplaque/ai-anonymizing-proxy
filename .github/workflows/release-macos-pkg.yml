@@ -44,16 +44,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # PR-time validation. Confirms the workflow YAML parses (implicit via
-      # this job being scheduled), the binary compiles for darwin universal,
-      # and every shell / XML / plist artifact in packaging/macos is syntactically
-      # valid before any signing key is touched. Catches the bugs that don't
-      # require real Apple secrets to find.
-      - name: Validate (no secrets required)
+      # PR-event coverage. Runs the actual build scripts unsigned — exercises
+      # payload staging, lipo, pkgbuild, productbuild, distribution.xml
+      # substitution, mobileconfig template rendering, base64 CA encoding,
+      # and plutil-lint. Catches mechanical bugs that the lint-only path
+      # missed (PR #123 review N1). The resulting artifacts are unsigned
+      # and cannot be installed; they're discarded after the step.
+      - name: Validate build mechanism (PR dry-run, no signing)
+        if: env.IS_RELEASE != 'true'
         run: |
           set -euo pipefail
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/ai-proxy-amd64 ./cmd/proxy
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/ai-proxy-arm64 ./cmd/proxy
+          # Static checks first — fast fail on syntax issues.
           for s in packaging/macos/pkg/build.sh \
                    packaging/macos/pkg/notarize.sh \
                    packaging/macos/pkg/scripts/postinstall \
@@ -64,6 +65,41 @@ jobs:
           plutil -lint packaging/macos/pkg/com.ai-anonymizing-proxy.plist
           xmllint --noout packaging/macos/pkg/distribution.xml
           xmllint --noout packaging/macos/mobileconfig/ai-proxy.mobileconfig.tmpl
+
+          # Generate a throwaway CA so mobileconfig/build.sh has something
+          # to base64-encode into the certificate payload. This CA never
+          # leaves the runner and is not used for signing — it is the
+          # payload contents only.
+          mkdir -p build/dry-run-ca
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj "/CN=ai-proxy PR dry-run (NOT FOR USE)" \
+            -keyout build/dry-run-ca/ca-key.pem \
+            -out    build/dry-run-ca/ca-cert.pem >/dev/null 2>&1
+          chmod 0600 build/dry-run-ca/ca-key.pem
+
+          PKG_VERSION=0.0.0-dryrun \
+          SKIP_SIGN=1 \
+          bash packaging/macos/pkg/build.sh
+
+          PKG_VERSION=0.0.0-dryrun \
+          CA_CERT="$PWD/build/dry-run-ca/ca-cert.pem" \
+          SKIP_SIGN=1 \
+          bash packaging/macos/mobileconfig/build.sh
+
+          # Verify the artifacts the build path produced.
+          test -f dist/ai-proxy-0.0.0-dryrun-universal.pkg
+          test -f dist/ai-proxy-0.0.0-dryrun.mobileconfig
+          # Distribution PKG's component payload list should mention the binary
+          # and the LaunchDaemon plist — quickest mechanical structural check.
+          pkgutil --payload-files dist/ai-proxy-0.0.0-dryrun-universal.pkg \
+            | grep -q '/usr/local/bin/ai-proxy'
+          pkgutil --payload-files dist/ai-proxy-0.0.0-dryrun-universal.pkg \
+            | grep -q '/Library/LaunchDaemons/com.ai-anonymizing-proxy.plist'
+          plutil -lint dist/ai-proxy-0.0.0-dryrun.mobileconfig
+
+          # Discard the unsigned artifacts so they cannot ride into any later
+          # step or upload. The release path will rebuild from scratch.
+          rm -rf dist build/dry-run-ca build/macos
 
       - name: Verify required Secrets present
         if: env.IS_RELEASE == 'true'
@@ -159,6 +195,13 @@ jobs:
           PKG_VERSION: ${{ github.ref_name }}
         run: make package-macos-mobileconfig
 
+      # Release-gate reminder: before pushing a v* tag that reaches this step,
+      # the .mobileconfig HTTPS-interception verification ritual MUST have
+      # been executed on an MDM-enrolled / profile-enrolled macOS host.
+      # Procedure + pass criterion: see issue #125 and docs/packaging/macos.md
+      # § "Pre-tag verification ritual". CI cannot enforce this on its own —
+      # the Linux executor for PRs cannot exercise CFNetwork — so the
+      # ritual is a human gate. Do not tag without a recorded pass.
       - name: Notarize PKG
         if: env.IS_RELEASE == 'true'
         env:

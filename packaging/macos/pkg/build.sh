@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a signed Apple Installer .pkg for ai-proxy.
+# Build an Apple Installer .pkg for ai-proxy.
 #
 # Required env vars (set by Makefile or CI):
 #   VERSION              — semver, no 'v' prefix
 #   ARCH                 — universal | arm64 | amd64 (default: universal)
+#
+# Required when SKIP_SIGN is unset (the release path):
 #   INSTALLER_IDENTITY   — name of "Developer ID Installer: ..." cert in keychain
 #   APPLICATION_IDENTITY — name of "Developer ID Application: ..." cert
 #
-# Notarization is performed separately by notarize.sh.
+# Optional:
+#   SKIP_SIGN=1          — build an unsigned PKG. Used by PR-event CI to
+#                          exercise the mechanical build path (payload staging,
+#                          lipo, pkgbuild, productbuild, distribution.xml
+#                          substitution) without requiring Apple signing
+#                          secrets. The resulting PKG cannot be installed on
+#                          a real Mac; it is for structural verification only.
+#                          See N1 in PR #123 review.
+#
+# Notarization is performed separately by notarize.sh (release path only).
 
 : "${VERSION:?VERSION required}"
 : "${ARCH:=universal}"
+SKIP_SIGN="${SKIP_SIGN:-0}"
+
+if [ "$SKIP_SIGN" != "1" ]; then
+  : "${INSTALLER_IDENTITY:?INSTALLER_IDENTITY required (set SKIP_SIGN=1 for unsigned dry-run)}"
+  : "${APPLICATION_IDENTITY:?APPLICATION_IDENTITY required (set SKIP_SIGN=1 for unsigned dry-run)}"
+fi
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 STAGING="$ROOT/build/macos/pkg-staging"
@@ -43,9 +60,13 @@ case "$ARCH" in
 esac
 
 # 2. Sign the binary with Developer ID Application + hardened runtime
-codesign --sign "${APPLICATION_IDENTITY:?APPLICATION_IDENTITY required}" \
-  --options runtime --timestamp --force \
-  "$ROOT/bin/ai-proxy"
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "SKIP_SIGN=1 — skipping codesign on binary."
+else
+  codesign --sign "$APPLICATION_IDENTITY" \
+    --options runtime --timestamp --force \
+    "$ROOT/bin/ai-proxy"
+fi
 
 # 3. Stage payload
 install -d -m 0755 "$STAGING/usr/local/bin"
@@ -76,27 +97,42 @@ pkgbuild \
   --scripts "$ROOT/packaging/macos/pkg/scripts" \
   "$COMPONENT"
 
-# 5. Build the distribution package, signed with Developer ID Installer.
+# 5. Build the distribution package (signed with Developer ID Installer on
+# release; unsigned on PR dry-run).
 # Render distribution.xml with the real version so pkgutil --pkg-info and
-# Installer.app upgrade-detection logic see a meaningful version number
-# instead of the placeholder.
+# Installer.app upgrade-detection logic see a meaningful version number.
 DIST_XML="$ROOT/build/macos/distribution.xml"
 mkdir -p "$(dirname "$DIST_XML")"
 sed "s/__PKG_VERSION__/${VERSION}/g" \
   "$ROOT/packaging/macos/pkg/distribution.xml" > "$DIST_XML"
 
 PRODUCT="$DIST/ai-proxy-${VERSION}-${ARCH}.pkg"
-productbuild \
-  --distribution "$DIST_XML" \
-  --package-path "$DIST" \
-  --sign "${INSTALLER_IDENTITY:?INSTALLER_IDENTITY required}" \
-  "$PRODUCT"
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "SKIP_SIGN=1 — building unsigned distribution PKG."
+  productbuild \
+    --distribution "$DIST_XML" \
+    --package-path "$DIST" \
+    "$PRODUCT"
+else
+  productbuild \
+    --distribution "$DIST_XML" \
+    --package-path "$DIST" \
+    --sign "$INSTALLER_IDENTITY" \
+    "$PRODUCT"
+fi
 
 # Component package is an intermediate; the distribution PKG is the deliverable.
 rm -f "$COMPONENT"
 
-# 6. Verify signature
-pkgutil --check-signature "$PRODUCT"
+# 6. Verify signature (release path only — pkgutil --check-signature on an
+# unsigned PKG would exit non-zero by design).
+if [ "$SKIP_SIGN" != "1" ]; then
+  pkgutil --check-signature "$PRODUCT"
+fi
 
 echo "Built $PRODUCT"
-echo "Next: notarize.sh"
+if [ "$SKIP_SIGN" = "1" ]; then
+  echo "Unsigned — for structural verification only. Do NOT distribute."
+else
+  echo "Next: notarize.sh"
+fi
