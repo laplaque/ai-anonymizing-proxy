@@ -27,7 +27,7 @@
          msiexec /qn /i ai-proxy.msi PROXY_PORT=18080 BIND_ADDRESS=127.0.0.1 -->
     <Property Id="PROXY_PORT" Value="8080" Secure="yes"/>
     <Property Id="BIND_ADDRESS" Value="127.0.0.1" Secure="yes"/>
-    <Property Id="UPSTREAM_PROXY" Value="" Secure="yes"/>
+    <Property Id="UPSTREAM_PROXY" Secure="yes"/>
     <Property Id="ENABLED_PACKS" Value="SECRETS,GLOBAL,DE" Secure="yes"/>
     <Property Id="USE_AI_DETECTION" Value="false" Secure="yes"/>
 
@@ -37,19 +37,19 @@
       <ComponentGroupRef Id="CATrustComponents"/>
     </Feature>
 
-    <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="ai-proxy"/>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="AiProxy"/>
     </StandardDirectory>
     <StandardDirectory Id="CommonAppDataFolder">
-      <Directory Id="CONFIGFOLDER" Name="ai-proxy"/>
+      <Directory Id="CONFIGFOLDER" Name="AiProxy"/>
     </StandardDirectory>
 
     <ComponentGroup Id="ConfigFiles" Directory="CONFIGFOLDER">
-      <Component Id="ProxyConfig" Bitness="always64" Permanent="no" NeverOverwrite="yes">
+      <Component Id="ProxyConfig" Bitness="always64" NeverOverwrite="yes">
         <File Id="ProxyConfigFile" Source="$(var.PackagingPath)\proxy-config.json.default"
               Name="proxy-config.json" KeyPath="yes"/>
       </Component>
-      <Component Id="EnvFile" Bitness="always64" Permanent="no" NeverOverwrite="yes">
+      <Component Id="EnvFile" Bitness="always64" NeverOverwrite="yes">
         <File Id="EnvFileFile" Source="$(var.PackagingPath)\ai-proxy.env"
               Name="ai-proxy.env" KeyPath="yes"/>
       </Component>

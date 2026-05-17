@@ -56,6 +56,15 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "WiX version: $(wix --version)"
+
+# WiX v7 requires explicit acceptance of the Open Source Maintenance Fee
+# EULA before any other command runs. Idempotent: re-accepting is a no-op.
+& wix eula accept wix7 2>&1 | Out-Null
+
+# Add the Util extension to the wix extension cache; idempotent.
+Write-Host "Ensuring WixToolset.Util.wixext extension is present"
+& wix extension add WixToolset.Util.wixext 2>&1 | Out-Null
+
 Write-Host "Building MSI: $msi"
 
 & wix build `
@@ -69,7 +78,7 @@ Write-Host "Building MSI: $msi"
   "$PSScriptRoot/Service.wxs" `
   "$PSScriptRoot/CATrust.wxs"
 
-if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+if ($LASTEXITCODE -ne 0) { throw "wix build failed (exit $LASTEXITCODE)" }
 
 # Signing — only if Azure Key Vault credentials are present. PR builds run
 # unsigned (CI gates verify the signature on tag builds only).

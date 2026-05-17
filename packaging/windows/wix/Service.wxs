@@ -26,7 +26,6 @@
                               ThirdFailureActionType="restart"
                               ResetPeriodInDays="1"
                               RestartServiceDelayInSeconds="5"/>
-          <util:ServiceConfig DelayedAutoStart="yes"/>
         </ServiceInstall>
         <ServiceControl Id="AiProxySvcControl"
                         Name="ai-proxy"

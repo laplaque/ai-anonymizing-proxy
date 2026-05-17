@@ -62,6 +62,9 @@ jobs:
           dotnet tool install --global wix
           dotnet tool install --global AzureSignTool
           wix --version
+          # WiX v7+ requires explicit EULA acceptance before any other command.
+          wix eula accept wix7
+          wix extension add WixToolset.Util.wixext
 
       - name: Compute version
         id: version
@@ -91,10 +94,12 @@ jobs:
         run: |
           # `make` is not standard on windows-latest; invoke the underlying steps directly.
           go build -ldflags="-s -w" -o bin/ai-proxy.exe ./cmd/proxy
+          # Tee the build output so we can upload it as an artifact on failure.
           pwsh -File packaging/windows/wix/build.ps1 `
             -Version "${{ steps.version.outputs.version }}" `
             -BinaryPath "$PWD/bin" `
-            -PackagingPath "$PWD/packaging/windows/wix"
+            -PackagingPath "$PWD/packaging/windows/wix" 2>&1 | Tee-Object -FilePath "$PWD/wix-build.log"
+          if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit $LASTEXITCODE" }
 
       - name: Verify MSI signature (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
@@ -156,14 +161,16 @@ jobs:
           name: windows-msi
           path: dist/*.msi
 
-      - name: Upload install logs
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-install-logs
+          name: windows-diagnostic-logs
           path: |
             install.log
             uninstall.log
+            wix-build.log
+          if-no-files-found: ignore
 
   release:
     name: Sign + publish
