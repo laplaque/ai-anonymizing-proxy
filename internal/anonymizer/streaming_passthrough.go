@@ -20,4 +20,5 @@ func (p *passthroughDeanonymizer) ProcessDataPayload(payload []byte) bool {
 }
 
 // Flush is a no-op — passthrough does not accumulate state between payloads.
-func (p *passthroughDeanonymizer) Flush() {} //nolint:gocritic // interface compliance; no state to flush
+// Required for streamDeanonymizer interface compliance.
+func (p *passthroughDeanonymizer) Flush() {}

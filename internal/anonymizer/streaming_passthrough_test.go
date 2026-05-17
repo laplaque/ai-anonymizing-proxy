@@ -43,6 +43,14 @@ func TestPassthroughFlushIsNoOp(t *testing.T) {
 	}
 }
 
+// TestPassthroughFlushDirect calls Flush directly on the deanonymizer to pin
+// the no-op contract. The function body is empty, so this test asserts only
+// that the call does not panic.
+func TestPassthroughFlushDirect(_ *testing.T) {
+	d := &passthroughDeanonymizer{}
+	d.Flush()
+}
+
 // TestPassthroughStreamingNoAccumulation verifies that the passthrough provider
 // does not rejoin tokens split across events — this is the documented trade-off
 // for unknown providers. Because passthroughDeanonymizer writes each event
