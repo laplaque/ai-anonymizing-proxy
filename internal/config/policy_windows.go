@@ -11,7 +11,7 @@ const policyKey = `SOFTWARE\Policies\laplaque\AiProxy`
 // loadPolicy reads Group Policy values from HKLM\SOFTWARE\Policies\laplaque\AiProxy
 // and overrides cfg fields. Values shipped by the ADMX template:
 //
-//	Enabled  REG_DWORD  (informational only — no behaviour gate today)
+//	Enabled  REG_DWORD  (informational only — no behavior gate today)
 //	Address  REG_SZ     → BindAddress
 //	Port     REG_DWORD  → ProxyPort
 //

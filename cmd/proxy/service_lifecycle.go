@@ -31,12 +31,13 @@ type svcStatusReporter interface {
 
 // shutdownDeadline is how long the SCM handler waits for srv.Shutdown
 // before forcibly returning. Matches the CLI signal handler's budget so
-// behaviour is consistent across platforms.
-const shutdownDeadline = 15 * time.Second
+// behavior is consistent across platforms. Declared as a var so tests
+// can shrink it to exercise the timeout branch.
+var shutdownDeadline = 15 * time.Second
 
 // runServiceLifecycle implements the SCM contract in a platform-neutral
 // way: report StartPending, hand the HTTP server to a goroutine, report
-// Running, then either propagate a server error or honour a Stop command
+// Running, then either propagate a server error or honor a Stop command
 // with a bounded graceful shutdown. Returns the SCM service-specific
 // exit code (0 on clean stop, 1 on server failure).
 func runServiceLifecycle(srv *http.Server, requests <-chan svcCommand, status svcStatusReporter) uint32 {

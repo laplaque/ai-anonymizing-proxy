@@ -1,7 +1,11 @@
 package main
 
 import (
-	"crypto/sha1" //nolint:gosec // G401: SHA-1 is the Windows cert-store thumbprint format; not a security primitive
+	// SHA-1 is the on-the-wire fingerprint format Windows uses for
+	// `certutil -delstore Root <thumbprint>`. It is not used as a
+	// security primitive here — only to look up an already-installed
+	// certificate by its publicly-known thumbprint.
+	"crypto/sha1" // #nosec G505 — see comment above on weak-primitive justification
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -15,7 +19,7 @@ import (
 // expects and what `Get-PfxCertificate | Select Thumbprint` reports, so
 // the MSI uninstall path can remove the exact cert it installed.
 func certThumbprint(path string) (string, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is an operator-supplied flag value
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read cert %q: %w", path, err)
 	}
@@ -27,6 +31,6 @@ func certThumbprint(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse cert at %q: %w", path, err)
 	}
-	sum := sha1.Sum(cert.Raw) //nolint:gosec // G401: see file-level note
+	sum := sha1.Sum(cert.Raw) // #nosec G401 — see import comment
 	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
 }

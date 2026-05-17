@@ -18,7 +18,7 @@ func removeCAFromStore(certPath string) error {
 		return err
 	}
 
-	//nolint:gosec // G204: certutil.exe is a Windows-supplied tool on a fixed path; thumbprint is a hex SHA-1 string
+	// #nosec G204 — certutil.exe is a Windows-supplied tool; thumbprint is hex SHA-1 not external input
 	cmd := exec.Command("certutil.exe", "-delstore", "Root", thumbprint)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

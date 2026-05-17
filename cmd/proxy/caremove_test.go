@@ -4,7 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // G401: same justification as caremove.go — thumbprint format, not a security primitive
+	"crypto/sha1" // #nosec G505 — see caremove.go import comment; thumbprint format, not a security primitive
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -25,7 +25,7 @@ func TestCertThumbprint_MatchesSHA1OfDER(t *testing.T) {
 		t.Fatalf("certThumbprint: %v", err)
 	}
 
-	want := sha1.Sum(der) //nolint:gosec // see test header
+	want := sha1.Sum(der) // #nosec G401 — see test-file header
 	wantHex := strings.ToUpper(hex.EncodeToString(want[:]))
 	if got != wantHex {
 		t.Errorf("certThumbprint = %q, want %q", got, wantHex)
