@@ -101,7 +101,7 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 	proxyPort := freePort(t)
 	mgmtPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -153,10 +153,14 @@ func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
 		t.Fatalf("parent listen: %v", err)
 	}
 	defer func() { _ = ln.Close() }()
-	proxyPort := ln.Addr().(*net.TCPAddr).Port
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address %T is not *net.TCPAddr", ln.Addr())
+	}
+	proxyPort := addr.Port
 	mgmtPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -184,10 +188,14 @@ func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
 		t.Fatalf("parent listen: %v", err)
 	}
 	defer func() { _ = ln.Close() }()
-	mgmtPort := ln.Addr().(*net.TCPAddr).Port
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address %T is not *net.TCPAddr", ln.Addr())
+	}
+	mgmtPort := addr.Port
 	proxyPort := freePort(t)
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(),
 		"GO_WANT_HELPER_PROCESS=1",
 		"BIND_ADDRESS=127.0.0.1",
@@ -212,11 +220,11 @@ func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
 func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "proxy-config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"enabledPacks":[]}`), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(`{"enabledPacks":[]}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(os.Args[0]) // #nosec G204 -- helper-process pattern: os.Args[0] is the test binary itself, not external input
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

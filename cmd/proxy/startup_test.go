@@ -78,9 +78,13 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = l.Close()
+		t.Fatalf("listener address %T is not *net.TCPAddr", l.Addr())
+	}
 	_ = l.Close()
-	return port
+	return addr.Port
 }
 
 func pollUntilUp(url string, timeout time.Duration) (*http.Response, error) {
@@ -93,7 +97,7 @@ func pollUntilUp(url string, timeout time.Duration) (*http.Response, error) {
 			cancel()
 			return nil, err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- localhost test URL from a net.Listener bound by the parent test
 		cancel()
 		if err == nil {
 			return resp, nil

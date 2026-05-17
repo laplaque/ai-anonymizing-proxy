@@ -34,7 +34,7 @@ func TestInstallShutdownHandler_GracefulOnSignal(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- in-test URL from a net.Listener owned by this test
 		if err == nil {
 			_ = resp.Body.Close()
 			t.Error("server still accepting requests after Shutdown")
@@ -66,7 +66,7 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- in-test URL from a net.Listener owned by this test
 		if err == nil {
 			_ = resp.Body.Close()
 		}
