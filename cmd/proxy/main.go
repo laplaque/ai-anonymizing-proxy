@@ -23,10 +23,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -41,62 +39,28 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Startup guard: zero enabled packs is a fatal misconfiguration.
 	if len(cfg.EnabledPacks) == 0 {
 		log.Fatalf("[PROXY] Fatal: no PII detection packs enabled. Configure enabledPacks in proxy-config.json or set ENABLED_PACKS env var.")
 	}
 
 	printBanner(cfg)
 
-	// Build the management domain registry so both servers share the same state.
-	// Runtime domain changes are persisted to ai-domains.json and restored on restart.
 	registry := management.NewDomainRegistry(cfg, "ai-domains.json")
-
-	// Shared metrics collector — passed to both servers so counters are unified.
 	m := metrics.New()
 
-	// Start management API in background.
-	// Fatal is intentional: the proxy should not run without its control plane.
-	mgmt := management.New(cfg, registry, m)
-	go func() {
-		if err := mgmt.ListenAndServe(); err != nil {
-			log.Fatalf("[MANAGEMENT] Fatal: %v", err)
-		}
-	}()
+	_ = startManagementAPI(cfg, registry, m)
 
-	// Start proxy server
 	proxyServer := proxy.New(cfg, registry, m)
-	defer func() {
-		if err := proxyServer.Close(); err != nil {
-			log.Printf("[PROXY] Cache close error: %v", err)
-		}
-	}()
+	defer closeProxyServer(proxyServer)
 
-	addr := fmt.Sprintf("%s:%d", cfg.BindAddress, cfg.ProxyPort)
-	log.Printf("[PROXY] Listening on %s", addr)
+	srv := proxyHTTPServer(cfg, proxyServer)
+	log.Printf("[PROXY] Listening on %s", srv.Addr)
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           proxyServer,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	// Graceful shutdown on SIGINT / SIGTERM
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-quit
-		log.Printf("[PROXY] Shutting down…")
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("[PROXY] Shutdown error: %v", err)
-		}
-	}()
+	go installShutdownHandler(quit, srv, 15*time.Second)
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[PROXY] Fatal: %v", err)
-	}
+	runHTTPServer(srv)
 }
 
 func printBanner(cfg *config.Config) {
