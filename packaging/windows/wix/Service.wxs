@@ -11,6 +11,13 @@
       <Component Id="ProxyService" Bitness="always64">
         <File Id="ProxyExeFile" Source="$(var.BinaryPath)\ai-proxy.exe"
               Name="ai-proxy.exe" KeyPath="yes"/>
+        <!--
+          TODO(#126, phase-3.1): swap Account from LocalSystem to
+          NT SERVICE\ai-proxy with per-file PermissionEx grants on
+          ca-key.pem / ca-cert.pem. Locked to LocalSystem for the initial
+          release per the phase-3 spec; see #126 for the hardening plan
+          and acceptance criteria.
+        -->
         <ServiceInstall Id="AiProxySvc"
                         Name="ai-proxy"
                         DisplayName="AI Anonymizing Proxy"
