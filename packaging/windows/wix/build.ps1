@@ -29,6 +29,19 @@ if (-not $PackagingPath) { throw "PACKAGING_PATH is required (packaging/windows/
 # Strip a leading 'v' if the caller passed a git tag like v1.2.3 directly.
 $Version = $Version -replace '^v', ''
 
+# MSI ProductVersion must be numeric (n.n.n or n.n.n.n). A semver with a
+# pre-release suffix like "1.2.3-rc.1" or "0.0.0-dev" will be rejected by
+# WiX with a confusing error. Strip any suffix and warn the caller.
+if ($Version -match '^(\d+(?:\.\d+){1,3})(.+)$') {
+  $stripped = $matches[1]
+  if ($Version -ne $stripped) {
+    Write-Host "WARN: stripped non-numeric MSI version suffix '$($matches[2])' from '$Version' → '$stripped'"
+    $Version = $stripped
+  }
+} else {
+  throw "VERSION '$Version' is not a valid MSI ProductVersion (must start with n.n.n)."
+}
+
 $root = Resolve-Path "$PSScriptRoot/../../.."
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null

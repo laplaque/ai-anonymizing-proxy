@@ -67,10 +67,14 @@ jobs:
         id: version
         shell: pwsh
         run: |
+          # MSI ProductVersion requires MAJOR.MINOR.BUILD numeric only. Tag
+          # builds carry an already-numeric semver (vX.Y.Z). PR builds derive
+          # a synthetic 0.0.<run_number> so the resulting MSI is installable
+          # without changing the version-pinning contract on releases.
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $v = $env:GITHUB_REF -replace '^refs/tags/v',''
           } else {
-            $v = "0.0.0-pr.$env:GITHUB_RUN_NUMBER"
+            $v = "0.0.$env:GITHUB_RUN_NUMBER"
           }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Version: $v"
