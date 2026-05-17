@@ -19,6 +19,6 @@
     <pkg-ref id="com.ai-anonymizing-proxy.pkg"/>
   </choice>
   <pkg-ref id="com.ai-anonymizing-proxy.pkg"
-           version="0"
+           version="__PKG_VERSION__"
            onConclusion="none">ai-proxy-component.pkg</pkg-ref>
 </installer-gui-script>

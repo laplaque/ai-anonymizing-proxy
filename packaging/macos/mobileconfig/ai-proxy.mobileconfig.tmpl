@@ -26,6 +26,14 @@
       <data>__CA_DER_BASE64__</data>
     </dict>
     <!-- Global HTTP proxy payload -->
+    <!--
+      Exceptions:
+        - 127.0.0.1 / localhost: prevents the daemon's own loopback listener
+          from proxying through itself (loop).
+        - *.local: preserves mDNS / Bonjour service discovery, which Apple
+          devices use heavily on enterprise LANs.
+        - 169.254/16: link-local (captive-portal detection, DHCP edge cases).
+    -->
     <dict>
       <key>PayloadType</key><string>com.apple.proxy.http.global</string>
       <key>PayloadIdentifier</key><string>com.ai-anonymizing-proxy.proxy</string>
@@ -36,6 +44,13 @@
       <key>ProxyServer</key><string>127.0.0.1</string>
       <key>ProxyServerPort</key><integer>18080</integer>
       <key>ProxyCaptiveLoginAllowed</key><true/>
+      <key>ExceptionsList</key>
+      <array>
+        <string>127.0.0.1</string>
+        <string>localhost</string>
+        <string>*.local</string>
+        <string>169.254/16</string>
+      </array>
     </dict>
   </array>
 </dict>

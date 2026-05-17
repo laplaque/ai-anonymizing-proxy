@@ -76,10 +76,18 @@ pkgbuild \
   --scripts "$ROOT/packaging/macos/pkg/scripts" \
   "$COMPONENT"
 
-# 5. Build the distribution package, signed with Developer ID Installer
+# 5. Build the distribution package, signed with Developer ID Installer.
+# Render distribution.xml with the real version so pkgutil --pkg-info and
+# Installer.app upgrade-detection logic see a meaningful version number
+# instead of the placeholder.
+DIST_XML="$ROOT/build/macos/distribution.xml"
+mkdir -p "$(dirname "$DIST_XML")"
+sed "s/__PKG_VERSION__/${VERSION}/g" \
+  "$ROOT/packaging/macos/pkg/distribution.xml" > "$DIST_XML"
+
 PRODUCT="$DIST/ai-proxy-${VERSION}-${ARCH}.pkg"
 productbuild \
-  --distribution "$ROOT/packaging/macos/pkg/distribution.xml" \
+  --distribution "$DIST_XML" \
   --package-path "$DIST" \
   --sign "${INSTALLER_IDENTITY:?INSTALLER_IDENTITY required}" \
   "$PRODUCT"
