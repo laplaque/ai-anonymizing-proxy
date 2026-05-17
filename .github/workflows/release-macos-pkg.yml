@@ -91,10 +91,13 @@ jobs:
           test -f dist/ai-proxy-0.0.0-dryrun.mobileconfig
           # Distribution PKG's component payload list should mention the binary
           # and the LaunchDaemon plist — quickest mechanical structural check.
-          pkgutil --payload-files dist/ai-proxy-0.0.0-dryrun-universal.pkg \
-            | grep -q '/usr/local/bin/ai-proxy'
-          pkgutil --payload-files dist/ai-proxy-0.0.0-dryrun-universal.pkg \
-            | grep -q '/Library/LaunchDaemons/com.ai-anonymizing-proxy.plist'
+          # pkgutil --payload-files emits paths with a leading './' (relative
+          # to the install location), so grep does not anchor on '^/'.
+          payload=$(pkgutil --payload-files dist/ai-proxy-0.0.0-dryrun-universal.pkg)
+          echo "$payload" | grep -qE 'usr/local/bin/ai-proxy$' \
+            || { echo "::error::PKG payload missing ai-proxy binary"; echo "$payload"; exit 1; }
+          echo "$payload" | grep -qE 'Library/LaunchDaemons/com\.ai-anonymizing-proxy\.plist$' \
+            || { echo "::error::PKG payload missing LaunchDaemon plist"; echo "$payload"; exit 1; }
           plutil -lint dist/ai-proxy-0.0.0-dryrun.mobileconfig
 
           # Discard the unsigned artifacts so they cannot ride into any later
