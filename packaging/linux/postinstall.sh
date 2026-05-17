@@ -49,6 +49,27 @@ if [ ! -f /etc/ai-proxy/ca-cert.pem ] || [ ! -f /etc/ai-proxy/ca-key.pem ]; then
   chown ai-proxy:ai-proxy /etc/ai-proxy/ca-key.pem
 fi
 
+in_systemd_host() {
+  # /run/systemd/system is the canonical "systemd is running as PID 1 right now"
+  # marker. Absent inside container/chroot package-build phases (where systemctl
+  # exists but cannot start services), present on a real installed host.
+  [ -d /run/systemd/system ]
+}
+
+rollback_ca_trust() {
+  # The CA was installed into the OS trust store but the proxy is not running
+  # to intercept HTTPS traffic. Leaving the CA trusted would silently turn the
+  # host into one where any holder of /etc/ai-proxy/ca-key.pem can MITM, while
+  # PII flows out unanonymized. Pull the anchor before we exit non-zero.
+  if [ -n "$TRUST_DIR" ] && [ -f "$TRUST_DIR/$TRUST_NAME" ]; then
+    rm -f "$TRUST_DIR/$TRUST_NAME"
+    if [ -n "$TRUST_UPDATE" ]; then
+      "$TRUST_UPDATE" >/dev/null 2>&1 || true
+    fi
+    echo "ai-proxy: CA anchor removed from $TRUST_DIR to prevent trust-without-interception." >&2
+  fi
+}
+
 # Install CA into the OS trust store
 if [ -n "$TRUST_UPDATE" ] && [ -n "$TRUST_DIR" ] && [ -f /etc/ai-proxy/ca-cert.pem ]; then
   install -d -m 0755 "$TRUST_DIR"
@@ -56,13 +77,25 @@ if [ -n "$TRUST_UPDATE" ] && [ -n "$TRUST_DIR" ] && [ -f /etc/ai-proxy/ca-cert.p
   "$TRUST_UPDATE" >/dev/null 2>&1 || "$TRUST_UPDATE"
 fi
 
-# Enable + start the service via systemd (if available)
+# Enable + start the service via systemd. The chroot/container build case is
+# distinguished from a real-host failure: in the former (no PID-1 systemd),
+# enable suffices and the host's first boot will start the service; in the
+# latter, a failed start MUST roll back the CA install — see CLAUDE.md
+# Invariant #1 "No PII leaves the process". A package-manager SUCCESS with a
+# trusted CA but no running proxy is precisely the failure mode that lets
+# HTTPS LLM-API traffic carry PII off the host unanonymized.
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl enable ai-proxy.service >/dev/null 2>&1 || true
-  # Don't fail the install if the service can't start in a chroot/container
-  # without /run/systemd; the unit is enabled either way.
-  systemctl start ai-proxy.service >/dev/null 2>&1 || true
+  if in_systemd_host; then
+    if ! systemctl start ai-proxy.service; then
+      echo "ai-proxy: service failed to start on a systemd-managed host." >&2
+      echo "ai-proxy:   - check 'systemctl status ai-proxy' and 'journalctl -u ai-proxy'" >&2
+      echo "ai-proxy:   - common causes: port collision, bad config, SELinux/AppArmor denial" >&2
+      rollback_ca_trust
+      exit 1
+    fi
+  fi
 fi
 
 exit 0
