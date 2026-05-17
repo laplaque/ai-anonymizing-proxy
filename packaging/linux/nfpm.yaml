@@ -1,0 +1,83 @@
+name: ai-proxy
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: "ai-proxy maintainers <noreply@github.com>"
+description: |
+  GDPR-compliant MITM proxy for anonymizing PII in LLM traffic.
+  Routes HTTP/HTTPS traffic from local applications, detects PII via
+  configurable regex packs, and forwards anonymized requests upstream.
+vendor: laplaque
+homepage: https://github.com/laplaque/ai-anonymizing-proxy
+license: MIT
+
+# Runtime dependencies. ca-certificates supplies the trust-store update tool
+# (update-ca-certificates on Debian/openSUSE, update-ca-trust on RHEL/Fedora);
+# systemd is required for the service unit. Both are typically present on
+# every supported distro but minimal container/cloud images omit them.
+depends:
+  - ca-certificates
+  - systemd
+
+contents:
+  - src: ./bin/ai-proxy
+    dst: /usr/bin/ai-proxy
+    file_info:
+      mode: 0755
+
+  - src: ./packaging/linux/ai-proxy.service
+    dst: /lib/systemd/system/ai-proxy.service
+    file_info:
+      mode: 0644
+
+  - src: ./packaging/linux/ai-proxy.env
+    dst: /etc/default/ai-proxy
+    type: config|noreplace
+    file_info:
+      mode: 0644
+    packager: deb
+
+  - src: ./packaging/linux/ai-proxy.env
+    dst: /etc/sysconfig/ai-proxy
+    type: config|noreplace
+    file_info:
+      mode: 0644
+    packager: rpm
+
+  - src: ./packaging/linux/proxy-config.json.default
+    dst: /etc/ai-proxy/proxy-config.json
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+  - dst: /var/lib/ai-proxy
+    type: dir
+    file_info:
+      mode: 0750
+      owner: ai-proxy
+      group: ai-proxy
+
+  - dst: /var/log/ai-proxy
+    type: dir
+    file_info:
+      mode: 0750
+      owner: ai-proxy
+      group: ai-proxy
+
+  - dst: /etc/ai-proxy
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh
+  preremove: ./packaging/linux/preremove.sh
+
+deb:
+  fields:
+    Bugs: https://github.com/laplaque/ai-anonymizing-proxy/issues
+
+rpm:
+  group: System Environment/Daemons

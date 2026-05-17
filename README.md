@@ -113,6 +113,7 @@ See [docs/client-setup.md](docs/client-setup.md) for per-tool instructions.
 | Latency benchmarks and CI threshold budgets | [docs/benchmarks.md](docs/benchmarks.md) |
 | Configuration reference (env vars, proxy-config.json, upstream proxy) | [docs/configuration.md](docs/configuration.md) |
 | Installing as a service (launchd, systemd, Windows) + log rotation | [docs/installation.md](docs/installation.md) |
+| Native OS packages for unattended UEM rollouts (deb/rpm/pkg/msi) | [docs/packaging/](docs/packaging/) |
 | HTTPS/MITM TLS interception and CA trust setup | [docs/tls-mitm.md](docs/tls-mitm.md) |
 | Configuring clients (shell, VSCode, Git, Python, Node.js) | [docs/client-setup.md](docs/client-setup.md) |
 | Management API reference | [docs/management-api.md](docs/management-api.md) |
