@@ -19,17 +19,17 @@ type fakeCloser struct{ err error }
 
 func (f fakeCloser) Close() error { return f.err }
 
-func TestCloseProxyServer_NoError(t *testing.T) {
+func TestCloseProxyServer_NoError(_ *testing.T) {
 	closeProxyServer(fakeCloser{nil})
 }
 
-func TestCloseProxyServer_LogsError(t *testing.T) {
+func TestCloseProxyServer_LogsError(_ *testing.T) {
 	closeProxyServer(fakeCloser{errors.New("boom")})
 }
 
 func TestProxyHTTPServer_WiringFromConfig(t *testing.T) {
 	cfg := &config.Config{BindAddress: "127.0.0.1", ProxyPort: 18080}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
 
 	srv := proxyHTTPServer(cfg, handler)
 
