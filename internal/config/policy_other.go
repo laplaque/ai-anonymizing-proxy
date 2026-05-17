@@ -3,5 +3,5 @@
 package config
 
 // loadPolicy is a no-op on non-Windows platforms. The Windows build reads
-// HKLM\SOFTWARE\Policies\laplaque\AiProxy and merges values here.
+// HKLM\SOFTWARE\Policies\laplaque\AiProxy and feeds it through applyPolicy.
 func loadPolicy(_ *Config) {}

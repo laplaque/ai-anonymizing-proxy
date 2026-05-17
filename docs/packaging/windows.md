@@ -8,11 +8,11 @@ ARM64 is not yet shipped; track the issue tracker for progress.
 
 Installing this MSI adds a host-local Certificate Authority to `Cert:\LocalMachine\Root`. This is required for the proxy to MITM HTTPS traffic and anonymize PII before it leaves the host, but the implications must be reviewed by a security team before rollout via Intune, SCCM, Group Policy software deployment, or any other UEM tooling.
 
-**After install, this host trusts an `ai-proxy`-controlled CA capable of MITM-ing any HTTPS connection originating from it.** Anyone who can read `C:\ProgramData\ai-proxy\ca-key.pem` can mint TLS certificates that Edge, Chrome, .NET, Node.js, and other clients on this host will accept without warning.
+**After install, this host trusts an `ai-proxy`-controlled CA capable of MITM-ing any HTTPS connection originating from it.** Anyone who can read `C:\ProgramData\AiProxy\ca-key.pem` can mint TLS certificates that Edge, Chrome, .NET, Node.js, and other clients on this host will accept without warning.
 
 Concretely:
 
-- The CA private key lives at `C:\ProgramData\ai-proxy\ca-key.pem` and is generated fresh per host at first install. It never leaves the host. Restrict NTFS ACLs on `C:\ProgramData\ai-proxy\` so only `LocalSystem` and Administrators can read it.
+- The CA private key lives at `C:\ProgramData\AiProxy\ca-key.pem` and is generated fresh per host at first install. It never leaves the host. The installer applies NTFS ACLs to `C:\ProgramData\AiProxy\` granting access only to `LocalSystem` and the `Administrators` group (via `util:PermissionEx` on the `CADir` component); inherited `Users:Read` is removed automatically — operators do not need a manual post-install hardening step.
 - The CA public certificate is installed into `Cert:\LocalMachine\Root` so browsers and CLIs trust any leaf certificate it signs.
 - Uninstall removes the CA from `Cert:\LocalMachine\Root` automatically (see [Uninstall](#uninstall)).
 - Upgrades preserve the existing CA so client applications that pinned its fingerprint continue to work.
@@ -44,7 +44,7 @@ msiexec /qn /i ai-proxy-<version>-x64.msi `
 The installer:
 
 - Installs the binary at `C:\Program Files\ai-proxy\ai-proxy.exe`.
-- Generates a CA cert+key under `C:\ProgramData\ai-proxy\` if not already present.
+- Generates a CA cert+key under `C:\ProgramData\AiProxy\` if not already present.
 - Imports the CA into `Cert:\LocalMachine\Root` via `certutil`.
 - Registers the `ai-proxy` Windows service (`LocalSystem`, automatic delayed start).
 - Configures the service to restart on first, second, and subsequent failure with a 5s delay (1-day reset window).
@@ -68,14 +68,14 @@ sc.exe query ai-proxy
 
 ## Configure
 
-Edit `C:\ProgramData\ai-proxy\ai-proxy.env` (loaded by the service via `--env-file`) and restart the service:
+Edit `C:\ProgramData\AiProxy\ai-proxy.env` (loaded by the service via `--env-file`) and restart the service:
 
 ```powershell
-notepad C:\ProgramData\ai-proxy\ai-proxy.env
+notepad C:\ProgramData\AiProxy\ai-proxy.env
 Restart-Service ai-proxy
 ```
 
-Supported variables mirror the Linux env-file (`BIND_ADDRESS`, `PROXY_PORT`, `MANAGEMENT_PORT`, `UPSTREAM_PROXY`, `CA_CERT_FILE`, `CA_KEY_FILE`, `ENABLED_PACKS`, `USE_AI_DETECTION`, `LOG_LEVEL`, …). The full schema lives in `docs/configuration.md`. The structured config at `C:\ProgramData\ai-proxy\proxy-config.json` is also honored and preserved across upgrades.
+Supported variables mirror the Linux env-file (`BIND_ADDRESS`, `PROXY_PORT`, `MANAGEMENT_PORT`, `UPSTREAM_PROXY`, `CA_CERT_FILE`, `CA_KEY_FILE`, `ENABLED_PACKS`, `USE_AI_DETECTION`, `LOG_LEVEL`, …). The full schema lives in `docs/configuration.md`. The structured config at `C:\ProgramData\AiProxy\proxy-config.json` is also honored and preserved across upgrades.
 
 ## Group Policy (ADMX)
 
@@ -96,7 +96,6 @@ Domain admins can override proxy settings via Group Policy. The MSI does not enf
 | Enable AI Anonymizing Proxy | `Enabled` (REG_DWORD) | Informational: indicates this host is centrally managed. |
 | Proxy server address | `Address` (REG_SZ) | Overrides `BIND_ADDRESS`. |
 | Proxy server port | `Port` (REG_DWORD) | Overrides `PROXY_PORT`. |
-| Proxy bypass list | `BypassList` (REG_SZ) | Semicolon-separated bypass list (informational; honor via `NO_PROXY`). |
 
 ## Intune deployment
 
@@ -113,7 +112,7 @@ Group Policy values configured via Intune Settings Catalog → Administrative Te
 
 ## Upgrade
 
-MSI `MajorUpgrade` is configured — newer versions silently replace older ones. The CA cert/key under `C:\ProgramData\ai-proxy\` and the env/config files are preserved (`Permanent="no" NeverOverwrite="yes"`).
+MSI `MajorUpgrade` is configured — newer versions silently replace older ones. The CA cert/key under `C:\ProgramData\AiProxy\` and the env/config files are preserved (`Permanent="no" NeverOverwrite="yes"`).
 
 ## Uninstall
 
@@ -128,10 +127,10 @@ $pc = (Get-WmiObject Win32_Product -Filter "Name='AI Anonymizing Proxy'").Identi
 msiexec /qn /x $pc /l*v uninstall.log
 ```
 
-Uninstall stops and removes the `ai-proxy` service and deletes the CA from `Cert:\LocalMachine\Root`. Files under `C:\ProgramData\ai-proxy\` (CA cert+key, env file, logs) are left in place. Remove them manually if you want a full purge:
+Uninstall stops and removes the `ai-proxy` service and deletes the CA from `Cert:\LocalMachine\Root`. Files under `C:\ProgramData\AiProxy\` (CA cert+key, env file, logs) are left in place. Remove them manually if you want a full purge:
 
 ```powershell
-Remove-Item -Recurse -Force C:\ProgramData\ai-proxy
+Remove-Item -Recurse -Force C:\ProgramData\AiProxy
 ```
 
 ## Verify package signature

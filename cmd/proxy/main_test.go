@@ -367,6 +367,26 @@ func TestMain_HelperProcess_EnvFile_Fatal(t *testing.T) {
 	}
 }
 
+// TestMain_HelperProcess_RemoveCAFromStore_Fatal re-execs with
+// --remove-ca-from-store. On non-Windows the helper returns a clear
+// error; on Windows it requires a real cert path and elevated context,
+// so the helper test only asserts the dispatch path (main's [CA]
+// log.Fatalf) under both platforms.
+func TestMain_HelperProcess_RemoveCAFromStore_Fatal(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no-such-cert.pem")
+
+	cmd := helperCmd(t, "--remove-ca-from-store", "--ca-cert", missing)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on missing cert, got success\n%s", out)
+	}
+	if !strings.Contains(string(out), "[CA]") {
+		t.Errorf("expected '[CA]' in output, got:\n%s", out)
+	}
+}
+
 // TestMain_HelperProcess_GenerateCA_Fatal re-execs this test binary with
 // --generate-ca and an empty --ca-cert path so runGenerateCA returns an
 // error and main()'s [CA] log.Fatalf fires.

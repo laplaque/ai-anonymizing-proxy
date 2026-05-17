@@ -52,16 +52,5 @@
         <decimal id="Port" valueName="Port" minValue="1" maxValue="65535" required="true"/>
       </elements>
     </policy>
-    <policy name="ProxyBypassList" class="Machine"
-            displayName="$(string.ProxyBypassList)"
-            explainText="$(string.ProxyBypassList_Help)"
-            key="SOFTWARE\Policies\laplaque\AiProxy"
-            presentation="$(presentation.ProxyBypassList)">
-      <parentCategory ref="AiProxy"/>
-      <supportedOn ref="windows:SUPPORTED_WindowsVista"/>
-      <elements>
-        <text id="BypassList" valueName="BypassList" required="false"/>
-      </elements>
-    </policy>
   </policies>
 </policyDefinitions>

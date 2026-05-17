@@ -12,8 +12,6 @@
       <string id="ProxyAddress_Help">IP address or hostname of the ai-proxy listener. Default 127.0.0.1.</string>
       <string id="ProxyPort">Proxy server port</string>
       <string id="ProxyPort_Help">TCP port the proxy listens on. Default 8080.</string>
-      <string id="ProxyBypassList">Proxy bypass list</string>
-      <string id="ProxyBypassList_Help">Semicolon-separated list of hostnames/IPs that should bypass the proxy.</string>
     </stringTable>
     <presentationTable>
       <presentation id="ProxyAddress">
@@ -24,11 +22,6 @@
       </presentation>
       <presentation id="ProxyPort">
         <decimalTextBox refId="Port" defaultValue="8080">Port:</decimalTextBox>
-      </presentation>
-      <presentation id="ProxyBypassList">
-        <textBox refId="BypassList">
-          <label>Bypass list (semicolon-separated):</label>
-        </textBox>
       </presentation>
     </presentationTable>
   </resources>

@@ -3,11 +3,8 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"log"
 	"net/http"
-	"time"
 
 	"golang.org/x/sys/windows/svc"
 )
@@ -32,47 +29,57 @@ func runAsServiceIfNeeded(srv *http.Server) bool {
 	return true
 }
 
+// proxyService is the SCM-facing adapter. It translates svc.ChangeRequest
+// values onto the platform-neutral svcCommand vocabulary, runs the
+// lifecycle in a goroutine, and forwards svc.Status updates from the
+// platform-neutral reporter back to the SCM channel.
 type proxyService struct {
 	srv *http.Server
 }
 
+const svcAccepts = svc.AcceptStop | svc.AcceptShutdown
+
 func (p *proxyService) Execute(_ []string, r <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
-	const accepts = svc.AcceptStop | svc.AcceptShutdown
-	status <- svc.Status{State: svc.StartPending}
+	requests := make(chan svcCommand, 4)
+	reporter := &winStatusReporter{out: status}
 
-	serveErr := make(chan error, 1)
+	exit := make(chan uint32, 1)
 	go func() {
-		err := p.srv.ListenAndServe()
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		serveErr <- err
+		exit <- runServiceLifecycle(p.srv, requests, reporter)
 	}()
-
-	status <- svc.Status{State: svc.Running, Accepts: accepts}
 
 	for {
 		select {
-		case err := <-serveErr:
-			if err != nil {
-				log.Printf("[SERVICE] HTTP server exited: %v", err)
-				return false, 1
-			}
-			return false, 0
 		case req := <-r:
 			switch req.Cmd {
 			case svc.Interrogate:
-				status <- req.CurrentStatus
+				requests <- cmdInterrogate
 			case svc.Stop, svc.Shutdown:
-				status <- svc.Status{State: svc.StopPending, Accepts: accepts}
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				if err := p.srv.Shutdown(ctx); err != nil {
-					log.Printf("[SERVICE] shutdown: %v", err)
-				}
-				cancel()
-				<-serveErr
-				return false, 0
+				requests <- cmdStop
 			}
+		case code := <-exit:
+			return false, code
 		}
 	}
+}
+
+type winStatusReporter struct {
+	out  chan<- svc.Status
+	last svc.State
+}
+
+func (w *winStatusReporter) StartPending() {
+	w.last = svc.StartPending
+	w.out <- svc.Status{State: w.last}
+}
+func (w *winStatusReporter) Running() {
+	w.last = svc.Running
+	w.out <- svc.Status{State: w.last, Accepts: svcAccepts}
+}
+func (w *winStatusReporter) StopPending() {
+	w.last = svc.StopPending
+	w.out <- svc.Status{State: w.last, Accepts: svcAccepts}
+}
+func (w *winStatusReporter) Interrogate() {
+	w.out <- svc.Status{State: w.last, Accepts: svcAccepts}
 }
