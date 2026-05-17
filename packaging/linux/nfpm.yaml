@@ -13,6 +13,14 @@ vendor: laplaque
 homepage: https://github.com/laplaque/ai-anonymizing-proxy
 license: MIT
 
+# Runtime dependencies. ca-certificates supplies the trust-store update tool
+# (update-ca-certificates on Debian/openSUSE, update-ca-trust on RHEL/Fedora);
+# systemd is required for the service unit. Both are typically present on
+# every supported distro but minimal container/cloud images omit them.
+depends:
+  - ca-certificates
+  - systemd
+
 contents:
   - src: ./bin/ai-proxy
     dst: /usr/bin/ai-proxy

@@ -1,14 +1,23 @@
 #!/bin/sh
 set -eu
 
-# Detect distro family for trust-store integration
+# Detect distro family for trust-store integration. Debian and openSUSE both
+# ship `update-ca-certificates` but use different anchor directories; RHEL
+# uses `update-ca-trust` with a third path. Pick by the presence of the
+# distro-specific anchor directory rather than by tool name alone.
 TRUST_DIR=""
 TRUST_NAME=ai-proxy.crt
 TRUST_UPDATE=""
-if command -v update-ca-certificates >/dev/null 2>&1; then
+if [ -d /usr/local/share/ca-certificates ] && command -v update-ca-certificates >/dev/null 2>&1; then
+  # Debian / Ubuntu
   TRUST_DIR=/usr/local/share/ca-certificates
   TRUST_UPDATE=update-ca-certificates
-elif command -v update-ca-trust >/dev/null 2>&1; then
+elif [ -d /etc/pki/trust/anchors ] && command -v update-ca-certificates >/dev/null 2>&1; then
+  # openSUSE / SLES
+  TRUST_DIR=/etc/pki/trust/anchors
+  TRUST_UPDATE=update-ca-certificates
+elif [ -d /etc/pki/ca-trust/source/anchors ] && command -v update-ca-trust >/dev/null 2>&1; then
+  # RHEL / Fedora / Alma / Rocky
   TRUST_DIR=/etc/pki/ca-trust/source/anchors
   TRUST_UPDATE=update-ca-trust
 else

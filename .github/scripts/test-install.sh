@@ -43,9 +43,11 @@ test -f /etc/ai-proxy/ca-key.pem
 # Env file: Debian uses /etc/default, RHEL uses /etc/sysconfig
 test -s /etc/default/ai-proxy || test -s /etc/sysconfig/ai-proxy
 
-# CA should be in the OS trust store
+# CA should be in the OS trust store. The anchor directory varies by distro
+# family (Debian, openSUSE, RHEL); accept any of them.
 trust_found=0
 [ -f /usr/local/share/ca-certificates/ai-proxy.crt ] && trust_found=1
+[ -f /etc/pki/trust/anchors/ai-proxy.crt ] && trust_found=1
 [ -f /etc/pki/ca-trust/source/anchors/ai-proxy.crt ] && trust_found=1
 if [ "$trust_found" != "1" ]; then
   echo "CA not installed into trust store" >&2
@@ -78,6 +80,7 @@ fi
 
 # Trust-store entry and binary must be gone after remove
 test ! -f /usr/local/share/ca-certificates/ai-proxy.crt
+test ! -f /etc/pki/trust/anchors/ai-proxy.crt
 test ! -f /etc/pki/ca-trust/source/anchors/ai-proxy.crt
 test ! -x /usr/bin/ai-proxy
 
