@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -47,15 +48,10 @@ func runHTTPServer(srv *http.Server) {
 	}
 }
 
-// closer is the interface implemented by anything with Close() error.
-// Exists so closeProxyServer can be unit-tested with a fake.
-type closer interface {
-	Close() error
-}
-
 // closeProxyServer invokes Close on the proxy server and logs any error.
-// Intended for use as a deferred call in main().
-func closeProxyServer(s closer) {
+// Intended for use as a deferred call in main(). Takes an io.Closer rather
+// than *proxy.Server so the error-log branch can be exercised with a fake.
+func closeProxyServer(s io.Closer) {
 	if err := s.Close(); err != nil {
 		log.Printf("[PROXY] Cache close error: %v", err)
 	}

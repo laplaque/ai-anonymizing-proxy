@@ -94,6 +94,20 @@ func TestPrintBanner_NoProxy_ShowsDirect(t *testing.T) {
 	}
 }
 
+// TestPrintBanner_ZeroValueConfig_DoesNotPanic asserts that printBanner
+// survives a zero-value *config.Config — a regression like a nil-map deref
+// or missing-field panic on uninitialised input would be caught here.
+// Inherited from the original TestMain_Smoke, kept as its own test so the
+// guarantee survives the helper-process TestMain rewrite.
+func TestPrintBanner_ZeroValueConfig_DoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("printBanner panicked on zero-value config: %v", r)
+		}
+	}()
+	_ = captureStdout(t, func() { printBanner(&config.Config{}) })
+}
+
 // TestMain_HelperProcess_Lifecycle re-execs this test binary as the proxy
 // daemon, waits for it to bind its listener, sends SIGTERM, and verifies a
 // clean exit. Exercises main()'s full startup-and-shutdown lifecycle.

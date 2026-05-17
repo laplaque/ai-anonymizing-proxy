@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,12 +22,33 @@ type fakeCloser struct{ err error }
 
 func (f fakeCloser) Close() error { return f.err }
 
-func TestCloseProxyServer_NoError(_ *testing.T) {
-	closeProxyServer(fakeCloser{nil})
+// captureLog redirects the default logger's output to a buffer for the
+// duration of fn. Restores the previous destination on return.
+func captureLog(t *testing.T, fn func()) string {
+	t.Helper()
+	prev := log.Writer()
+	buf := &bytes.Buffer{}
+	log.SetOutput(buf)
+	defer log.SetOutput(prev)
+	fn()
+	return buf.String()
 }
 
-func TestCloseProxyServer_LogsError(_ *testing.T) {
-	closeProxyServer(fakeCloser{errors.New("boom")})
+func TestCloseProxyServer_NoError_DoesNotLog(t *testing.T) {
+	out := captureLog(t, func() { closeProxyServer(fakeCloser{nil}) })
+	if out != "" {
+		t.Errorf("expected no log output on success, got: %q", out)
+	}
+}
+
+func TestCloseProxyServer_LogsError(t *testing.T) {
+	out := captureLog(t, func() { closeProxyServer(fakeCloser{errors.New("boom")}) })
+	if !strings.Contains(out, "[PROXY] Cache close error") {
+		t.Errorf("expected '[PROXY] Cache close error' in log, got: %q", out)
+	}
+	if !strings.Contains(out, "boom") {
+		t.Errorf("expected underlying error 'boom' in log, got: %q", out)
+	}
 }
 
 func TestProxyHTTPServer_WiringFromConfig(t *testing.T) {
@@ -72,6 +96,12 @@ func TestStartManagementAPI_ServesRequests(t *testing.T) {
 	}
 }
 
+// freePort returns a 127.0.0.1 TCP port that is unused at the moment of the
+// call. There is an inherent race: the OS may hand the same port to another
+// process between this call and the caller's re-bind. We accept that race —
+// no clean alternative exists when the consumer is a subprocess that must
+// open its own listener — and rely on the helper-process tests' own
+// log-based readiness probe to surface the rare collision.
 func freePort(t *testing.T) int {
 	t.Helper()
 	l := listenLocal(t)
