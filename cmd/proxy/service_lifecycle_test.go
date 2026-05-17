@@ -144,7 +144,11 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	reqDone := make(chan struct{})
 	go func() {
 		defer close(reqDone)
-		_, _ = http.Get("http://" + addr + "/hold")
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp != nil {
+			_ = resp.Body.Close()
+		}
 	}()
 	// Give the request a moment to land.
 	time.Sleep(50 * time.Millisecond)
@@ -171,7 +175,8 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 func TestRunServiceLifecycle_BindFailureReturnsNonZero(t *testing.T) {
 	// Bind 127.0.0.1:0 first to capture an actually-bound port, then
 	// hand that same address to a fresh server so ListenAndServe collides.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
