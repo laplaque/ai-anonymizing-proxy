@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy package-linux package-linux-amd64 package-linux-arm64 package-macos package-macos-pkg package-macos-mobileconfig
+.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy package-linux package-linux-amd64 package-linux-arm64 package-macos package-macos-pkg package-macos-mobileconfig package-windows
 
 all: build
 
@@ -172,3 +172,16 @@ package-macos-mobileconfig:
 	CA_CERT=$(CA_CERT_FILE_FOR_RELEASE) \
 	APPLICATION_IDENTITY="$$MACOS_APPLICATION_IDENTITY" \
 	bash packaging/macos/mobileconfig/build.sh
+
+# --- UEM Windows packaging (Phase 3) ---
+# Builds a Windows MSI via WiX Toolset v4. Requires PowerShell 7+ (`pwsh`)
+# on the build host and the WiX dotnet tool. Signing is enabled when
+# Azure Key Vault credentials are present in the environment.
+package-windows:
+	@command -v pwsh >/dev/null 2>&1 || { echo "ERROR: pwsh (PowerShell 7+) is required. Install from https://github.com/PowerShell/PowerShell/releases"; exit 1; }
+	@mkdir -p bin dist
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/ai-proxy.exe $(CMD)
+	pwsh -File packaging/windows/wix/build.ps1 \
+		-Version "$(PKG_VERSION)" \
+		-BinaryPath "$(CURDIR)/bin" \
+		-PackagingPath "$(CURDIR)/packaging/windows/wix"

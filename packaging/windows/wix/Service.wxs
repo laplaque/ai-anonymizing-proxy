@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Single Component holds the ai-proxy.exe binary AND its Windows service
+  registration. The exe is the KeyPath. Restart policy: restart on first,
+  second, and subsequent failure with a 5s delay and a 1-day reset window.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Fragment>
+    <ComponentGroup Id="ServiceComponents" Directory="INSTALLFOLDER">
+      <Component Id="ProxyService" Bitness="always64">
+        <File Id="ProxyExeFile" Source="$(var.BinaryPath)\ai-proxy.exe"
+              Name="ai-proxy.exe" KeyPath="yes"/>
+        <ServiceInstall Id="AiProxySvc"
+                        Name="ai-proxy"
+                        DisplayName="AI Anonymizing Proxy"
+                        Description="GDPR-compliant MITM proxy for anonymizing PII in LLM traffic."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Vital="yes"
+                        Arguments="--env-file &quot;[CONFIGFOLDER]ai-proxy.env&quot;">
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              ResetPeriodInDays="1"
+                              RestartServiceDelayInSeconds="5"/>
+          <util:ServiceConfig DelayedAutoStart="yes"/>
+        </ServiceInstall>
+        <ServiceControl Id="AiProxySvcControl"
+                        Name="ai-proxy"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes"/>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

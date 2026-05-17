@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CA trust lifecycle. Mirrors the Linux postinstall pattern: generate a
+  per-host CA on install if absent (idempotent on upgrade), import it into
+  LocalMachine\Root via certutil, and remove it on uninstall.
+
+  Generation is delegated to the binary's own --generate-ca code path so
+  there is exactly one CA-minting implementation across all packages.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Fragment>
+    <ComponentGroup Id="CATrustComponents" Directory="CONFIGFOLDER">
+      <!-- Placeholder component so the CONFIGFOLDER directory is created
+           with predictable permissions before the CA-generation custom
+           action runs. The CA files themselves are generated on the fly. -->
+      <Component Id="CADir" Bitness="always64" Guid="*">
+        <CreateFolder/>
+        <RegistryValue Root="HKLM"
+                       Key="Software\laplaque\AiProxy"
+                       Name="ConfigDir"
+                       Type="string"
+                       Value="[CONFIGFOLDER]"
+                       KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+
+    <!-- Generate CA: ai-proxy.exe --generate-ca skips when files already exist
+         (per the binary's existing idempotency). Safe to re-run on upgrade. -->
+    <CustomAction Id="GenerateCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='"[INSTALLFOLDER]ai-proxy.exe" --generate-ca --ca-cert "[CONFIGFOLDER]ca-cert.pem" --ca-key "[CONFIGFOLDER]ca-key.pem"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"/>
+
+    <CustomAction Id="ImportCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='certutil.exe -addstore -f Root "[CONFIGFOLDER]ca-cert.pem"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"/>
+
+    <!-- Removal: read the cert thumbprint via PowerShell, then certutil -delstore.
+         Fragile (cmd-in-PS quoting). If this proves unreliable in production a
+         small ai-proxy.exe --remove-ca-from-store helper is the planned fix. -->
+    <CustomAction Id="RemoveCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path \"[CONFIGFOLDER]ca-cert.pem\") { $tp = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 \"[CONFIGFOLDER]ca-cert.pem\").Thumbprint; certutil.exe -delstore Root $tp }"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="GenerateCA" After="InstallFiles" Condition="NOT Installed"/>
+      <Custom Action="ImportCA"   After="GenerateCA"   Condition="NOT Installed"/>
+      <Custom Action="RemoveCA"   Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;"/>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>
