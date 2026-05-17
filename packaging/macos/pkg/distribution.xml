@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>AI Anonymizing Proxy</title>
+  <organization>com.ai-anonymizing-proxy</organization>
+  <domains enable_anywhere="true" enable_currentUserHome="false" enable_localSystem="true"/>
+  <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+  <volume-check>
+    <allowed-os-versions>
+      <os-version min="12.0"/>
+    </allowed-os-versions>
+  </volume-check>
+  <choices-outline>
+    <line choice="default">
+      <line choice="com.ai-anonymizing-proxy.pkg"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="com.ai-anonymizing-proxy.pkg" visible="false">
+    <pkg-ref id="com.ai-anonymizing-proxy.pkg"/>
+  </choice>
+  <pkg-ref id="com.ai-anonymizing-proxy.pkg"
+           version="0"
+           onConclusion="none">ai-proxy-component.pkg</pkg-ref>
+</installer-gui-script>

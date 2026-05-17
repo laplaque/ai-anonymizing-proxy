@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy package-linux package-linux-amd64 package-linux-arm64
+.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy package-linux package-linux-amd64 package-linux-arm64 package-macos package-macos-pkg package-macos-mobileconfig
 
 all: build
 
@@ -152,3 +152,23 @@ package-linux-arm64:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/ai-proxy $(CMD)
 	ARCH=arm64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p deb -t dist/
 	ARCH=arm64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p rpm -t dist/
+
+# --- UEM macOS packaging (Phase 2) ---
+# Both targets are macOS-only. Running on Linux fails fast — pkgbuild,
+# productbuild, codesign, security, and notarytool are macOS-host tools.
+
+package-macos: package-macos-pkg package-macos-mobileconfig
+
+package-macos-pkg:
+	@[ "$$(uname -s)" = "Darwin" ] || { echo "package-macos-pkg requires macOS"; exit 1; }
+	VERSION=$(PKG_VERSION) ARCH=universal \
+	INSTALLER_IDENTITY="$$MACOS_INSTALLER_IDENTITY" \
+	APPLICATION_IDENTITY="$$MACOS_APPLICATION_IDENTITY" \
+	bash packaging/macos/pkg/build.sh
+
+package-macos-mobileconfig:
+	@[ "$$(uname -s)" = "Darwin" ] || { echo "package-macos-mobileconfig requires macOS"; exit 1; }
+	VERSION=$(PKG_VERSION) \
+	CA_CERT=$(CA_CERT_FILE_FOR_RELEASE) \
+	APPLICATION_IDENTITY="$$MACOS_APPLICATION_IDENTITY" \
+	bash packaging/macos/mobileconfig/build.sh

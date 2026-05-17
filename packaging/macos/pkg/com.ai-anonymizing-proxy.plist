@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ai-anonymizing-proxy</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/ai-proxy</string></array>
+  <key>UserName</key><string>_aiproxy</string>
+  <key>GroupName</key><string>_aiproxy</string>
+  <key>WorkingDirectory</key><string>/var/lib/ai-proxy</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BIND_ADDRESS</key><string>127.0.0.1</string>
+    <key>PROXY_PORT</key><string>18080</string>
+    <key>MANAGEMENT_PORT</key><string>18081</string>
+    <key>CA_CERT_FILE</key><string>/etc/ai-proxy/ca-cert.pem</string>
+    <key>CA_KEY_FILE</key><string>/etc/ai-proxy/ca-key.pem</string>
+    <key>ENABLED_PACKS</key><string>SECRETS,GLOBAL,DE</string>
+    <key>USE_AI_DETECTION</key><string>false</string>
+    <key>LOG_LEVEL</key><string>info</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>StandardOutPath</key><string>/var/log/ai-proxy/stdout.log</string>
+  <key>StandardErrorPath</key><string>/var/log/ai-proxy/stderr.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

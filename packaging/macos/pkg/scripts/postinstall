@@ -1,0 +1,78 @@
+#!/bin/bash
+set -eu
+
+# Allocate UID/GID for the _aiproxy service account if absent.
+# Pick the lowest free UID in the 220-400 macOS system-user range.
+if ! dscl . -read /Users/_aiproxy UniqueID >/dev/null 2>&1; then
+  uid=""
+  for candidate in $(seq 220 400); do
+    if ! dscl . -search /Users UniqueID "$candidate" 2>/dev/null | grep -q .; then
+      uid="$candidate"
+      break
+    fi
+  done
+  if [ -z "$uid" ]; then
+    echo "ai-proxy postinstall: no free UID in 220-400; allocate _aiproxy manually." >&2
+    exit 1
+  fi
+
+  dscl . -create /Groups/_aiproxy
+  dscl . -create /Groups/_aiproxy PrimaryGroupID "$uid"
+  dscl . -create /Groups/_aiproxy RealName "AI Proxy Service"
+  dscl . -create /Groups/_aiproxy Password "*"
+
+  dscl . -create /Users/_aiproxy
+  dscl . -create /Users/_aiproxy UniqueID "$uid"
+  dscl . -create /Users/_aiproxy PrimaryGroupID "$uid"
+  dscl . -create /Users/_aiproxy NFSHomeDirectory /var/empty
+  dscl . -create /Users/_aiproxy UserShell /usr/bin/false
+  dscl . -create /Users/_aiproxy RealName "AI Proxy Service"
+  dscl . -create /Users/_aiproxy IsHidden 1
+  dscl . -create /Users/_aiproxy Password "*"
+fi
+
+install -d -m 0755 /etc/ai-proxy
+install -d -m 0750 -o _aiproxy -g _aiproxy /var/lib/ai-proxy
+install -d -m 0755 -o _aiproxy -g _aiproxy /var/log/ai-proxy
+
+# Generate CA if absent (idempotent; preserves user CA on upgrade).
+if [ ! -f /etc/ai-proxy/ca-cert.pem ] || [ ! -f /etc/ai-proxy/ca-key.pem ]; then
+  /usr/local/bin/ai-proxy --generate-ca \
+    --ca-cert /etc/ai-proxy/ca-cert.pem \
+    --ca-key /etc/ai-proxy/ca-key.pem
+  chmod 0644 /etc/ai-proxy/ca-cert.pem
+  chmod 0640 /etc/ai-proxy/ca-key.pem
+  chown _aiproxy:_aiproxy /etc/ai-proxy/ca-key.pem
+fi
+
+rollback_ca_trust() {
+  # See linux postinstall.sh — same rationale: trusted CA without a running
+  # interceptor is the failure mode that lets PII flow out unanonymized.
+  SHA=$(/usr/bin/openssl x509 -in /etc/ai-proxy/ca-cert.pem -noout -fingerprint -sha1 2>/dev/null \
+        | sed 's/.*=//; s/://g' || true)
+  if [ -n "$SHA" ]; then
+    /usr/bin/security delete-certificate -Z "$SHA" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+    echo "ai-proxy: CA removed from System keychain to prevent trust-without-interception." >&2
+  fi
+}
+
+# Trust the CA in the System keychain.
+if [ -f /etc/ai-proxy/ca-cert.pem ]; then
+  /usr/bin/security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain \
+    /etc/ai-proxy/ca-cert.pem >/dev/null 2>&1 || \
+  /usr/bin/security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain \
+    /etc/ai-proxy/ca-cert.pem
+fi
+
+# Bootstrap the LaunchDaemon.
+if ! /bin/launchctl bootstrap system /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>/dev/null; then
+  if ! /bin/launchctl load -w /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist 2>/dev/null; then
+    echo "ai-proxy postinstall: failed to load LaunchDaemon. Rolling back CA trust." >&2
+    rollback_ca_trust
+    exit 1
+  fi
+fi
+
+exit 0
