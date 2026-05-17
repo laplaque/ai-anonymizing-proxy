@@ -13,13 +13,14 @@ on:
       - 'Makefile'
 
 permissions:
-  contents: write          # release upload
-  id-token: write          # cosign keyless signing
+  contents: read
 
 jobs:
   build:
     name: Build (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -36,8 +37,11 @@ jobs:
           cache: true
 
       - name: Install nfpm
+        # Pinned to v2.46.3 (sum-verified). Bumps require a review window;
+        # nfpm produces signed release artifacts so the build tool itself is
+        # a supply-chain entry point — see PR #120 review thread on this line.
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build packages
@@ -53,6 +57,8 @@ jobs:
     name: Install round-trip (${{ matrix.image }})
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +92,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, test-install]
     runs-on: ubuntu-latest
+    # Elevated permissions scoped to this job only: a compromise in build or
+    # test-install cannot mint OIDC tokens or push to the release.
+    permissions:
+      contents: write          # release upload
+      id-token: write          # cosign keyless signing via Fulcio/Rekor
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
