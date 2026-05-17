@@ -19,7 +19,9 @@ Concretely:
 
 - The CA private key lives at `/etc/ai-proxy/ca-key.pem`, mode `0640`, owned by the `_aiproxy` service user. Protect it with the same rigour you'd apply to a host SSH key.
 - The CA public cert is trusted in `/Library/Keychains/System.keychain` via `security add-trusted-cert -d -r trustRoot`.
-- The PKG generates a fresh CA per host on first install (preserved on upgrade). The **`.mobileconfig` deploys the release CA** baked in at build time — every host installed via the .mobileconfig route trusts the same CA. Rotation requires re-issuing the profile and pushing it to every device.
+- The PKG generates a fresh CA per host on first install (preserved on upgrade) — blast radius of a key compromise is **one host**.
+- The **`.mobileconfig` deploys the release CA** baked in at build time. That CA is backed by a single repository secret (`MACOS_RELEASE_CA_KEY`) — compromise of that secret confers the ability to mint TLS certs trusted by **every device in the fleet** that installed via the profile, simultaneously. The `.mobileconfig` route's blast radius is the entire managed fleet, not one host. Treat the secret with that threat model in mind: restrict who can read it, rotate it on a schedule, and prefer the per-host PKG path for populations where a per-host CA is acceptable.
+- Rotation of the .mobileconfig CA requires re-issuing the profile and pushing it to every device (see [Release CA rotation](#release-ca-rotation)).
 - Uninstall removes the CA from the System keychain (see [Uninstall](#uninstall)).
 - If the LaunchDaemon fails to start during postinstall, the CA is removed from the System keychain and the install aborts non-zero — installed-but-not-intercepting cannot occur (per CLAUDE.md Invariant #1).
 
@@ -188,14 +190,50 @@ Checksums are published as `SHA256SUMS-macos` and `SHA512SUMS-macos` alongside t
 
 ## Release CA rotation
 
-The `.mobileconfig` embeds the CA at build time. If the CA private key is suspected compromised:
+The `.mobileconfig` embeds the release CA at build time. PKG hosts do **not** use this CA — they generate their own per-host CA in `postinstall` (idempotent on upgrade). The procedures differ by deployment route:
+
+### `.mobileconfig` / MDM route
+
+If the release CA private key is suspected compromised:
 
 1. Generate a fresh CA pair locally.
 2. Re-encode both PEMs as base64 and update the `MACOS_RELEASE_CA_CERT` / `MACOS_RELEASE_CA_KEY` repository secrets.
-3. Cut a new release tag — the CI workflow rebuilds the .mobileconfig (and embeds the new CA in PKG-installed hosts' fallback path).
+3. Cut a new release tag — the CI workflow rebuilds the `.mobileconfig` with the new CA embedded.
 4. Push the new profile to every managed device via JAMF / MDM. The old profile is replaced; old CA trust is removed.
 
-In-place rotation via a forthcoming `ai-proxy install --rotate-ca` command is planned (Phase 6). Until then, rotation = uninstall + reinstall.
+### PKG route
+
+PKG hosts each have their own CA at `/etc/ai-proxy/ca-cert.pem` and `/etc/ai-proxy/ca-key.pem`. The release CA from CI never reaches them. Rotation is per-host:
+
+```bash
+sudo bash /usr/local/share/ai-proxy/uninstall.sh   # removes old CA trust + daemon
+sudo pkgutil --forget com.ai-anonymizing-proxy.pkg
+sudo rm -f /etc/ai-proxy/ca-cert.pem /etc/ai-proxy/ca-key.pem
+sudo installer -pkg ai-proxy-<version>-universal.pkg -target /
+```
+
+In-place rotation via a forthcoming `ai-proxy install --rotate-ca` command is planned (Phase 6). Until then, the PKG-route rotation is uninstall + remove cert + reinstall.
+
+## Troubleshooting
+
+```bash
+# Daemon state — look at LastExitStatus, PID, state fields.
+sudo launchctl print system/com.ai-anonymizing-proxy
+
+# Structured log — anything the daemon wrote to unified log in the last hour.
+log show --predicate 'process == "ai-proxy"' --info --last 1h
+
+# Stdout/stderr captured by launchd.
+tail -n 200 /var/log/ai-proxy/stderr.log
+```
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| `postinstall exit code 1` | LaunchDaemon failed to load; CA trust **was** rolled back. | Check `launchctl print` for the diagnostic; common causes: port collision on 18080/18081, missing dir under `/var/`. Re-run `installer` once the cause is fixed. |
+| `postinstall exit code 2` | LaunchDaemon failed AND rollback could not remove the CA. | **PII may leak.** Manually delete the CA: `sudo security delete-certificate -c "ai-proxy CA" /Library/Keychains/System.keychain`. |
+| `installer` reports "package signed by unidentified developer" | PKG was modified after signing, or the host has Gatekeeper disabled in a way that surfaces stricter checks. | Re-download the PKG; verify with `pkgutil --check-signature`. |
+| Daemon running but HTTPS sites fail with TLS errors | CA not in System keychain. | `sudo security find-certificate -c "ai-proxy" -p /Library/Keychains/System.keychain` — empty output means trust did not install. Re-run postinstall. |
+| Profile install silently does nothing | Profile not signed, or signed by a non-trusted cert. | `plutil -lint ai-proxy-*.mobileconfig` + `security cms -D -i ai-proxy-*.mobileconfig`. |
 
 ## Source
 
