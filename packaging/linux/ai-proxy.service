@@ -1,0 +1,32 @@
+[Unit]
+Description=AI Anonymizing Proxy
+Documentation=https://github.com/laplaque/ai-anonymizing-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-proxy
+Group=ai-proxy
+EnvironmentFile=-/etc/default/ai-proxy
+EnvironmentFile=-/etc/sysconfig/ai-proxy
+WorkingDirectory=/var/lib/ai-proxy
+ExecStart=/usr/bin/ai-proxy
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-proxy /var/log/ai-proxy
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

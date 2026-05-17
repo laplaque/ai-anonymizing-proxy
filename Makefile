@@ -5,7 +5,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 CA_CERT    := ca-cert.pem
 CA_KEY     := ca-key.pem
 
-.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy
+.PHONY: all build run clean test lint security vulncheck check benchmark gen-ca import-ca-macos import-ca-linux import-ca-windows import-ca-macos-user import-ca-linux-user import-ca-windows-user deploy package-linux package-linux-amd64 package-linux-arm64
 
 all: build
 
@@ -132,3 +132,23 @@ smoke:
 	curl -s -X POST http://localhost:8081/domains/add \
 		-H "Content-Type: application/json" \
 		-d '{"domain":"api.newai.example.com"}' | jq .
+
+# --- UEM Linux packaging (Phase 1) ---
+# Version is derived from the latest git tag (stripped of leading "v") and
+# falls back to a dev marker when no tag exists.
+PKG_VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0-dev")
+NFPM        ?= nfpm
+
+package-linux: package-linux-amd64 package-linux-arm64
+
+package-linux-amd64:
+	@mkdir -p bin dist
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/ai-proxy $(CMD)
+	ARCH=amd64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p deb -t dist/
+	ARCH=amd64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p rpm -t dist/
+
+package-linux-arm64:
+	@mkdir -p bin dist
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(BUILD_FLAGS) -o bin/ai-proxy $(CMD)
+	ARCH=arm64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p deb -t dist/
+	ARCH=arm64 VERSION=$(PKG_VERSION) $(NFPM) package -f packaging/linux/nfpm.yaml -p rpm -t dist/
