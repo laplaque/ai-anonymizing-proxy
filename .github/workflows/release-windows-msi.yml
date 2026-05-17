@@ -1,0 +1,203 @@
+name: Windows MSI
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'packaging/windows/**'
+      - '.github/workflows/release-windows-msi.yml'
+      - 'cmd/proxy/**'
+      - 'internal/envfile/**'
+      - 'internal/config/**'
+      - 'internal/mitm/**'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MSI
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up .NET (for WiX v4 and AzureSignTool)
+        uses: actions/setup-dotnet@e3aa3d913296f3a3e6ce4fc7f6d1f7ed0f7d6d8e # v5.0.0
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Verify signing secrets are present (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          AZURE_KEYVAULT_URI:       ${{ secrets.AZURE_KEYVAULT_URI }}
+          AZURE_KEYVAULT_CERT_NAME: ${{ secrets.AZURE_KEYVAULT_CERT_NAME }}
+          AZURE_TENANT_ID:          ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:          ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:      ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          foreach ($v in @('AZURE_KEYVAULT_URI','AZURE_KEYVAULT_CERT_NAME',
+                           'AZURE_TENANT_ID','AZURE_CLIENT_ID','AZURE_CLIENT_SECRET')) {
+            if (-not [Environment]::GetEnvironmentVariable($v)) {
+              throw "Required signing secret $v is missing. Refusing to ship an unsigned MSI."
+            }
+          }
+
+      - name: Install WiX v4 and AzureSignTool
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          dotnet tool install --global AzureSignTool
+          wix --version
+
+      - name: Compute version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF -replace '^refs/tags/v',''
+          } else {
+            $v = "0.0.0-pr.$env:GITHUB_RUN_NUMBER"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Version: $v"
+
+      - name: Build MSI
+        shell: pwsh
+        env:
+          AZURE_KEYVAULT_URI:       ${{ secrets.AZURE_KEYVAULT_URI }}
+          AZURE_KEYVAULT_CERT_NAME: ${{ secrets.AZURE_KEYVAULT_CERT_NAME }}
+          AZURE_TENANT_ID:          ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:          ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:      ${{ secrets.AZURE_CLIENT_SECRET }}
+          PKG_VERSION:              ${{ steps.version.outputs.version }}
+        run: |
+          # `make` is not standard on windows-latest; invoke the underlying steps directly.
+          go build -ldflags="-s -w" -o bin/ai-proxy.exe ./cmd/proxy
+          pwsh -File packaging/windows/wix/build.ps1 `
+            -Version "${{ steps.version.outputs.version }}" `
+            -BinaryPath "$PWD/bin" `
+            -PackagingPath "$PWD/packaging/windows/wix"
+
+      - name: Verify MSI signature (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist\*.msi | Select-Object -First 1
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                      Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+          & $signtool.FullName verify /pa /v $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+
+      - name: Round-trip install test
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist\*.msi | Select-Object -First 1
+          Write-Host "Installing $($msi.FullName)"
+          $p = Start-Process msiexec.exe -Wait -PassThru `
+            -ArgumentList "/qn","/i","`"$($msi.FullName)`"","/l*v","$PWD\install.log"
+          if ($p.ExitCode -ne 0) {
+            Get-Content "$PWD\install.log" -Tail 100
+            throw "msiexec install failed with exit $($p.ExitCode)"
+          }
+
+          # Service installed?
+          $svc = Get-Service -Name ai-proxy -ErrorAction Stop
+          Write-Host "Service status: $($svc.Status)"
+          # Allow a moment for delayed-auto-start to kick in.
+          $deadline = (Get-Date).AddSeconds(30)
+          while ($svc.Status -ne 'Running' -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 2
+            $svc.Refresh()
+          }
+          if ($svc.Status -ne 'Running') {
+            Get-Content "$PWD\install.log" -Tail 200
+            throw "Service ai-proxy not Running (status: $($svc.Status))"
+          }
+
+          # CA in LocalMachine\Root?
+          $cert = Get-ChildItem Cert:\LocalMachine\Root |
+                  Where-Object { $_.Subject -match 'AI-Proxy|ai-proxy' }
+          if (-not $cert) { throw "CA not found in LocalMachine\Root" }
+          Write-Host "CA thumbprint: $($cert.Thumbprint)"
+
+          # Uninstall.
+          Write-Host "Uninstalling $($msi.FullName)"
+          $p = Start-Process msiexec.exe -Wait -PassThru `
+            -ArgumentList "/qn","/x","`"$($msi.FullName)`"","/l*v","$PWD\uninstall.log"
+          if ($p.ExitCode -ne 0) {
+            Get-Content "$PWD\uninstall.log" -Tail 100
+            throw "msiexec uninstall failed with exit $($p.ExitCode)"
+          }
+          $svcAfter = Get-Service -Name ai-proxy -ErrorAction SilentlyContinue
+          if ($svcAfter) { throw "Service still present after uninstall" }
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-msi
+          path: dist/*.msi
+
+      - name: Upload install logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-install-logs
+          path: |
+            install.log
+            uninstall.log
+
+  release:
+    name: Sign + publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    # Scoped per-job (mirrors release-linux-packages.yml).
+    permissions:
+      contents: write          # release upload
+      id-token: write          # cosign keyless signing via Fulcio/Rekor
+    steps:
+      - name: Download MSI
+        uses: actions/download-artifact@448e3f862ab3ef47aa50ff917776823c9946035b # v7.0.0
+        with:
+          name: windows-msi
+          path: dist/
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum *.msi > SHA256SUMS-windows
+          sha512sum *.msi > SHA512SUMS-windows
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6e113b16d7d56d4c136e46ea9d2f80ce5d4be # v3.7.0
+
+      - name: Cosign-sign release artifacts (keyless)
+        working-directory: dist
+        run: |
+          for f in *.msi SHA256SUMS-windows SHA512SUMS-windows; do
+            cosign sign-blob --yes \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.cert" \
+              "$f"
+          done
+
+      - name: Attach to GitHub release
+        uses: softprops/action-gh-release@e7a8f85e1c67a31e6ed99a94b41bd0b71bbee6b8 # v2.0.9
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
