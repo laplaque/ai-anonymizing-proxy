@@ -2,6 +2,21 @@
 
 `ai-proxy` ships as `.deb` and `.rpm` packages for `amd64` and `arm64`. Packages are built reproducibly from CI on every release tag and attached to the GitHub release.
 
+## ⚠ Security posture — read before fleet deployment
+
+Installing this package adds a host-local Certificate Authority to the operating system's trust store. This is required for the proxy to MITM HTTPS traffic and anonymize PII before it leaves the host, but the implications must be reviewed by a security team before rollout via UEM tooling (Intune, JAMF, SCCM, Ansible, etc.).
+
+**After install, this host trusts an `ai-proxy`-controlled CA capable of MITM-ing any HTTPS connection originating from it.** Anyone who can read `/etc/ai-proxy/ca-key.pem` can mint TLS certificates that browsers, CLIs, language runtimes, and other clients on this host will accept without warning.
+
+Concretely:
+
+- The CA private key lives at `/etc/ai-proxy/ca-key.pem` and is generated fresh per host at first install. It never leaves the host. The package sets file mode `0640`, owner `ai-proxy:ai-proxy` — protect this file with the same rigour you'd apply to a host SSH key.
+- The CA public certificate is installed into the OS trust store (`/usr/local/share/ca-certificates/` on Debian/Ubuntu, `/etc/pki/trust/anchors/` on openSUSE, `/etc/pki/ca-trust/source/anchors/` on RHEL/Fedora). Browsers and CLI tools on this host will therefore trust any leaf certificate signed by this CA.
+- Uninstall removes the CA from the trust store automatically (see [Uninstall](#uninstall)). On upgrade, the existing CA is preserved so applications that have pinned its fingerprint continue to work.
+- If the proxy service fails to start, postinstall **rolls back the CA install** and exits non-zero — a successful package install therefore guarantees the proxy is running, so an installed-but-not-intercepting state cannot occur (per CLAUDE.md Invariant #1).
+
+See [docs/tls-mitm.md](../tls-mitm.md) for the broader MITM architecture and threat model.
+
 ## Install
 
 ### Debian / Ubuntu
@@ -28,9 +43,9 @@ The package:
 - Installs the binary at `/usr/bin/ai-proxy`
 - Creates the `ai-proxy` system user (no shell, no home)
 - Generates a CA cert+key under `/etc/ai-proxy/` if not already present
-- Registers the CA in the OS trust store
+- Registers the CA in the OS trust store (see the security callout above)
 - Installs and enables `ai-proxy.service` (systemd)
-- Starts the service immediately
+- Starts the service immediately; if it fails to start on a `systemd`-managed host, the CA is removed from the trust store and the install aborts non-zero
 
 ## Configure
 
