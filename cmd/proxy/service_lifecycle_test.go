@@ -145,7 +145,8 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	go func() {
 		defer close(reqDone)
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
-		resp, err := http.DefaultClient.Do(req)
+		// #nosec G107,G704 — addr is freeAddr(t)'s localhost loopback, not user input
+		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed below; lint flow analysis misses the err-guard
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 		}
