@@ -1,0 +1,205 @@
+# macOS Packaging
+
+`ai-proxy` ships for macOS as two artifacts:
+
+| Artifact | Use case |
+|---|---|
+| `ai-proxy-<version>-universal.pkg` | Self-managed install or JAMF "PKG" policy. Universal binary (arm64 + amd64). |
+| `ai-proxy-<version>.mobileconfig` | JAMF / MDM declarative deployment — pushes CA trust + global HTTP proxy settings. |
+
+Both are signed with an Apple Developer ID certificate. The PKG is additionally notarized and stapled, so it installs offline without contacting Apple at install time.
+
+Minimum macOS version: **12.0 (Monterey)**.
+
+## ⚠ Security posture — read before fleet deployment
+
+Installing this package adds a host-local Certificate Authority to the macOS System keychain trust store. **After install, this host trusts an `ai-proxy`-controlled CA capable of MITM-ing any HTTPS connection originating from it.** Anyone with read access to `/etc/ai-proxy/ca-key.pem` can mint TLS certificates that Safari, every CLI, Xcode, etc. will accept without warning.
+
+Concretely:
+
+- The CA private key lives at `/etc/ai-proxy/ca-key.pem`, mode `0640`, owned by the `_aiproxy` service user. Protect it with the same rigour you'd apply to a host SSH key.
+- The CA public cert is trusted in `/Library/Keychains/System.keychain` via `security add-trusted-cert -d -r trustRoot`.
+- The PKG generates a fresh CA per host on first install (preserved on upgrade). The **`.mobileconfig` deploys the release CA** baked in at build time — every host installed via the .mobileconfig route trusts the same CA. Rotation requires re-issuing the profile and pushing it to every device.
+- Uninstall removes the CA from the System keychain (see [Uninstall](#uninstall)).
+- If the LaunchDaemon fails to start during postinstall, the CA is removed from the System keychain and the install aborts non-zero — installed-but-not-intercepting cannot occur (per CLAUDE.md Invariant #1).
+
+See [docs/tls-mitm.md](../tls-mitm.md) for the broader MITM architecture and threat model.
+
+## Install — PKG
+
+Double-click the `.pkg` in Finder, or silently:
+
+```bash
+sudo installer -pkg ai-proxy-<version>-universal.pkg -target /
+```
+
+Gatekeeper accepts the package because it is signed (Developer ID Installer) and notarized + stapled.
+
+The package:
+
+- Installs the universal binary at `/usr/local/bin/ai-proxy`
+- Creates the `_aiproxy` system user (hidden, no shell, no home; UID auto-allocated in the 220–400 range)
+- Generates a CA cert + key under `/etc/ai-proxy/` if not already present
+- Trusts the CA in the System keychain via `security add-trusted-cert`
+- Installs the LaunchDaemon plist at `/Library/LaunchDaemons/com.ai-anonymizing-proxy.plist`
+- Loads + starts the daemon via `launchctl bootstrap system …`
+- Ships the uninstall script at `/usr/local/share/ai-proxy/uninstall.sh`
+
+If postinstall cannot load the LaunchDaemon, it removes the CA from the System keychain and exits non-zero.
+
+### UID allocation fallback
+
+The postinstall script scans UIDs 220–400 for a free slot. If that range is fully occupied on a heavily customized host, allocate `_aiproxy` manually before installing:
+
+```bash
+sudo dscl . -create /Groups/_aiproxy PrimaryGroupID <free-uid>
+sudo dscl . -create /Users/_aiproxy UniqueID <free-uid>
+sudo dscl . -create /Users/_aiproxy PrimaryGroupID <free-uid>
+sudo dscl . -create /Users/_aiproxy NFSHomeDirectory /var/empty
+sudo dscl . -create /Users/_aiproxy UserShell /usr/bin/false
+sudo dscl . -create /Users/_aiproxy IsHidden 1
+sudo dscl . -create /Users/_aiproxy Password "*"
+```
+
+## Configure
+
+The LaunchDaemon does **not** source an env file — macOS launchd reads env vars only from the plist's `EnvironmentVariables` dict.
+
+To change a value, edit `/Library/LaunchDaemons/com.ai-anonymizing-proxy.plist` (or override at MDM-deploy time) and re-bootstrap:
+
+```bash
+sudo launchctl bootout system/com.ai-anonymizing-proxy
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.ai-anonymizing-proxy.plist
+```
+
+The file at `/etc/ai-proxy/ai-proxy.env` is shipped for parity with Linux but is informational on macOS — admins migrating from Linux can read it to remind themselves of the variable names and defaults.
+
+| Variable | Default in plist | Purpose |
+|---|---|---|
+| `BIND_ADDRESS` | `127.0.0.1` | Listen address. |
+| `PROXY_PORT` | `18080` | MITM proxy port. Differs from Linux (8080) to avoid collisions with common dev servers on macOS. |
+| `MANAGEMENT_PORT` | `18081` | Management API port. |
+| `CA_CERT_FILE` | `/etc/ai-proxy/ca-cert.pem` | CA cert path. |
+| `CA_KEY_FILE` | `/etc/ai-proxy/ca-key.pem` | CA key path. |
+| `ENABLED_PACKS` | `SECRETS,GLOBAL,DE` | PII detection packs (order matters — `SECRETS` must precede `GLOBAL`). |
+| `USE_AI_DETECTION` | `false` | Enable Ollama-backed PII detection. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
+
+The structured config at `/etc/ai-proxy/proxy-config.json` is honored as a fallback and preserved across upgrades.
+
+## Verify
+
+```bash
+# Service state
+sudo launchctl print system/com.ai-anonymizing-proxy | head -40
+
+# Logs
+tail -f /var/log/ai-proxy/stdout.log /var/log/ai-proxy/stderr.log
+
+# Management API
+curl http://127.0.0.1:18081/status
+
+# Trusted CA in the System keychain
+sudo security find-certificate -c "ai-proxy" -p /Library/Keychains/System.keychain
+```
+
+## Install — `.mobileconfig` (JAMF / MDM)
+
+The `.mobileconfig` profile carries two payloads:
+
+1. **`com.apple.security.root`** — the release CA, trusted as a root in the System keychain.
+2. **`com.apple.proxy.http.global`** — a manual HTTP proxy at `127.0.0.1:18080`.
+
+It does **not** install the binary or the LaunchDaemon. The profile is meant to be deployed in tandem with the PKG (PKG installs the daemon, profile establishes trust + proxy settings).
+
+### Manual install
+
+```bash
+sudo profiles install -path ai-proxy-<version>.mobileconfig
+sudo profiles list | grep ai-proxy
+```
+
+Or double-click the file in Finder and approve in **System Settings → Privacy & Security → Profiles**.
+
+### JAMF deployment
+
+In JAMF Pro:
+
+1. **Computers → Configuration Profiles → Upload** the signed `.mobileconfig`.
+2. Scope to the target smart group.
+3. (Optional) Wrap the PKG in a Policy that runs alongside the profile, so the LaunchDaemon is present on every device that trusts the CA.
+
+JAMF will treat the profile's `PayloadRemovalDisallowed = false` as removable — admin re-scoping pulls the profile and removes both the CA trust and the proxy settings.
+
+### Verify the profile
+
+```bash
+sudo profiles list                                          # is it installed?
+plutil -lint ai-proxy-<version>.mobileconfig                # XML valid?
+/usr/bin/security cms -D -i ai-proxy-<version>.mobileconfig | head   # signed payload
+```
+
+## Upgrade
+
+`installer -pkg` reinstalls the binary, plist, and uninstall script. `/etc/ai-proxy/proxy-config.json` and the existing CA cert + key are preserved.
+
+For .mobileconfig: increment `PayloadVersion` in the source and re-push — MDMs replace the existing profile in place.
+
+## Uninstall
+
+```bash
+sudo bash /usr/local/share/ai-proxy/uninstall.sh
+sudo pkgutil --forget com.ai-anonymizing-proxy.pkg
+```
+
+This stops the daemon, removes the CA from the System keychain, and removes the LaunchDaemon plist. Files under `/etc/ai-proxy/` are preserved — purge manually if desired:
+
+```bash
+sudo rm -rf /etc/ai-proxy /var/lib/ai-proxy /var/log/ai-proxy
+```
+
+For the `.mobileconfig`:
+
+```bash
+sudo profiles remove -identifier com.ai-anonymizing-proxy.profile
+```
+
+## Verify package signatures
+
+Every release artifact is signed via Sigstore cosign (keyless, OIDC-bound):
+
+```bash
+cosign verify-blob \
+  --certificate ai-proxy-<version>-universal.pkg.cert \
+  --signature   ai-proxy-<version>-universal.pkg.sig \
+  --certificate-identity-regexp 'https://github.com/laplaque/ai-anonymizing-proxy/.+' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ai-proxy-<version>-universal.pkg
+```
+
+Apple-level signature checks:
+
+```bash
+pkgutil --check-signature ai-proxy-<version>-universal.pkg
+spctl --assess --type install --verbose=2 ai-proxy-<version>-universal.pkg
+```
+
+Checksums are published as `SHA256SUMS-macos` and `SHA512SUMS-macos` alongside the artifacts.
+
+## Release CA rotation
+
+The `.mobileconfig` embeds the CA at build time. If the CA private key is suspected compromised:
+
+1. Generate a fresh CA pair locally.
+2. Re-encode both PEMs as base64 and update the `MACOS_RELEASE_CA_CERT` / `MACOS_RELEASE_CA_KEY` repository secrets.
+3. Cut a new release tag — the CI workflow rebuilds the .mobileconfig (and embeds the new CA in PKG-installed hosts' fallback path).
+4. Push the new profile to every managed device via JAMF / MDM. The old profile is replaced; old CA trust is removed.
+
+In-place rotation via a forthcoming `ai-proxy install --rotate-ca` command is planned (Phase 6). Until then, rotation = uninstall + reinstall.
+
+## Source
+
+- PKG: `packaging/macos/pkg/` (`build.sh`, `distribution.xml`, `scripts/{postinstall,preuninstall}`, `notarize.sh`)
+- .mobileconfig: `packaging/macos/mobileconfig/` (`ai-proxy.mobileconfig.tmpl`, `build.sh`)
+- Build target: `make package-macos`
+- CI workflow: `.github/workflows/release-macos-pkg.yml`
