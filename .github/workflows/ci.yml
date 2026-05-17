@@ -35,6 +35,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history required so delta-coverage.sh can resolve the merge
+          # base against origin/main. Without this, git diff exits non-zero
+          # and the delta gate fails loudly (see delta-coverage.sh).
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0

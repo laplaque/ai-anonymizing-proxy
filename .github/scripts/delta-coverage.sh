@@ -15,8 +15,17 @@ if [ ! -f "$COVERAGE_FILE" ]; then
   exit 1
 fi
 
-# Get changed .go source files (exclude tests, generated, mocks)
-changed_files=$(git diff --name-only --diff-filter=ACMR "${BASE_REF}...HEAD" -- '*.go' \
+# Get changed .go source files (exclude tests, generated, mocks).
+# Fail closed: if `git diff` cannot resolve the merge base (e.g. shallow clone
+# without enough history), we MUST exit non-zero so the CI job fails loudly
+# rather than silently bypassing the delta gate.
+if ! diff_output=$(git diff --name-only --diff-filter=ACMR "${BASE_REF}...HEAD" -- '*.go'); then
+  echo "ERROR: git diff failed against ${BASE_REF}...HEAD — cannot compute changed files." >&2
+  echo "  Check that the workflow's actions/checkout step uses fetch-depth: 0 so the merge base is reachable." >&2
+  exit 1
+fi
+
+changed_files=$(echo "$diff_output" \
   | grep -v '_test\.go$' \
   | grep -v '_generated\.go$' \
   | grep -v 'mock_' \
@@ -51,6 +60,18 @@ while IFS= read -r file; do
 
     # Skip the total line
     if [ "$func_name" = "(statements)" ]; then
+      continue
+    fi
+
+    # `go tool cover -func` reports 0.0% for functions with zero instrumented
+    # statements (e.g. empty interface-compliance methods). That's not a
+    # coverage failure — it's a 0-of-0 ratio. Detect by summing numStmts from
+    # all blocks in the raw profile whose start line equals the function's
+    # declaration line. If the sum is 0, the function has nothing to cover.
+    func_start_line=$(echo "$line" | awk -F: '{print $2}')
+    stmt_sum=$(grep -E "/${file}:${func_start_line}\." "$COVERAGE_FILE" \
+      | awk '{sum += $2} END {print sum+0}')
+    if [ "$stmt_sum" = "0" ]; then
       continue
     fi
 
