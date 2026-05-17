@@ -78,6 +78,10 @@ func main() {
 	srv := proxyHTTPServer(cfg, proxyServer)
 	log.Printf("[PROXY] Listening on %s", srv.Addr)
 
+	if runAsServiceIfNeeded(srv) {
+		return
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go installShutdownHandler(quit, srv, 15*time.Second)
