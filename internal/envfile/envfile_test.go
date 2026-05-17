@@ -119,6 +119,21 @@ func TestApplyMissingFile(t *testing.T) {
 	}
 }
 
+func TestApplyScannerError(t *testing.T) {
+	// bufio.Scanner.Scan() returns false and surfaces an error via Err()
+	// when a single line exceeds bufio.MaxScanTokenSize (64KiB). Produce
+	// a 128KiB unbroken line to exercise the scanner.Err() branch in Apply.
+	huge := "BIG=" + strings.Repeat("x", 128*1024)
+	path := writeTempFile(t, huge)
+	err := Apply(path)
+	if err == nil {
+		t.Fatal("Apply() with oversized line = nil, want scanner error")
+	}
+	if !strings.Contains(err.Error(), "read env file") {
+		t.Errorf("err = %v, want substring 'read env file'", err)
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.env")

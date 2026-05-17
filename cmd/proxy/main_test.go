@@ -330,6 +330,43 @@ func TestMain_HelperProcess_GenerateCA(t *testing.T) {
 	}
 }
 
+// TestMain_HelperProcess_EnvFile_Loaded re-execs the binary with --env-file
+// pointing at a temp file that supplies ENABLED_PACKS, then exits via
+// --generate-ca. Asserts the success branch of main()'s envfile.Apply call.
+func TestMain_HelperProcess_EnvFile_Loaded(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "test.env")
+	if err := os.WriteFile(envPath, []byte("ENABLED_PACKS=SECRETS\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	cert := filepath.Join(dir, "ca.pem")
+	key := filepath.Join(dir, "ca.key")
+
+	cmd := helperCmd(t, "--env-file", envPath, "--generate-ca", "--ca-cert", cert, "--ca-key", key)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("env-file + generate-ca: %v\n%s", err, out)
+	}
+}
+
+// TestMain_HelperProcess_EnvFile_Fatal re-execs with --env-file pointing at
+// a missing path so envfile.Apply returns an error and main()'s [ENV]
+// log.Fatalf fires.
+func TestMain_HelperProcess_EnvFile_Fatal(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.env")
+
+	cmd := helperCmd(t, "--env-file", missing)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on missing env file, got success\n%s", out)
+	}
+	if !strings.Contains(string(out), "[ENV]") {
+		t.Errorf("expected '[ENV]' in output, got:\n%s", out)
+	}
+}
+
 // TestMain_HelperProcess_GenerateCA_Fatal re-execs this test binary with
 // --generate-ca and an empty --ca-cert path so runGenerateCA returns an
 // error and main()'s [CA] log.Fatalf fires.

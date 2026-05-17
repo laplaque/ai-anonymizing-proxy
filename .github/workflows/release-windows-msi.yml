@@ -35,7 +35,7 @@ jobs:
           cache: true
 
       - name: Set up .NET (for WiX v4 and AzureSignTool)
-        uses: actions/setup-dotnet@e3aa3d913296f3a3e6ce4fc7f6d1f7ed0f7d6d8e # v5.0.0
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
           dotnet-version: '8.0.x'
 
