@@ -26,12 +26,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"ai-anonymizing-proxy/internal/config"
+	"ai-anonymizing-proxy/internal/envfile"
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
 	"ai-anonymizing-proxy/internal/mitm"
@@ -40,12 +42,27 @@ import (
 
 func main() {
 	generateCA := flag.Bool("generate-ca", false, "Generate a self-signed CA cert+key pair and exit.")
-	caCertOut := flag.String("ca-cert", "ca-cert.pem", "Output path for the generated CA certificate (with --generate-ca).")
+	caCertOut := flag.String("ca-cert", "ca-cert.pem", "Output path for the generated CA certificate (with --generate-ca / --remove-ca-from-store).")
 	caKeyOut := flag.String("ca-key", "ca-key.pem", "Output path for the generated CA private key (with --generate-ca).")
+	envFile := flag.String("env-file", "", "Path to a KEY=VALUE env file applied to the process environment before config load.")
+	removeCA := flag.Bool("remove-ca-from-store", false, "Remove the CA at --ca-cert from the Windows LocalMachine\\Root trust store and exit. Windows-only.")
 	flag.Parse()
+
+	if *envFile != "" {
+		if err := envfile.Apply(*envFile); err != nil {
+			log.Fatalf("[ENV] %v", err)
+		}
+	}
 
 	if *generateCA {
 		if err := runGenerateCA(*caCertOut, *caKeyOut); err != nil {
+			log.Fatalf("[CA] %v", err)
+		}
+		return
+	}
+
+	if *removeCA {
+		if err := removeCAFromStore(*caCertOut); err != nil {
 			log.Fatalf("[CA] %v", err)
 		}
 		return
@@ -70,10 +87,26 @@ func main() {
 	srv := proxyHTTPServer(cfg, proxyServer)
 	log.Printf("[PROXY] Listening on %s", srv.Addr)
 
+	runServerOrService(srv)
+}
+
+// serviceDispatcher is the entry point that decides whether the process
+// is running under the Windows SCM (returning true) or as an
+// interactive CLI (returning false). It's a package var so tests can
+// swap in a fake that returns true to exercise the early-return path
+// from runServerOrService without launching a real Windows service.
+var serviceDispatcher = runAsServiceIfNeeded
+
+// runServerOrService dispatches to the Windows SCM handler when the
+// process was launched by services.msc, and falls through to the
+// signal-driven HTTP loop otherwise.
+func runServerOrService(srv *http.Server) {
+	if serviceDispatcher(srv) {
+		return
+	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go installShutdownHandler(quit, srv, 15*time.Second)
-
 	runHTTPServer(srv)
 }
 

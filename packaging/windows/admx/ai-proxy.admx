@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Group Policy template for AI Anonymizing Proxy.
+
+  Deploy by copying this file to
+      \\<DC>\SYSVOL\<domain>\Policies\PolicyDefinitions\
+  and ai-proxy.adml to the matching en-US\ subdirectory.
+
+  Settings appear in Group Policy Management Editor under:
+      Computer Configuration → Administrative Templates → AI Anonymizing Proxy
+-->
+<policyDefinitions revision="1.0" schemaVersion="1.0"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="aiproxy" namespace="laplaque.AiProxy"/>
+    <using prefix="windows" namespace="Microsoft.Policies.Windows"/>
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0"/>
+  <categories>
+    <category name="AiProxy" displayName="$(string.AiProxyCategory)"/>
+  </categories>
+  <policies>
+    <policy name="ProxyEnabled" class="Machine"
+            displayName="$(string.ProxyEnabled)"
+            explainText="$(string.ProxyEnabled_Help)"
+            key="SOFTWARE\Policies\laplaque\AiProxy"
+            valueName="Enabled">
+      <parentCategory ref="AiProxy"/>
+      <supportedOn ref="windows:SUPPORTED_WindowsVista"/>
+      <enabledValue><decimal value="1"/></enabledValue>
+      <disabledValue><decimal value="0"/></disabledValue>
+    </policy>
+    <policy name="ProxyAddress" class="Machine"
+            displayName="$(string.ProxyAddress)"
+            explainText="$(string.ProxyAddress_Help)"
+            key="SOFTWARE\Policies\laplaque\AiProxy"
+            presentation="$(presentation.ProxyAddress)">
+      <parentCategory ref="AiProxy"/>
+      <supportedOn ref="windows:SUPPORTED_WindowsVista"/>
+      <elements>
+        <text id="Address" valueName="Address" required="true"/>
+      </elements>
+    </policy>
+    <policy name="ProxyPort" class="Machine"
+            displayName="$(string.ProxyPort)"
+            explainText="$(string.ProxyPort_Help)"
+            key="SOFTWARE\Policies\laplaque\AiProxy"
+            presentation="$(presentation.ProxyPort)">
+      <parentCategory ref="AiProxy"/>
+      <supportedOn ref="windows:SUPPORTED_WindowsVista"/>
+      <elements>
+        <decimal id="Port" valueName="Port" minValue="1" maxValue="65535" required="true"/>
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

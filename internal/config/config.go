@@ -60,11 +60,15 @@ type Config struct {
 	PIIInstructions map[string]string `json:"piiInstructions"`
 }
 
-// Load returns config with defaults overridden by proxy-config.json and env vars.
+// Load returns config with defaults overridden by proxy-config.json,
+// environment variables, and (on Windows) Group Policy registry values.
+// Layering: defaults → file → env → policy. Group Policy wins because
+// domain admins must be able to override local user state.
 func Load() *Config {
 	cfg := defaults()
 	loadFile(cfg, "proxy-config.json")
 	loadEnv(cfg)
+	loadPolicy(cfg)
 	// Clamp PackDecayRate to [0, 1].
 	if cfg.PackDecayRate < 0 {
 		log.Printf("[CONFIG] Warning: packDecayRate %f is negative, clamping to 0", cfg.PackDecayRate)

@@ -6,6 +6,6 @@ Native OS packages for unattended UEM deployment (Intune, JAMF, SCCM, etc.).
 |---|---|---|---|
 | Linux  | `.deb`, `.rpm` (amd64, arm64) | shipped | [`linux.md`](./linux.md) |
 | macOS  | `.pkg` + `.mobileconfig`      | shipped | [`macos.md`](./macos.md) |
-| Windows | MSI                           | planned | _phase 3_ |
+| Windows | MSI (x64) + ADMX              | shipped | [`windows.md`](./windows.md) |
 
 Each phase covers silent install, service registration, OS trust-store integration, externalized configuration, and clean uninstall. Source under `packaging/<platform>/`.

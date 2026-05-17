@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AI Anonymizing Proxy — Windows MSI installer (WiX Toolset v4).
+
+  UpgradeCode below is fixed for the lifetime of the product. Never change
+  it; doing so breaks MajorUpgrade and leaves orphan installs on existing
+  hosts. Generated when this fragment was first authored.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="AI Anonymizing Proxy"
+           Manufacturer="laplaque"
+           Version="$(var.Version)"
+           UpgradeCode="57E99AE6-6825-43B6-BC6E-A566946F7F86"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="GDPR-compliant MITM proxy for anonymizing PII in LLM traffic"/>
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed."/>
+    <MediaTemplate EmbedCab="yes"/>
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf"/>
+
+    <Property Id="ARPNOMODIFY" Value="1"/>
+    <Property Id="ARPNOREPAIR" Value="1"/>
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/laplaque/ai-anonymizing-proxy"/>
+
+    <!-- Properties admins can override at install time, e.g.
+         msiexec /qn /i ai-proxy.msi PROXY_PORT=18080 BIND_ADDRESS=127.0.0.1 -->
+    <Property Id="PROXY_PORT" Value="8080" Secure="yes"/>
+    <Property Id="BIND_ADDRESS" Value="127.0.0.1" Secure="yes"/>
+    <Property Id="UPSTREAM_PROXY" Secure="yes"/>
+    <Property Id="ENABLED_PACKS" Value="SECRETS,GLOBAL,DE" Secure="yes"/>
+    <Property Id="USE_AI_DETECTION" Value="false" Secure="yes"/>
+
+    <Feature Id="Main" Title="AI Anonymizing Proxy" Level="1">
+      <ComponentGroupRef Id="ServiceComponents"/>
+      <ComponentGroupRef Id="ConfigFiles"/>
+      <ComponentGroupRef Id="CATrustComponents"/>
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="AiProxy"/>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="CONFIGFOLDER" Name="AiProxy"/>
+    </StandardDirectory>
+
+    <ComponentGroup Id="ConfigFiles" Directory="CONFIGFOLDER">
+      <Component Id="ProxyConfig" Bitness="always64" NeverOverwrite="yes">
+        <File Id="ProxyConfigFile" Source="$(var.PackagingPath)\proxy-config.json.default"
+              Name="proxy-config.json" KeyPath="yes"/>
+      </Component>
+      <Component Id="EnvFile" Bitness="always64" NeverOverwrite="yes">
+        <File Id="EnvFileFile" Source="$(var.PackagingPath)\ai-proxy.env"
+              Name="ai-proxy.env" KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+  </Package>
+</Wix>

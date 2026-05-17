@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources revision="1.0" schemaVersion="1.0"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>AI Anonymizing Proxy</displayName>
+  <description>Group Policy template for ai-proxy.</description>
+  <resources>
+    <stringTable>
+      <string id="AiProxyCategory">AI Anonymizing Proxy</string>
+      <string id="ProxyEnabled">Enable AI Anonymizing Proxy</string>
+      <string id="ProxyEnabled_Help">When enabled, applications honoring system proxy settings will route through ai-proxy.</string>
+      <string id="ProxyAddress">Proxy server address</string>
+      <string id="ProxyAddress_Help">IP address or hostname of the ai-proxy listener. Default 127.0.0.1.</string>
+      <string id="ProxyPort">Proxy server port</string>
+      <string id="ProxyPort_Help">TCP port the proxy listens on. Default 8080.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="ProxyAddress">
+        <textBox refId="Address">
+          <label>Address:</label>
+          <defaultValue>127.0.0.1</defaultValue>
+        </textBox>
+      </presentation>
+      <presentation id="ProxyPort">
+        <decimalTextBox refId="Port" defaultValue="8080">Port:</decimalTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

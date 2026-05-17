@@ -1,0 +1,12 @@
+{
+  "proxyPort": 8080,
+  "managementPort": 8081,
+  "bindAddress": "127.0.0.1",
+  "useAIDetection": false,
+  "logLevel": "info",
+  "caCertFile": "C:\\ProgramData\\ai-proxy\\ca-cert.pem",
+  "caKeyFile": "C:\\ProgramData\\ai-proxy\\ca-key.pem",
+  "ollamaCacheFile": "C:\\ProgramData\\ai-proxy\\ollama-cache.db",
+  "enabledPacks": ["SECRETS", "GLOBAL", "DE"],
+  "packDecayRate": 0.05
+}

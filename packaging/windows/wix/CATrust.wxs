@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CA trust lifecycle. Mirrors the Linux postinstall pattern: generate a
+  per-host CA on install if absent (idempotent on upgrade), import it into
+  LocalMachine\Root via certutil, and remove it on uninstall.
+
+  Generation is delegated to the binary's own generate-ca code path so
+  there is exactly one CA-minting implementation across all packages.
+  Removal calls the binary's own ai-proxy.exe remove-ca-from-store code
+  path (caremove_windows.go) — no PowerShell-in-MSI quoting fragility.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Fragment>
+    <ComponentGroup Id="CATrustComponents" Directory="CONFIGFOLDER">
+      <!-- Placeholder component locks down ACLs on the CONFIGFOLDER
+           (C:\ProgramData\AiProxy) BEFORE the deferred custom actions run
+           and write the CA private key here. Without this, the folder
+           inherits C:\ProgramData's default ACL which grants Users:Read —
+           an unprivileged user could read ca-key.pem and mint
+           browser-trusted leaf certs. PermissionEx is a Util-extension
+           element that emits MsiLockPermissionsEx rows. -->
+      <Component Id="CADir" Bitness="always64" Guid="*">
+        <CreateFolder>
+          <util:PermissionEx User="[WIX_ACCOUNT_LOCALSYSTEM]"
+                             GenericAll="yes"/>
+          <util:PermissionEx User="[WIX_ACCOUNT_ADMINISTRATORS]"
+                             GenericAll="yes"/>
+        </CreateFolder>
+        <RegistryValue Root="HKLM"
+                       Key="Software\laplaque\AiProxy"
+                       Name="ConfigDir"
+                       Type="string"
+                       Value="[CONFIGFOLDER]"
+                       KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+
+    <!-- Generate CA: ai-proxy.exe runs its built-in CA generator, which is
+         idempotent (skips when files already exist). Safe to re-run on upgrade. -->
+    <CustomAction Id="GenerateCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='"[INSTALLFOLDER]ai-proxy.exe" --generate-ca --ca-cert "[CONFIGFOLDER]ca-cert.pem" --ca-key "[CONFIGFOLDER]ca-key.pem"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"/>
+
+    <CustomAction Id="ImportCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='certutil.exe -addstore -f Root "[CONFIGFOLDER]ca-cert.pem"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"/>
+
+    <!-- Remove CA via the binary's own helper — no inline PowerShell. The
+         helper exits 0 on success and on already-removed (idempotent); any
+         other failure is a hard error so we never silently leave a trusted
+         CA after uninstall. Return="check" guarantees msiexec surfaces it. -->
+    <CustomAction Id="RemoveCA"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand='"[INSTALLFOLDER]ai-proxy.exe" --remove-ca-from-store --ca-cert "[CONFIGFOLDER]ca-cert.pem"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="GenerateCA" After="InstallFiles" Condition="NOT Installed"/>
+      <Custom Action="ImportCA"   After="GenerateCA"   Condition="NOT Installed"/>
+      <Custom Action="RemoveCA"   Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;"/>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>
