@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 }
 
 // helperCmd builds an *exec.Cmd that re-execs this test binary as the
-// production proxy. Centralising the os.Args[0] call site means there's
+// production proxy. Centralizing the os.Args[0] call site means there's
 // exactly one gosec G204 suppression in the file (here) instead of one per
 // test — and the suppression sits next to the explanation of why the
 // pattern is safe (the target is the test binary itself, not external
