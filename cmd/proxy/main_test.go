@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +26,21 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// helperCmd builds an *exec.Cmd that re-execs this test binary as the
+// production proxy. Centralising the os.Args[0] call site means there's
+// exactly one gosec G204 suppression in the file (here) instead of one per
+// test — and the suppression sits next to the explanation of why the
+// pattern is safe (the target is the test binary itself, not external
+// input). Callers append cmd.Env / cmd.Dir / cmd.Stdout / cmd.Stderr as
+// they need them.
+func helperCmd(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	//nolint:gosec // G204: os.Args[0] is the test binary itself (the helper-process pattern from stdlib os/exec internal tests); the args are test-controlled flags, not external input.
+	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	return cmd
 }
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn,
@@ -110,10 +123,12 @@ func TestPrintBanner_ZeroValueConfig_DoesNotPanic(t *testing.T) {
 	_ = captureStdout(t, func() { printBanner(&config.Config{}) })
 }
 
-// TestRunGenerateCA exercises the helper invoked by main() under
-// --generate-ca: it writes the cert+key pair to the given paths, rejects
-// empty paths, and surfaces filesystem errors. The "unwritable cert dir"
-// case lifts coverage of the mitm.GenerateCA error branch.
+// TestRunGenerateCA exercises the cmd/proxy helper that --generate-ca
+// dispatches to: it must reject empty path args, surface filesystem errors,
+// and on success write both files with the right permission on the key.
+// The cryptographic shape of the generated CA is covered by tests in
+// internal/mitm — this test asserts only the contract cmd/proxy owns
+// (path-arg validation + file-on-disk presence + key permission).
 func TestRunGenerateCA(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -145,25 +160,12 @@ func TestRunGenerateCA(t *testing.T) {
 				return
 			}
 
-			certPEM, err := os.ReadFile(certPath) //nolint:gosec // test-only path under t.TempDir()
-			if err != nil {
-				t.Fatalf("read cert: %v", err)
+			if _, statErr := os.Stat(certPath); statErr != nil {
+				t.Errorf("cert not written: %v", statErr)
 			}
-			block, _ := pem.Decode(certPEM)
-			if block == nil {
-				t.Fatal("cert file is not PEM-encoded")
-			}
-			cert, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				t.Fatalf("parse cert: %v", err)
-			}
-			if !cert.IsCA {
-				t.Error("generated certificate is not a CA")
-			}
-
-			info, err := os.Stat(keyPath)
-			if err != nil {
-				t.Fatalf("stat key: %v", err)
+			info, statErr := os.Stat(keyPath)
+			if statErr != nil {
+				t.Fatalf("stat key: %v", statErr)
 			}
 			if info.Mode().Perm() != 0o600 {
 				t.Errorf("key perms = %o, want 0600", info.Mode().Perm())
@@ -179,9 +181,8 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 	proxyPort := freePort(t)
 	mgmtPort := freePort(t)
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-	cmd.Env = append(os.Environ(),
-		"GO_WANT_HELPER_PROCESS=1",
+	cmd := helperCmd(t)
+	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
 		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
 		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
@@ -235,9 +236,8 @@ func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
 	proxyPort := addr.Port
 	mgmtPort := freePort(t)
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-	cmd.Env = append(os.Environ(),
-		"GO_WANT_HELPER_PROCESS=1",
+	cmd := helperCmd(t)
+	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
 		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
 		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
@@ -267,9 +267,8 @@ func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
 	mgmtPort := addr.Port
 	proxyPort := freePort(t)
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-	cmd.Env = append(os.Environ(),
-		"GO_WANT_HELPER_PROCESS=1",
+	cmd := helperCmd(t)
+	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
 		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
 		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
@@ -296,8 +295,7 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0]) //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd := helperCmd(t)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -317,9 +315,7 @@ func TestMain_HelperProcess_GenerateCA(t *testing.T) {
 	cert := filepath.Join(dir, "ca.pem")
 	key := filepath.Join(dir, "ca.key")
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0], //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-		"--generate-ca", "--ca-cert", cert, "--ca-key", key)
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd := helperCmd(t, "--generate-ca", "--ca-cert", cert, "--ca-key", key)
 	cmd.Dir = dir
 
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -341,9 +337,7 @@ func TestMain_HelperProcess_GenerateCA_Fatal(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "ca.key")
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0], //nolint:gosec // G204: helper-process pattern: os.Args[0] is the test binary itself, not external input
-		"--generate-ca", "--ca-cert=", "--ca-key", key)
-	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd := helperCmd(t, "--generate-ca", "--ca-cert=", "--ca-key", key)
 	cmd.Dir = dir
 
 	out, err := cmd.CombinedOutput()
