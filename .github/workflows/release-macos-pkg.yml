@@ -77,11 +77,14 @@ jobs:
             -out    build/dry-run-ca/ca-cert.pem >/dev/null 2>&1
           chmod 0600 build/dry-run-ca/ca-key.pem
 
-          PKG_VERSION=0.0.0-dryrun \
+          # build.sh / mobileconfig/build.sh read VERSION directly; the
+          # Makefile-level PKG_VERSION wraps it. Call the scripts with
+          # VERSION set explicitly since we're bypassing make here.
+          VERSION=0.0.0-dryrun \
           SKIP_SIGN=1 \
           bash packaging/macos/pkg/build.sh
 
-          PKG_VERSION=0.0.0-dryrun \
+          VERSION=0.0.0-dryrun \
           CA_CERT="$PWD/build/dry-run-ca/ca-cert.pem" \
           SKIP_SIGN=1 \
           bash packaging/macos/mobileconfig/build.sh
