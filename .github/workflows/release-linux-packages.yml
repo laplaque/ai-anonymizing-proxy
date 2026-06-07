@@ -26,7 +26,7 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -71,7 +71,7 @@ jobs:
           - opensuse/leap:15
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Download amd64 packages
         uses: actions/download-artifact@448e3f862ab3ef47aa50ff917776823c9946035b # v7.0.0
@@ -99,7 +99,7 @@ jobs:
       id-token: write          # cosign keyless signing via Fulcio/Rekor
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Download all packages
         uses: actions/download-artifact@448e3f862ab3ef47aa50ff917776823c9946035b # v7.0.0
