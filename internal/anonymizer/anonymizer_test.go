@@ -103,7 +103,7 @@ func TestStreamingDeanonymizeRoundTrip(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(anonymized))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = rc.Close() }() // test cleanup
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestStreamingDeanonymizeNoTokens(t *testing.T) {
 	src := io.NopCloser(strings.NewReader(text))
 	// session with no replacements: should get back the original reader unchanged
 	rc := a.StreamingDeanonymize(src, "empty-session", "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = rc.Close() }() // test cleanup
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -671,7 +671,7 @@ func TestStreamingDeanonymizeChunkBoundary(t *testing.T) {
 	// token split across chunk boundaries.
 	src := &bytewiseReader{data: []byte(anonymized)}
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = rc.Close() }() // test cleanup
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -799,7 +799,7 @@ func TestNewWithCacheAndCapacityBboltS3FIFO(t *testing.T) {
 		CachePath:           dir + "/test.db",
 		CacheCapacity:       100,
 	})
-	defer a.Close() //nolint:errcheck
+	defer func() { _ = a.Close() }()
 
 	// Verify the cache works through the S3FIFO layer.
 	a.cache.Set("test@example.com", "[PII_EMAIL_test1234]")
@@ -826,7 +826,7 @@ func TestNewWithCacheAndCapacityBboltBare(t *testing.T) {
 		CachePath:           dir + "/bare.db",
 		CacheCapacity:       0,
 	})
-	defer a.Close() //nolint:errcheck
+	defer func() { _ = a.Close() }()
 
 	a.cache.Set("val", "tok")
 	tok, ok := a.cache.Get("val")
@@ -946,7 +946,7 @@ func TestQueryOllamaHTTPSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"[{\"original\":\"alice@example.com\",\"type\":\"email\",\"confidence\":0.95}]"}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp)) //nolint:errcheck
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer srv.Close()
 
@@ -975,7 +975,7 @@ func TestQueryOllamaHTTPSuccess(t *testing.T) {
 // TestQueryOllamaHTTPBadJSON covers the response parse error path.
 func TestQueryOllamaHTTPBadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`not json`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer srv.Close()
 
@@ -999,7 +999,7 @@ func TestQueryOllamaHTTPNoArray(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"I found no PII in this text."}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp)) //nolint:errcheck
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer srv.Close()
 
@@ -1023,7 +1023,7 @@ func TestQueryOllamaHTTPBadArrayJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"[{bad json}]"}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp)) //nolint:errcheck
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer srv.Close()
 
@@ -1244,8 +1244,8 @@ func TestStreamingDeanonymizeWithMetrics(t *testing.T) {
 	sseInput := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
-	io.ReadAll(rc)   //nolint:errcheck
+	defer func() { _ = rc.Close() }()
+	_, _ = io.ReadAll(rc)
 
 	if m.TokensDeanonymized.Load() == 0 {
 		t.Error("expected TokensDeanonymized > 0 with metrics")
@@ -1287,7 +1287,7 @@ func TestQueryOllamaHTTPReadBodyError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set content length to force ReadAll to expect more data, then close.
 		w.Header().Set("Content-Length", "999999")
-		w.Write([]byte(`{"partial`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"partial`))
 	}))
 	defer srv.Close()
 
@@ -1330,7 +1330,7 @@ func TestDispatchOllamaAsyncWithMockServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		resp := `{"response":"[{\"original\":\"test@example.com\",\"type\":\"email\",\"confidence\":0.95}]"}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp)) //nolint:errcheck
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer srv.Close()
 
@@ -1457,7 +1457,7 @@ func TestAnonymizeTextGermanNoFalseAddress(t *testing.T) {
 		EnabledPacks:        []string{"US"},
 		PackDecayRate:       0.0,
 	})
-	defer a.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = a.Close() }() // test cleanup
 
 	// Use digit strings that won't trigger the ZIP code pattern (which also
 	// produces PII_ADDRESS tokens for 5-digit sequences). The bug is about
@@ -1500,7 +1500,7 @@ func TestBboltCacheGetMiss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	token, ok := c.Get("nonexistent-key")
 	if ok || token != "" {
@@ -1515,7 +1515,7 @@ func TestBboltCacheOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	c.Set("key", "token1")
 	c.Set("key", "token2")
@@ -1532,7 +1532,7 @@ func TestBboltCacheDeleteMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Should not panic.
 	c.Delete("never-set-key")

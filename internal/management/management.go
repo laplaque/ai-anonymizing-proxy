@@ -228,18 +228,18 @@ func (r *DomainRegistry) persist(domains []string) {
 	tmpName := tmp.Name()
 
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()        //nolint:errcheck // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = tmp.Close()        // best-effort cleanup
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (write): %v", err)
 		return
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (close): %v", err)
 		return
 	}
 	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (rename): %v", err)
 		return
 	}

@@ -99,7 +99,7 @@ func newBboltCache(path string) (PersistentCache, error) {
 		_, err := tx.CreateBucketIfNotExists([]byte(bboltBucket))
 		return err
 	}); err != nil {
-		db.Close() //nolint:errcheck // best-effort close on init failure
+		_ = db.Close() // best-effort close on init failure
 		return nil, fmt.Errorf("create bbolt bucket: %w", err)
 	}
 

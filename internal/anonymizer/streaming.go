@@ -68,23 +68,19 @@ func writePipe(pw *io.PipeWriter, parts ...[]byte) {
 // and passes through non-data lines with raw token replacement.
 func processLine(ctx *streamContext, line []byte) {
 	if len(line) == 0 || line[0] == ':' {
-		ctx.pw.Write(line)         //nolint:errcheck
-		ctx.pw.Write([]byte("\n")) //nolint:errcheck
+		writePipe(ctx.pw, line, []byte("\n"))
 		return
 	}
 
 	if !bytes.HasPrefix(line, []byte(sseDataPrefix)) {
-		ctx.pw.Write([]byte(ctx.replacer.Replace(string(line)))) //nolint:errcheck
-		ctx.pw.Write([]byte("\n"))                               //nolint:errcheck
+		writePipe(ctx.pw, []byte(ctx.replacer.Replace(string(line))), []byte("\n"))
 		return
 	}
 
 	payload := line[len(sseDataPrefix):]
 	if !ctx.provider.ProcessDataPayload(payload) {
 		// Provider could not parse the payload — fall back to raw replacement.
-		ctx.pw.Write([]byte(sseDataPrefix))                         //nolint:errcheck
-		ctx.pw.Write([]byte(ctx.replacer.Replace(string(payload)))) //nolint:errcheck
-		ctx.pw.Write([]byte("\n"))                                  //nolint:errcheck
+		writePipe(ctx.pw, []byte(sseDataPrefix), []byte(ctx.replacer.Replace(string(payload))), []byte("\n"))
 	}
 }
 
@@ -111,12 +107,14 @@ func assembleLines(chunk []byte, lineBuf []byte, ctx *streamContext) []byte {
 // text when the source reader returns an error (including io.EOF).
 func handleStreamEnd(lineBuf []byte, readErr error, ctx *streamContext) {
 	if len(lineBuf) > 0 {
-		ctx.pw.Write([]byte(ctx.replacer.Replace(string(lineBuf)))) //nolint:errcheck
+		writePipe(ctx.pw, []byte(ctx.replacer.Replace(string(lineBuf))))
 	}
 	ctx.provider.Flush()
 	if readErr != io.EOF {
 		log.Printf("[ANONYMIZER] StreamingDeanonymize read error: %v", readErr)
-		ctx.pw.CloseWithError(readErr) //nolint:errcheck
+		if err := ctx.pw.CloseWithError(readErr); err != nil {
+			log.Printf("[ANONYMIZER] StreamingDeanonymize CloseWithError failed: %v", err)
+		}
 	}
 }
 
@@ -124,8 +122,8 @@ func handleStreamEnd(lineBuf []byte, readErr error, ctx *streamContext) {
 // to processLine. At EOF it flushes any remaining partial line and
 // accumulated text via handleStreamEnd.
 func readLoop(src io.ReadCloser, ctx *streamContext) {
-	defer src.Close()    //nolint:errcheck
-	defer ctx.pw.Close() //nolint:errcheck
+	defer func() { _ = src.Close() }()
+	defer func() { _ = ctx.pw.Close() }()
 
 	var lineBuf []byte
 	const chunkSize = 32 * 1024

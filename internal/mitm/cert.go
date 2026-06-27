@@ -143,7 +143,7 @@ func GenerateCA(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("create cert file: %w", err)
 	}
-	defer certOut.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = certOut.Close() }() // best-effort close
 	if encErr := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
 		return fmt.Errorf("write cert PEM: %w", encErr)
 	}
@@ -153,7 +153,7 @@ func GenerateCA(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("create key file: %w", err)
 	}
-	defer keyOut.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = keyOut.Close() }() // best-effort close
 	if encErr := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
 		return fmt.Errorf("write key PEM: %w", encErr)
 	}

@@ -10,7 +10,7 @@ import (
 // PersistentCache contract.
 func TestMemoryCacheBasicOperations(t *testing.T) {
 	c := newMemoryCache()
-	defer c.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = c.Close() }() // test cleanup
 
 	// Miss on empty cache.
 	if _, ok := c.Get("missing"); ok {
@@ -51,7 +51,7 @@ func TestBboltCacheBasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBboltCache: %v", err)
 	}
-	defer c.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = c.Close() }() // test cleanup
 
 	// Miss on empty db.
 	if _, ok := c.Get("missing"); ok {
@@ -103,7 +103,7 @@ func TestBboltCacheSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open second instance: %v", err)
 	}
-	defer c2.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = c2.Close() }() // test cleanup
 
 	token, ok := c2.Get("alice@example.com")
 	if !ok || token != "[PII_a3f29c81e4d07b56]" {
@@ -123,7 +123,7 @@ func TestNewWithCacheFallback(t *testing.T) {
 	if a == nil {
 		t.Fatal("expected non-nil anonymizer even with bad cache path")
 	}
-	defer a.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = a.Close() }() // test cleanup
 
 	// Should still anonymize correctly using the fallback memory cache.
 	result := a.AnonymizeText("Contact alice@example.com", "sess-fallback")

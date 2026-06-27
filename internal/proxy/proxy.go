@@ -269,7 +269,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		log.Printf("[MITM] %s Hijack error for %s: %v", remoteHash, host, err)
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = clientConn.Close() }()
 
 	// Build a handler that anonymizes and forwards requests
 	ctx := mitmContext{host: host, domain: domain, remoteHash: remoteHash}
@@ -351,7 +351,7 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 	if s.m != nil {
 		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 
 	// De-anonymize response before returning to client
 	s.deanonymizeResponseBody(resp, sessionID, domain)
@@ -359,7 +359,7 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 	removeHopByHop(resp.Header)
 	copyHeader(rw.Header(), resp.Header)
 	rw.WriteHeader(resp.StatusCode)
-	flushingCopy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+	flushingCopy(rw, resp.Body)
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
@@ -381,7 +381,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
-	defer destConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = destConn.Close() }()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -396,12 +396,12 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		log.Printf("[TUNNEL] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = clientConn.Close() }()
 
 	// Bidirectional copy
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(destConn, clientConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
-	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
+	go func() { _, _ = io.Copy(destConn, clientConn); done <- struct{}{} }() // tunnel; EOF is normal
+	go func() { _, _ = io.Copy(clientConn, destConn); done <- struct{}{} }() // tunnel; EOF is normal
 	<-done
 }
 
@@ -487,7 +487,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	if s.m != nil {
 		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 
 	// De-anonymize response before returning to client
 	s.deanonymizeResponseBody(resp, sessionID, domain)
@@ -495,7 +495,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	removeHopByHop(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	flushingCopy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+	flushingCopy(w, resp.Body)
 }
 
 const maxRequestBody = 50 << 20 // 50 MB
@@ -506,7 +506,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
-	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
+	_ = r.Body.Close() // body already read; close is best-effort
 	if err != nil {
 		if s.m != nil {
 			s.m.ErrorsAnonymize.Add(1)
@@ -563,7 +563,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, 
 	}
 
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close() //nolint:errcheck // body already read; close is best-effort
+	_ = resp.Body.Close() // body already read; close is best-effort
 	if err != nil {
 		resp.Body = http.NoBody
 		return
@@ -708,7 +708,7 @@ func flushingCopy(dst io.Writer, src io.Reader) {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			dst.Write(buf[:n]) //nolint:errcheck // caller ignores; headers already sent
+			_, _ = dst.Write(buf[:n]) // caller ignores; headers already sent
 			if canFlush {
 				flusher.Flush()
 			}

@@ -738,7 +738,7 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response body
+	defer func() { _ = resp.Body.Close() }() // best-effort close on HTTP response body
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
