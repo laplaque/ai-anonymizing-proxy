@@ -177,13 +177,23 @@ func TestDeanonymizeResponseBody_DecompressError(t *testing.T) {
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Encoding", "gzip")
 
-	// Bad gzip -> decompressResponse returns an error -> error-log branch.
-	// Must not panic; should still proceed and produce a readable body.
+	// Bad gzip -> decompressResponse returns an error -> error-log branch, then
+	// deanonymizeResponseBody continues defensively. Prove two things:
+	//  1. the resulting body is still readable (ReadAll succeeds with no error),
+	//     not a panic or a propagated read failure; and
+	//  2. the failure branch was actually taken — a SUCCESSFUL decode deletes the
+	//     Content-Encoding header, so its retention pins the error path (and
+	//     rules out a silent no-op or the success path).
 	srv.deanonymizeResponseBody(resp, "sess-x", "api.example.com")
 	if resp.Body == nil {
 		t.Fatal("expected non-nil body after deanonymize")
 	}
-	_, _ = io.ReadAll(resp.Body)
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("body not readable after failed decompression: %v", err)
+	}
+	if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("expected Content-Encoding retained on decode failure (error branch), got %q", enc)
+	}
 }
 
 // --- E) Handler-path branches ---
