@@ -44,27 +44,28 @@ const (
 	errBadGateway         = "bad gateway"
 )
 
+var defaultPrivateCIDRs = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+	"169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+}
+
 // privateNetworks lists CIDR ranges that must never be reachable via CONNECT
 // or plain-HTTP forwarding (SSRF protection).
-var privateNetworks []*net.IPNet
+var privateNetworks = mustParsePrivateNetworks(defaultPrivateCIDRs)
 
-func init() {
-	for _, cidr := range []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-	} {
+// mustParsePrivateNetworks parses CIDR strings, panicking on an invalid entry
+// (a programmer error in the hardcoded defaults). Returning an error here and
+// panicking keeps the guard while making it unit-testable.
+func mustParsePrivateNetworks(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Fatalf("proxy: invalid private network CIDR %q: %v", cidr, err)
+			panic(fmt.Sprintf("proxy: invalid private network CIDR %q: %v", cidr, err))
 		}
-		privateNetworks = append(privateNetworks, network)
+		nets = append(nets, network)
 	}
+	return nets
 }
 
 // hashRemoteAddr returns the first 8 hex characters of sha256(addr).
@@ -100,6 +101,10 @@ func isPrivateIP(ip net.IP) bool {
 
 var errPrivateIP = fmt.Errorf("connection to private IP blocked")
 
+// lookupIPAddr resolves a hostname to IP addresses. It is a package var so tests
+// can substitute a deterministic resolver.
+var lookupIPAddr = net.DefaultResolver.LookupIPAddr
+
 // ssrfSafeDialContext wraps a net.Dialer and checks the resolved IP address
 // at connection time — eliminating the TOCTOU gap between DNS resolution and dial.
 func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -110,7 +115,7 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 		}
 
 		// Resolve the hostname ourselves so we can inspect the IPs
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := lookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, err
 		}
@@ -500,6 +505,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 
 const maxRequestBody = 50 << 20 // 50 MB
 
+// randRead fills b with cryptographically secure random bytes. It is a package
+// var so tests can inject a failing reader to exercise the timestamp fallback;
+// crypto/rand.Read itself treats a reader error as fatal and cannot be made to
+// return one in-process.
+var randRead = rand.Read
+
 func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	if r.Body == nil || r.ContentLength == 0 {
 		return "", nil
@@ -519,7 +530,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 
 	var sessionID string
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
 	} else {
 		sessionID = hex.EncodeToString(b)

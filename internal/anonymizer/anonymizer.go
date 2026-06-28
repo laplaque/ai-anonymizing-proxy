@@ -82,6 +82,11 @@ const (
 // sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
 const sseDataPrefix = "data: "
 
+// jsonMarshal is a seam over json.Marshal so tests can exercise the
+// AnonymizeJSON marshal-error fallback. A successful marshal of already-parsed
+// JSON never fails in practice, leaving that branch otherwise unreachable.
+var jsonMarshal = json.Marshal
+
 // pattern pairs a compiled regex with its PII type and a base confidence score.
 // Confidence reflects how specifically the regex identifies the target PII type:
 // high scores mean low false-positive risk; low scores indicate ambiguous patterns
@@ -461,7 +466,7 @@ func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
 		}
 	}
 
-	out, err := json.Marshal(anonymized)
+	out, err := jsonMarshal(anonymized)
 	if err != nil {
 		return body // fallback: return original
 	}

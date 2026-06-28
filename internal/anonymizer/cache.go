@@ -77,7 +77,9 @@ func (c *memoryCache) Close() error { return nil }
 
 // --- bboltCache ----------------------------------------------------------
 
-const bboltBucket = "ollama_cache"
+// bboltBucket is a var (not const) so tests can temporarily set it to an
+// invalid value, exercising the bucket-creation error path in newBboltCache.
+var bboltBucket = "ollama_cache"
 
 // bboltCache is a PersistentCache backed by an embedded bbolt database.
 // Entries survive process restarts. The database file is created at the

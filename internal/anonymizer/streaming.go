@@ -44,10 +44,20 @@ func safeCutPoint(accumulated string) int {
 	return cutAt
 }
 
+// pipeWriter is the subset of *io.PipeWriter the streaming framework uses.
+// Abstracting it lets tests inject a writer whose CloseWithError returns a
+// non-nil error, exercising the failure-logging path that a real
+// *io.PipeWriter (CloseWithError always returns nil) cannot reach.
+type pipeWriter interface {
+	Write(p []byte) (int, error)
+	Close() error
+	CloseWithError(err error) error
+}
+
 // streamContext holds the mutable state shared by the streaming framework
 // functions during a single StreamingDeanonymize invocation.
 type streamContext struct {
-	pw       *io.PipeWriter
+	pw       pipeWriter
 	replacer *strings.Replacer
 	provider StreamingDeanonymizer
 }
@@ -55,7 +65,7 @@ type streamContext struct {
 // writePipe writes multiple byte slices to a PipeWriter, stopping on the
 // first error. A write error means the reader side has been closed (client
 // disconnected); continuing to write would be wasteful.
-func writePipe(pw *io.PipeWriter, parts ...[]byte) {
+func writePipe(pw pipeWriter, parts ...[]byte) {
 	for _, p := range parts {
 		if _, err := pw.Write(p); err != nil {
 			return
