@@ -88,17 +88,17 @@ func TestGenerateCA_SeamErrors(t *testing.T) {
 	origRSA := rsaGenerateKey
 	origInt := randInt
 	origCreate := x509CreateCertificate
+	origPem := pemEncode
 	defer func() {
 		rsaGenerateKey = origRSA
 		randInt = origInt
 		x509CreateCertificate = origCreate
+		pemEncode = origPem
 	}()
 
 	tests := []struct {
 		name    string
 		setup   func()
-		certOut string // "" => temp file
-		keyOut  string // "" => temp file
 		wantErr string
 	}{
 		{
@@ -129,15 +129,29 @@ func TestGenerateCA_SeamErrors(t *testing.T) {
 			wantErr: "create CA cert",
 		},
 		{
-			name:    "cert write error",
-			setup:   func() {},
-			certOut: "/dev/full",
+			// The first pemEncode call (the cert PEM) fails — portable across
+			// runners, unlike a platform-specific full device.
+			name: "cert write error",
+			setup: func() {
+				pemEncode = func(io.Writer, *pem.Block) error {
+					return errors.New("write failed")
+				}
+			},
 			wantErr: "write cert PEM",
 		},
 		{
-			name:    "key write error",
-			setup:   func() {},
-			keyOut:  "/dev/full",
+			// The cert PEM write succeeds; the second call (the key PEM) fails.
+			name: "key write error",
+			setup: func() {
+				calls := 0
+				pemEncode = func(w io.Writer, b *pem.Block) error {
+					calls++
+					if calls == 1 {
+						return origPem(w, b)
+					}
+					return errors.New("write failed")
+				}
+			},
 			wantErr: "write key PEM",
 		},
 	}
@@ -148,17 +162,12 @@ func TestGenerateCA_SeamErrors(t *testing.T) {
 			rsaGenerateKey = origRSA
 			randInt = origInt
 			x509CreateCertificate = origCreate
+			pemEncode = origPem
 			tt.setup()
 
 			dir := t.TempDir()
-			certFile := tt.certOut
-			if certFile == "" {
-				certFile = filepath.Join(dir, "ca.pem")
-			}
-			keyFile := tt.keyOut
-			if keyFile == "" {
-				keyFile = filepath.Join(dir, "ca.key")
-			}
+			certFile := filepath.Join(dir, "ca.pem")
+			keyFile := filepath.Join(dir, "ca.key")
 
 			err := GenerateCA(certFile, keyFile)
 			if err == nil {

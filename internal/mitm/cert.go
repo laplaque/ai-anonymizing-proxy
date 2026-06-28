@@ -19,12 +19,15 @@ import (
 	"time"
 )
 
-// Indirection seams for deterministic testing of the crypto error paths,
-// which cannot be triggered with the real crypto/rand entropy source.
+// Indirection seams for deterministic, portable testing of the crypto and
+// PEM-write error paths, which cannot otherwise be triggered (the real
+// crypto/rand entropy source never fails, and forcing a file-write error
+// would require platform-specific devices).
 var (
 	rsaGenerateKey        = rsa.GenerateKey
 	randInt               = rand.Int
 	x509CreateCertificate = x509.CreateCertificate
+	pemEncode             = pem.Encode
 )
 
 const maxCertCache = 10_000
@@ -152,7 +155,7 @@ func GenerateCA(certFile, keyFile string) error {
 		return fmt.Errorf("create cert file: %w", err)
 	}
 	defer func() { _ = certOut.Close() }() // best-effort close
-	if encErr := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
+	if encErr := pemEncode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
 		return fmt.Errorf("write cert PEM: %w", encErr)
 	}
 
@@ -162,7 +165,7 @@ func GenerateCA(certFile, keyFile string) error {
 		return fmt.Errorf("create key file: %w", err)
 	}
 	defer func() { _ = keyOut.Close() }() // best-effort close
-	if encErr := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
+	if encErr := pemEncode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
 		return fmt.Errorf("write key PEM: %w", encErr)
 	}
 
