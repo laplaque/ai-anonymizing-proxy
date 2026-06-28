@@ -38,20 +38,31 @@ func TestBboltCacheNilBucketPaths(t *testing.T) {
 	c := &bboltCache{db: db}
 	defer func() { _ = c.Close() }() // test cleanup
 
+	logs := captureLog(t)
+
 	// Get with a nil bucket returns ("", false).
 	if v, ok := c.Get("k"); ok || v != "" {
 		t.Errorf("expected miss on nil bucket, got v=%q ok=%v", v, ok)
 	}
 
-	// Set with a nil bucket logs an error and is a no-op (covers Set's nil-bucket
-	// branch and the error-log path).
+	// Set with a nil bucket takes the nil-bucket branch, which returns an error
+	// that Set logs. Assert the log to pin that branch (the no-persist check
+	// below is satisfied by Get's own nil-bucket path regardless of Set).
 	c.Set("k", "v")
+	if !strings.Contains(logs.String(), "bbolt Set error") {
+		t.Errorf("expected Set nil-bucket branch to log an error, got: %q", logs.String())
+	}
 	if v, ok := c.Get("k"); ok || v != "" {
 		t.Errorf("Set on nil bucket should not persist, got v=%q ok=%v", v, ok)
 	}
 
-	// Delete with a nil bucket is a no-op.
+	// Delete with a nil bucket is a silent no-op: the nil-bucket guard returns
+	// nil before touching b, so it must neither panic nor log an error. (If the
+	// guard were dropped, b.Delete on a nil bucket would panic and fail here.)
 	c.Delete("k")
+	if strings.Contains(logs.String(), "bbolt Delete error") {
+		t.Errorf("Delete on nil bucket should be a silent no-op, but logged: %q", logs.String())
+	}
 }
 
 // TestBboltCacheClosedDBPaths exercises the error branches of Get and Delete
@@ -69,11 +80,17 @@ func TestBboltCacheClosedDBPaths(t *testing.T) {
 		t.Fatalf("Close: %v", closeErr)
 	}
 
+	logs := captureLog(t)
+
 	// Get on a closed db: db.View returns an error → ("", false).
 	if v, found := bc.Get("k"); found || v != "" {
 		t.Errorf("expected miss on closed db, got v=%q found=%v", v, found)
 	}
 
-	// Delete on a closed db: db.Update returns an error → error log.
+	// Delete on a closed db: db.Update returns an error which Delete logs.
+	// Assert the log to pin the error branch (the call alone proves nothing).
 	bc.Delete("k")
+	if !strings.Contains(logs.String(), "bbolt Delete error") {
+		t.Errorf("expected Delete closed-db branch to log an error, got: %q", logs.String())
+	}
 }

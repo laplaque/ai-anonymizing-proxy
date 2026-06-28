@@ -1,11 +1,24 @@
 package anonymizer
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"log"
+	"os"
 	"strings"
 	"testing"
 )
+
+// captureLog redirects the standard logger to a buffer so a branch's
+// distinctive log message can be asserted. These tests are not parallel.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
 
 // fakePipeWriter is a pipeWriter whose Write/CloseWithError behavior is
 // configurable and which counts Write calls. It exercises the writePipe
@@ -69,6 +82,7 @@ func TestHandleStreamEndCloseWithErrorLog(t *testing.T) {
 	}
 
 	readErr := errors.New("read boom")
+	logs := captureLog(t)
 	handleStreamEnd([]byte("hi [PII_X]"), readErr, ctx)
 
 	if !prov.flushed {
@@ -84,6 +98,13 @@ func TestHandleStreamEndCloseWithErrorLog(t *testing.T) {
 	}
 	if fw.closeErrArg != readErr {
 		t.Errorf("expected CloseWithError called with the read error, got %v", fw.closeErrArg)
+	}
+	// Pin the INNER branch: when CloseWithError itself returns an error (closeErr
+	// is set), handleStreamEnd must log it. Without this assertion the inner
+	// `if err != nil { log }` could be dropped and the test would still pass on
+	// the outer-branch checks alone.
+	if !strings.Contains(logs.String(), "CloseWithError failed") {
+		t.Errorf("expected inner CloseWithError-failure log, got: %q", logs.String())
 	}
 }
 

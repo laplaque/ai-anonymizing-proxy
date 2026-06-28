@@ -1,18 +1,32 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ai-anonymizing-proxy/internal/config"
 )
+
+// captureLog redirects the standard logger to a buffer for the duration of the
+// test so a branch's distinctive log message can be asserted. These tests are
+// not parallel, so the global SetOutput is safe.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
 
 // fakeTempFile is an injectable persistTempFile that lets tests force the
 // write/close failure branches of persist without relying on real OS errors
@@ -85,8 +99,16 @@ func TestPersist_WriteError(t *testing.T) {
 	}
 
 	r := newRegistryWithPath(path)
+	logs := captureLog(t)
 	r.persist([]string{"api.example.com"})
 
+	// Pin the write-error branch by its distinctive log line. Without this, the
+	// "file not created" check alone is satisfied by the downstream Rename of the
+	// fake's (nonexistent) temp name, so the test would pass even if the
+	// write-error branch were removed.
+	if !strings.Contains(logs.String(), "Persist error (write)") {
+		t.Errorf("expected write-error branch to log %q, got: %q", "Persist error (write)", logs.String())
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("target file should not exist after write error, stat err = %v", err)
 	}
@@ -105,8 +127,14 @@ func TestPersist_CloseError(t *testing.T) {
 	}
 
 	r := newRegistryWithPath(path)
+	logs := captureLog(t)
 	r.persist([]string{"api.example.com"})
 
+	// Pin the close-error branch by its distinctive log line (see write-error
+	// test for why the file-absence check alone is insufficient).
+	if !strings.Contains(logs.String(), "Persist error (close)") {
+		t.Errorf("expected close-error branch to log %q, got: %q", "Persist error (close)", logs.String())
+	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("target file should not exist after close error, stat err = %v", err)
 	}

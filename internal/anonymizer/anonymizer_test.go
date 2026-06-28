@@ -5,13 +5,29 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-anonymizing-proxy/internal/anonymizer/packs"
 	"ai-anonymizing-proxy/internal/metrics"
 )
+
+// waitUntil polls cond on real time until it is true or a generous deadline
+// elapses. Async Ollama dispatch goroutines block on network I/O or scheduling,
+// so a bounded runtime.Gosched() spin can exhaust before they complete (causing
+// flaky failures and coverage dips on contended runners); a real-time deadline
+// with sleeps is robust. Returns whether cond became true.
+func waitUntil(cond func() bool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return cond()
+}
 
 func newTestAnonymizer() *Anonymizer {
 	return New("http://localhost:11434", "test-model", false, 0.8, 1, nil)
@@ -868,14 +884,12 @@ func TestDispatchOllamaAsyncSemaphoreFull(t *testing.T) {
 	a.dispatchOllamaAsync("test-value")
 
 	// Wait for inflight to clear — this means the goroutine has completed.
-	for range 10000 {
-		runtime.Gosched()
+	if !waitUntil(func() bool {
 		a.inflightMu.Lock()
-		done := !a.inflight["test-value"]
-		a.inflightMu.Unlock()
-		if done {
-			break
-		}
+		defer a.inflightMu.Unlock()
+		return !a.inflight["test-value"]
+	}) {
+		t.Fatal("dispatch goroutine did not finish in time")
 	}
 
 	// Now drain semaphore (it was never consumed by the goroutine).
@@ -1347,19 +1361,13 @@ func TestDispatchOllamaAsyncWithMockServer(t *testing.T) {
 
 	a.dispatchOllamaAsync("test@example.com")
 
-	// Wait for the goroutine to complete.
-	for range 10000 {
-		runtime.Gosched()
-		a.inflightMu.Lock()
-		done := !a.inflight["test@example.com"]
-		a.inflightMu.Unlock()
-		if done {
-			break
-		}
-	}
-
-	// The cache should now have an entry.
-	_, hit := a.cache.Get("test@example.com")
+	// Wait (on real time) for the goroutine's HTTP round-trip to finish and
+	// populate the cache. The inflight-clearing defer runs after cache.Set, so a
+	// cache hit is the definitive completion signal.
+	hit := waitUntil(func() bool {
+		_, ok := a.cache.Get("test@example.com")
+		return ok
+	})
 	if !hit {
 		t.Error("expected cache entry after successful Ollama dispatch")
 	}
