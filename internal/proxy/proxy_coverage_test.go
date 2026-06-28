@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
@@ -149,11 +151,17 @@ func TestAnonymizeRequestBody_RandFallback(t *testing.T) {
 	if sessionID == "" {
 		t.Fatal("expected non-empty timestamp-fallback sessionID")
 	}
-	// Fallback is a UnixNano integer string: all digits.
-	for _, c := range sessionID {
-		if c < '0' || c > '9' {
-			t.Fatalf("expected all-digit fallback sessionID, got %q", sessionID)
-		}
+	// The success path is exactly 16 hex chars from rand.Read; the fallback is
+	// fmt.Sprintf("%d", time.Now().UnixNano()). Prove the fallback was taken by
+	// requiring a base-10 integer in a recent-nanosecond range — a 16-char hex
+	// token cannot satisfy this (max all-digit hex value ~1e16 < the bound).
+	n, parseErr := strconv.ParseInt(sessionID, 10, 64)
+	if parseErr != nil {
+		t.Fatalf("expected UnixNano timestamp fallback sessionID, got %q (parse err: %v)", sessionID, parseErr)
+	}
+	const year2020Nanos = 1_600_000_000_000_000_000
+	if n < year2020Nanos {
+		t.Fatalf("expected a recent UnixNano timestamp fallback, got %q (%d)", sessionID, n)
 	}
 	srv.anon.DeleteSession(sessionID)
 }
@@ -364,8 +372,14 @@ func TestHandleOpaqueTunnel_HijackError(t *testing.T) {
 // handleHTTP ANON path: AI domain, non-auth, body with synthetic PII produces a
 // non-empty sessionID and exercises the [ANON] log + DeleteSession defer.
 func TestHandleHTTP_AnonPath(t *testing.T) {
+	// Capture the body the upstream actually receives so we can prove the [ANON]
+	// path ran (PII replaced before forwarding), not merely that a 200 came back
+	// — a plain passthrough would also return 200. The buffered channel gives a
+	// happens-before edge for the race detector.
+	gotBody := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
+		b, _ := io.ReadAll(r.Body)
+		gotBody <- string(b)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
@@ -377,7 +391,8 @@ func TestHandleHTTP_AnonPath(t *testing.T) {
 	// the bare domain (not the host:port form) for the AI-anonymize path.
 	srv := newTestProxyServerAllowLocal(t, []string{"localhost"}, nil)
 
-	body := `{"prompt":"contact alice@example.com please"}`
+	const pii = "alice@example.com"
+	body := `{"prompt":"contact ` + pii + ` please"}`
 	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://"+host+"/v1/x",
 		strings.NewReader(body))
 	req.Host = host
@@ -390,6 +405,20 @@ func TestHandleHTTP_AnonPath(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case received := <-gotBody:
+		// The ANON path must have rewritten the synthetic PII into a token before
+		// forwarding upstream.
+		if strings.Contains(received, pii) {
+			t.Errorf("upstream received un-anonymized PII; body was forwarded as passthrough: %s", received)
+		}
+		if !strings.Contains(received, "[PII_") {
+			t.Errorf("expected an anonymized [PII_...] token in the forwarded body, got: %s", received)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never received the forwarded request")
 	}
 }
 
