@@ -82,9 +82,14 @@ func TestBboltCacheClosedDBPaths(t *testing.T) {
 
 	logs := captureLog(t)
 
-	// Get on a closed db: db.View returns an error → ("", false).
+	// Get on a closed db: db.View returns an error which Get logs before
+	// returning ("", false). Assert the log to pin the error branch — an empty
+	// cache also returns ("", false), so the miss result alone proves nothing.
 	if v, found := bc.Get("k"); found || v != "" {
 		t.Errorf("expected miss on closed db, got v=%q found=%v", v, found)
+	}
+	if !strings.Contains(logs.String(), "bbolt Get error") {
+		t.Errorf("expected Get closed-db branch to log an error, got: %q", logs.String())
 	}
 
 	// Delete on a closed db: db.Update returns an error which Delete logs.

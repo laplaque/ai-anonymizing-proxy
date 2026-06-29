@@ -149,10 +149,17 @@ func TestPersist_RenameError(t *testing.T) {
 	dirAsPath := t.TempDir()
 	r := newRegistryWithPath(dirAsPath)
 
+	logs := captureLog(t)
 	// Must not panic; persist swallows the rename error after cleanup.
 	r.persist([]string{"api.example.com"})
 
-	// The destination is still a directory (rename did not replace it).
+	// Pin the rename-error branch by its distinctive log line. The destination
+	// staying a directory is not branch-specific (it stays a directory whether or
+	// not the error is handled), so assert the log the cleanup branch emits.
+	if !strings.Contains(logs.String(), "Persist error (rename)") {
+		t.Errorf("expected rename-error branch to log %q, got: %q", "Persist error (rename)", logs.String())
+	}
+	// And the destination is still a directory (rename did not replace it).
 	info, err := os.Stat(dirAsPath)
 	if err != nil {
 		t.Fatalf("stat persistPath: %v", err)

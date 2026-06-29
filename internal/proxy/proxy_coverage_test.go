@@ -2,12 +2,15 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +21,16 @@ import (
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
 )
+
+// captureLog redirects the standard logger to a buffer so a branch's
+// distinctive log line can be asserted. These tests are not parallel.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
 
 // --- A) mustParsePrivateNetworks ---
 
@@ -46,13 +59,24 @@ func TestSsrfSafeDialContext_Branches(t *testing.T) {
 	dialFn := ssrfSafeDialContext(&net.Dialer{})
 
 	t.Run("split host port error falls to direct dial", func(t *testing.T) {
-		// No colon -> net.SplitHostPort fails -> d.DialContext path.
-		// Use a canceled context so the dial returns immediately.
+		// No colon -> net.SplitHostPort fails -> the direct d.DialContext path,
+		// which must NOT consult the resolver. Pin that branch: fail loudly if
+		// lookup is reached (it would be, if the SplitHostPort-error fallback
+		// were removed and control fell through to the lookup path).
+		lookupReached := false
+		lookupIPAddr = func(context.Context, string) ([]net.IPAddr, error) {
+			lookupReached = true
+			return nil, errors.New("resolver must not be reached on the direct-dial path")
+		}
+		// Canceled context so the direct dial returns immediately.
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := dialFn(ctx, "tcp", "hostwithoutport")
 		if err == nil {
 			t.Fatal("expected error from direct dial of invalid address")
+		}
+		if lookupReached {
+			t.Error("SplitHostPort-error path must dial directly without resolving")
 		}
 	})
 
@@ -251,8 +275,17 @@ func TestHandleTunnel_MITMBranch(t *testing.T) {
 	// httptest.NewRecorder is NOT an http.Hijacker -> MITM falls back to opaque,
 	// which dials (fails fast) and returns 502.
 	w := httptest.NewRecorder()
+	logs := captureLog(t)
 	srv.handleTunnel(w, req)
 
+	// Branch-specific evidence that handleTunnel selected the MITM path: only
+	// handleMITMTunnel logs "[MITM] ... Intercepting CONNECT" (at its top, before
+	// the hijacker fallback). If the AI-domain branch were removed, the request
+	// would route straight to handleOpaqueTunnel — same 502, but no MITM log — so
+	// asserting the status alone does not prove MITM routing for this privacy path.
+	if !strings.Contains(logs.String(), "Intercepting CONNECT api.example.com:443") {
+		t.Errorf("expected handleTunnel to route the AI domain into MITM (Intercepting CONNECT log), got: %q", logs.String())
+	}
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502 from opaque fallback dial failure, got %d", w.Code)
 	}
@@ -295,18 +328,35 @@ func TestHandleMITMTunnel_HandshakeFailReturns(t *testing.T) {
 	// Returns once HandleConn's handshake fails; the deferred clientConn.Close runs.
 	srv.handleMITMTunnel(hw, req, "api.example.com:443", "api.example.com")
 
-	if hw.Code != http.StatusOK {
-		t.Fatalf("expected 200 written before hijack, got %d", hw.Code)
+	// Pin the success path. A recorder defaults Code to 200, so assert
+	// wroteHeader (not just Code) to prove WriteHeader(200) actually ran, and
+	// assert the hijack was taken — the handshake-fail-returns flow only runs
+	// after a successful Hijack.
+	if !hw.wroteHeader || hw.Code != http.StatusOK {
+		t.Fatalf("expected WriteHeader(200) before hijack (wrote=%v code=%d)", hw.wroteHeader, hw.Code)
+	}
+	if !hw.hijackCalled {
+		t.Fatal("expected handleMITMTunnel to hijack the connection on the MITM path")
 	}
 }
 
-// pipeHijacker is an http.Hijacker that returns a preset net.Conn.
+// pipeHijacker is an http.Hijacker that returns a preset net.Conn and records
+// whether WriteHeader and Hijack were invoked (a bare ResponseRecorder defaults
+// Code to 200, so wroteHeader is needed to actually pin the WriteHeader call).
 type pipeHijacker struct {
 	*httptest.ResponseRecorder
-	conn net.Conn
+	conn         net.Conn
+	wroteHeader  bool
+	hijackCalled bool
+}
+
+func (h *pipeHijacker) WriteHeader(code int) {
+	h.wroteHeader = true
+	h.ResponseRecorder.WriteHeader(code)
 }
 
 func (h *pipeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijackCalled = true
 	rw := bufio.NewReadWriter(bufio.NewReader(h.conn), bufio.NewWriter(h.conn))
 	return h.conn, rw, nil
 }
@@ -441,8 +491,16 @@ func TestForward_URLHostFallbackPrivate(t *testing.T) {
 	req.Host = "10.0.0.1" // private -> 403 before any dial
 
 	w := httptest.NewRecorder()
+	logs := captureLog(t)
 	srv.forward(w, req, "", "domain")
 
+	// Pin the private-block branch by its distinctive log line, which also proves
+	// the URL.Host fallback ran (it logs the filled-in r.URL.Host = "10.0.0.1").
+	// Asserting the 403 alone is environment-coupled: an outbound proxy can also
+	// return 403 for a private dial even if this block branch were removed.
+	if !strings.Contains(logs.String(), "Blocked request to private address: 10.0.0.1") {
+		t.Errorf("expected private-address block log for the fallback host, got: %q", logs.String())
+	}
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for private fallback host, got %d", w.Code)
 	}
