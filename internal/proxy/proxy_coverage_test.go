@@ -223,15 +223,27 @@ func TestDeanonymizeResponseBody_DecompressError(t *testing.T) {
 // --- E) Handler-path branches ---
 
 // fakeConnHijacker is an http.Hijacker whose Hijack() always returns an error.
+// fakeConnHijacker is an http.Hijacker whose Hijack always errors. It records
+// whether WriteHeader and Hijack were invoked so tests can prove the tunnel
+// reached the CONNECT-success write and the hijack attempt before the error
+// (a bare ResponseRecorder defaults Code to 200, so Code alone proves nothing).
 type fakeConnHijacker struct {
 	*httptest.ResponseRecorder
+	wroteHeader  bool
+	hijackCalled bool
 }
 
 func newFakeConnHijacker() *fakeConnHijacker {
 	return &fakeConnHijacker{ResponseRecorder: httptest.NewRecorder()}
 }
 
-func (fakeConnHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+func (h *fakeConnHijacker) WriteHeader(code int) {
+	h.wroteHeader = true
+	h.ResponseRecorder.WriteHeader(code)
+}
+
+func (h *fakeConnHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijackCalled = true
 	return nil, nil, errors.New("hijack failed")
 }
 
@@ -302,9 +314,14 @@ func TestHandleMITMTunnel_HijackError(t *testing.T) {
 	w := newFakeConnHijacker()
 	srv.handleMITMTunnel(w, req, "api.example.com:443", "api.example.com")
 
-	// WriteHeader(200) is called before Hijack(); after Hijack errors it returns.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 written before hijack, got %d", w.Code)
+	// Prove the hijack-error branch was actually reached: the CONNECT-success
+	// WriteHeader(200) ran (assert wroteHeader, not Code — a recorder defaults to
+	// 200) and Hijack() was attempted before the error return.
+	if !w.wroteHeader || w.Code != http.StatusOK {
+		t.Fatalf("expected WriteHeader(200) before hijack (wrote=%v code=%d)", w.wroteHeader, w.Code)
+	}
+	if !w.hijackCalled {
+		t.Fatal("expected handleMITMTunnel to attempt Hijack before the error return")
 	}
 }
 
@@ -423,9 +440,14 @@ func TestHandleOpaqueTunnel_HijackError(t *testing.T) {
 	w := newFakeConnHijacker()
 	srv.handleOpaqueTunnel(w, req, "example.com:443")
 
-	// WriteHeader(200) is sent before Hijack(); Hijack errors then returns.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 written before hijack, got %d", w.Code)
+	// Prove the hijack-error branch was reached: the CONNECT-success
+	// WriteHeader(200) ran (assert wroteHeader, not Code — a recorder defaults to
+	// 200) and Hijack() was attempted before the error return.
+	if !w.wroteHeader || w.Code != http.StatusOK {
+		t.Fatalf("expected WriteHeader(200) before hijack (wrote=%v code=%d)", w.wroteHeader, w.Code)
+	}
+	if !w.hijackCalled {
+		t.Fatal("expected handleOpaqueTunnel to attempt Hijack before the error return")
 	}
 }
 
