@@ -211,9 +211,16 @@ func TestValidDomain_LabelSubstringWildcard(t *testing.T) {
 // H) writeJSON encode-error path: a channel cannot be JSON-encoded.
 func TestWriteJSON_EncodeError(t *testing.T) {
 	w := httptest.NewRecorder()
+	logs := captureLog(t)
 	// json.Encoder.Encode returns an error for unsupported types like chan.
 	writeJSON(w, http.StatusOK, make(chan int))
 
+	// Pin the encode-error branch by its distinctive log line. The status and
+	// Content-Type are written BEFORE Encode runs, so asserting only those would
+	// pass even if the error handling were removed.
+	if !strings.Contains(logs.String(), "JSON encode error") {
+		t.Errorf("expected encode-error branch to log %q, got: %q", "JSON encode error", logs.String())
+	}
 	if w.Code != http.StatusOK {
 		t.Errorf("expected status %d to be written before encode, got %d", http.StatusOK, w.Code)
 	}
