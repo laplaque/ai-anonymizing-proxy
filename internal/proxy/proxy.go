@@ -105,13 +105,20 @@ var errPrivateIP = fmt.Errorf("connection to private IP blocked")
 // can substitute a deterministic resolver.
 var lookupIPAddr = net.DefaultResolver.LookupIPAddr
 
+// dialContextFn performs the actual outbound dial. It is a package var (the real
+// (*net.Dialer).DialContext) so tests can observe the exact address
+// ssrfSafeDialContext dials — proving the direct-dial fallback uses the raw addr
+// and the post-resolution dial targets the inspected IP (not the original
+// hostname), which the SSRF protection depends on.
+var dialContextFn = (*net.Dialer).DialContext
+
 // ssrfSafeDialContext wraps a net.Dialer and checks the resolved IP address
 // at connection time — eliminating the TOCTOU gap between DNS resolution and dial.
 func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
-			return d.DialContext(ctx, network, addr)
+			return dialContextFn(d, ctx, network, addr)
 		}
 
 		// Resolve the hostname ourselves so we can inspect the IPs
@@ -132,7 +139,7 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("proxy: no IP addresses returned for host %q", host)
 		}
-		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		return dialContextFn(d, ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 	}
 }
 

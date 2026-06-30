@@ -54,26 +54,33 @@ func TestMustParsePrivateNetworks_Valid(t *testing.T) {
 
 func TestSsrfSafeDialContext_Branches(t *testing.T) {
 	origLookup := lookupIPAddr
-	defer func() { lookupIPAddr = origLookup }()
+	origDial := dialContextFn
+	defer func() { lookupIPAddr = origLookup; dialContextFn = origDial }()
 
 	dialFn := ssrfSafeDialContext(&net.Dialer{})
 
 	t.Run("split host port error falls to direct dial", func(t *testing.T) {
-		// No colon -> net.SplitHostPort fails -> the direct d.DialContext path,
-		// which must NOT consult the resolver. Pin that branch: fail loudly if
-		// lookup is reached (it would be, if the SplitHostPort-error fallback
-		// were removed and control fell through to the lookup path).
+		// No colon -> net.SplitHostPort fails -> the direct-dial fallback, which
+		// must call the dialer with the RAW addr and must NOT consult the
+		// resolver. Observe the dial target to pin the fallback: if the impl
+		// returned the SplitHostPort error directly instead, the dialer would
+		// never be called and dialedAddr would stay empty.
 		lookupReached := false
 		lookupIPAddr = func(context.Context, string) ([]net.IPAddr, error) {
 			lookupReached = true
 			return nil, errors.New("resolver must not be reached on the direct-dial path")
 		}
-		// Canceled context so the direct dial returns immediately.
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := dialFn(ctx, "tcp", "hostwithoutport")
+		dialedAddr := ""
+		dialContextFn = func(_ *net.Dialer, _ context.Context, _ string, addr string) (net.Conn, error) {
+			dialedAddr = addr
+			return nil, errors.New("dial blocked")
+		}
+		_, err := dialFn(context.Background(), "tcp", "hostwithoutport")
 		if err == nil {
 			t.Fatal("expected error from direct dial of invalid address")
+		}
+		if dialedAddr != "hostwithoutport" {
+			t.Errorf("expected direct dial of the raw addr %q, got dialed=%q", "hostwithoutport", dialedAddr)
 		}
 		if lookupReached {
 			t.Error("SplitHostPort-error path must dial directly without resolving")
@@ -110,16 +117,24 @@ func TestSsrfSafeDialContext_Branches(t *testing.T) {
 		}
 	})
 
-	t.Run("final dial executes", func(t *testing.T) {
+	t.Run("final dial targets the resolved IP", func(t *testing.T) {
 		lookupIPAddr = func(context.Context, string) ([]net.IPAddr, error) {
 			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
 		}
-		// Canceled context makes the real dial return immediately.
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := dialFn(ctx, "tcp", "example.com:443")
+		dialedAddr := ""
+		dialContextFn = func(_ *net.Dialer, _ context.Context, _ string, addr string) (net.Conn, error) {
+			dialedAddr = addr
+			return nil, errors.New("dial blocked")
+		}
+		_, err := dialFn(context.Background(), "tcp", "example.com:443")
 		if err == nil {
-			t.Fatal("expected error from canceled-context dial")
+			t.Fatal("expected error from the stubbed dial")
+		}
+		// SSRF-critical: the dial MUST target the inspected IP, not the original
+		// hostname. This proves it would NOT still pass if ssrfSafeDialContext
+		// stopped dialing or dialed "example.com:443" instead of the checked IP.
+		if dialedAddr != "8.8.8.8:443" {
+			t.Errorf("expected dial to the resolved IP %q, got %q", "8.8.8.8:443", dialedAddr)
 		}
 	})
 }
@@ -201,22 +216,21 @@ func TestDeanonymizeResponseBody_DecompressError(t *testing.T) {
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Encoding", "gzip")
 
-	// Bad gzip -> decompressResponse returns an error -> error-log branch, then
-	// deanonymizeResponseBody continues defensively. Prove two things:
-	//  1. the resulting body is still readable (ReadAll succeeds with no error),
-	//     not a panic or a propagated read failure; and
-	//  2. the failure branch was actually taken — a SUCCESSFUL decode deletes the
-	//     Content-Encoding header, so its retention pins the error path (and
-	//     rules out a silent no-op or the success path).
+	// Bad gzip -> decompressResponse returns an error -> deanonymizeResponseBody's
+	// error-LOG branch fires. The branch's only distinctive effect is the log:
+	// the body stays readable and Content-Encoding stays "gzip" whether the branch
+	// logs or is reduced to `_ = decompressResponse(resp)`. So assert the log line
+	// to prove the branch's effect ran; deleting it must fail the test.
+	logs := captureLog(t)
 	srv.deanonymizeResponseBody(resp, "sess-x", "api.example.com")
+	if !strings.Contains(logs.String(), "decompression error") {
+		t.Errorf("expected the decompression-error branch to log, got: %q", logs.String())
+	}
 	if resp.Body == nil {
 		t.Fatal("expected non-nil body after deanonymize")
 	}
 	if _, err := io.ReadAll(resp.Body); err != nil {
 		t.Fatalf("body not readable after failed decompression: %v", err)
-	}
-	if enc := resp.Header.Get("Content-Encoding"); enc != "gzip" {
-		t.Fatalf("expected Content-Encoding retained on decode failure (error branch), got %q", enc)
 	}
 }
 
