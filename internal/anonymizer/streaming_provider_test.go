@@ -19,7 +19,7 @@ func readStreamResultForDomain(t *testing.T, sseInput string, tokenMap map[strin
 	a.sessionMu.Unlock()
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, domain)
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatalf("reading streaming output: %v", err)
@@ -39,7 +39,7 @@ func readStreamResultVerbose(t *testing.T, sseInput string, tokenMap map[string]
 	a.sessionMu.Unlock()
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, domain)
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatalf("reading streaming output: %v", err)
@@ -130,8 +130,8 @@ func TestProviderForDomain(t *testing.T) {
 // implementation for every named Provider value.
 func TestNewStreamingDeanonymizer(t *testing.T) {
 	pr, pw := io.Pipe()
-	defer pr.Close() //nolint:errcheck
-	defer pw.Close() //nolint:errcheck
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 
 	opts := streamDeanonymizerOpts{
 		pw:         pw,

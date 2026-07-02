@@ -77,7 +77,9 @@ func (c *memoryCache) Close() error { return nil }
 
 // --- bboltCache ----------------------------------------------------------
 
-const bboltBucket = "ollama_cache"
+// bboltBucket is a var (not const) so tests can temporarily set it to an
+// invalid value, exercising the bucket-creation error path in newBboltCache.
+var bboltBucket = "ollama_cache"
 
 // bboltCache is a PersistentCache backed by an embedded bbolt database.
 // Entries survive process restarts. The database file is created at the
@@ -99,7 +101,7 @@ func newBboltCache(path string) (PersistentCache, error) {
 		_, err := tx.CreateBucketIfNotExists([]byte(bboltBucket))
 		return err
 	}); err != nil {
-		db.Close() //nolint:errcheck // best-effort close on init failure
+		_ = db.Close() // best-effort close on init failure
 		return nil, fmt.Errorf("create bbolt bucket: %w", err)
 	}
 

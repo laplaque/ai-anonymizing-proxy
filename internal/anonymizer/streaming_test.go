@@ -84,7 +84,7 @@ func readStreamResult(t *testing.T, sseInput string, tokenMap map[string]string)
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -508,7 +508,7 @@ func TestStreamingDeanonymizeVerboseLogging(t *testing.T) {
 	sseInput := makeSSETextDelta(prefix+token+" end") + "\n"
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -764,7 +764,7 @@ func TestProcessTextDeltaVerboseReplacementInFlush(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -801,7 +801,7 @@ func TestProcessJSONDeltaVerboseReplacementInFlush(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -832,7 +832,7 @@ func TestProcessJSONDeltaVerboseReplacement(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, "api.anthropic.com")
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {

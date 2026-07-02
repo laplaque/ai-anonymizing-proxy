@@ -205,7 +205,7 @@ func TestGeminiStreamingVerboseLogging(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, geminiDomain)
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {

@@ -205,6 +205,25 @@ func (r *DomainRegistry) snapshotLocked() []string {
 	return out
 }
 
+// jsonMarshalIndent is indirected through a package var so tests can force
+// the marshal-error path in persist; production always uses json.MarshalIndent.
+var jsonMarshalIndent = json.MarshalIndent
+
+// persistTempFile is the subset of *os.File that persist needs; abstracting
+// it lets tests inject write/close failures to exercise the cleanup paths.
+type persistTempFile interface {
+	Write(p []byte) (int, error)
+	Close() error
+	Name() string
+}
+
+// createPersistTempFile creates the temp file persist writes to before the
+// atomic rename. It is a package var so tests can inject a fake that fails on
+// Write/Close; *os.File from os.CreateTemp satisfies persistTempFile.
+var createPersistTempFile = func(dir, pattern string) (persistTempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
 // persist writes the given domain snapshot to disk atomically.
 // It does NOT hold r.mu, so it won't block Has/All calls.
 func (r *DomainRegistry) persist(domains []string) {
@@ -212,7 +231,7 @@ func (r *DomainRegistry) persist(domains []string) {
 		return
 	}
 
-	data, err := json.MarshalIndent(domains, "", "  ")
+	data, err := jsonMarshalIndent(domains, "", "  ")
 	if err != nil {
 		log.Printf("[DOMAINS] Marshal error: %v", err)
 		return
@@ -220,7 +239,7 @@ func (r *DomainRegistry) persist(domains []string) {
 
 	// Atomic write: temp file → rename
 	dir := filepath.Dir(r.persistPath)
-	tmp, err := os.CreateTemp(dir, ".ai-domains-*.tmp")
+	tmp, err := createPersistTempFile(dir, ".ai-domains-*.tmp")
 	if err != nil {
 		log.Printf("[DOMAINS] Persist error (create temp): %v", err)
 		return
@@ -228,18 +247,18 @@ func (r *DomainRegistry) persist(domains []string) {
 	tmpName := tmp.Name()
 
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()        //nolint:errcheck // best-effort cleanup
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = tmp.Close()        // best-effort cleanup
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (write): %v", err)
 		return
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (close): %v", err)
 		return
 	}
 	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
-		os.Remove(tmpName) //nolint:errcheck,gosec // G703 -- tmpName from os.CreateTemp, not user input
+		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (rename): %v", err)
 		return
 	}
@@ -330,9 +349,6 @@ func validDomain(d string) bool {
 				return false
 			}
 			prefix, suffix := seg[:idx], seg[idx+1:]
-			if prefix == "" && suffix == "" {
-				continue // bare "*" already handled above; defensive
-			}
 			if prefix != "" && !labelPieceRegexp.MatchString(prefix) {
 				return false
 			}

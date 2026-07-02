@@ -1386,7 +1386,7 @@ func TestHandleMITMTunnel(t *testing.T) {
 	defer func() { _ = srv.Close() }()
 
 	// Override transport to trust the backend's TLS cert
-	srv.transport = backend.Client().Transport.(*http.Transport) //nolint:errcheck // test setup
+	srv.transport, _ = backend.Client().Transport.(*http.Transport) // test setup
 
 	if srv.ca == nil {
 		t.Fatal("expected CA to be loaded")

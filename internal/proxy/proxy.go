@@ -44,27 +44,28 @@ const (
 	errBadGateway         = "bad gateway"
 )
 
+var defaultPrivateCIDRs = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+	"169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+}
+
 // privateNetworks lists CIDR ranges that must never be reachable via CONNECT
 // or plain-HTTP forwarding (SSRF protection).
-var privateNetworks []*net.IPNet
+var privateNetworks = mustParsePrivateNetworks(defaultPrivateCIDRs)
 
-func init() {
-	for _, cidr := range []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-	} {
+// mustParsePrivateNetworks parses CIDR strings, panicking on an invalid entry
+// (a programmer error in the hardcoded defaults). Returning an error here and
+// panicking keeps the guard while making it unit-testable.
+func mustParsePrivateNetworks(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Fatalf("proxy: invalid private network CIDR %q: %v", cidr, err)
+			panic(fmt.Sprintf("proxy: invalid private network CIDR %q: %v", cidr, err))
 		}
-		privateNetworks = append(privateNetworks, network)
+		nets = append(nets, network)
 	}
+	return nets
 }
 
 // hashRemoteAddr returns the first 8 hex characters of sha256(addr).
@@ -100,17 +101,28 @@ func isPrivateIP(ip net.IP) bool {
 
 var errPrivateIP = fmt.Errorf("connection to private IP blocked")
 
+// lookupIPAddr resolves a hostname to IP addresses. It is a package var so tests
+// can substitute a deterministic resolver.
+var lookupIPAddr = net.DefaultResolver.LookupIPAddr
+
+// dialContextFn performs the actual outbound dial. It is a package var (the real
+// (*net.Dialer).DialContext) so tests can observe the exact address
+// ssrfSafeDialContext dials — proving the direct-dial fallback uses the raw addr
+// and the post-resolution dial targets the inspected IP (not the original
+// hostname), which the SSRF protection depends on.
+var dialContextFn = (*net.Dialer).DialContext
+
 // ssrfSafeDialContext wraps a net.Dialer and checks the resolved IP address
 // at connection time — eliminating the TOCTOU gap between DNS resolution and dial.
 func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
-			return d.DialContext(ctx, network, addr)
+			return dialContextFn(d, ctx, network, addr)
 		}
 
 		// Resolve the hostname ourselves so we can inspect the IPs
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := lookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +139,7 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("proxy: no IP addresses returned for host %q", host)
 		}
-		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		return dialContextFn(d, ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 	}
 }
 
@@ -269,7 +281,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 		log.Printf("[MITM] %s Hijack error for %s: %v", remoteHash, host, err)
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = clientConn.Close() }()
 
 	// Build a handler that anonymizes and forwards requests
 	ctx := mitmContext{host: host, domain: domain, remoteHash: remoteHash}
@@ -351,7 +363,7 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 	if s.m != nil {
 		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 
 	// De-anonymize response before returning to client
 	s.deanonymizeResponseBody(resp, sessionID, domain)
@@ -359,7 +371,7 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 	removeHopByHop(resp.Header)
 	copyHeader(rw.Header(), resp.Header)
 	rw.WriteHeader(resp.StatusCode)
-	flushingCopy(rw, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+	flushingCopy(rw, resp.Body)
 }
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
@@ -381,7 +393,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
-	defer destConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = destConn.Close() }()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -396,12 +408,12 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 		log.Printf("[TUNNEL] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
 		return
 	}
-	defer clientConn.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = clientConn.Close() }()
 
 	// Bidirectional copy
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(destConn, clientConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
-	go func() { io.Copy(clientConn, destConn); done <- struct{}{} }() //nolint:errcheck // tunnel; EOF is normal
+	go func() { _, _ = io.Copy(destConn, clientConn); done <- struct{}{} }() // tunnel; EOF is normal
+	go func() { _, _ = io.Copy(clientConn, destConn); done <- struct{}{} }() // tunnel; EOF is normal
 	<-done
 }
 
@@ -487,7 +499,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	if s.m != nil {
 		s.m.RecordUpstreamLatency(time.Since(upstreamStart))
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 
 	// De-anonymize response before returning to client
 	s.deanonymizeResponseBody(resp, sessionID, domain)
@@ -495,10 +507,16 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	removeHopByHop(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	flushingCopy(w, resp.Body) //nolint:errcheck // client disconnect; headers already sent
+	flushingCopy(w, resp.Body)
 }
 
 const maxRequestBody = 50 << 20 // 50 MB
+
+// randRead fills b with cryptographically secure random bytes. It is a package
+// var so tests can inject a failing reader to exercise the timestamp fallback;
+// crypto/rand.Read itself treats a reader error as fatal and cannot be made to
+// return one in-process.
+var randRead = rand.Read
 
 func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	if r.Body == nil || r.ContentLength == 0 {
@@ -506,7 +524,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
-	r.Body.Close() //nolint:errcheck // body already read; close is best-effort
+	_ = r.Body.Close() // body already read; close is best-effort
 	if err != nil {
 		if s.m != nil {
 			s.m.ErrorsAnonymize.Add(1)
@@ -519,7 +537,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 
 	var sessionID string
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
 	} else {
 		sessionID = hex.EncodeToString(b)
@@ -563,7 +581,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, 
 	}
 
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close() //nolint:errcheck // body already read; close is best-effort
+	_ = resp.Body.Close() // body already read; close is best-effort
 	if err != nil {
 		resp.Body = http.NoBody
 		return
@@ -708,7 +726,7 @@ func flushingCopy(dst io.Writer, src io.Reader) {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			dst.Write(buf[:n]) //nolint:errcheck // caller ignores; headers already sent
+			_, _ = dst.Write(buf[:n]) // caller ignores; headers already sent
 			if canFlush {
 				flusher.Flush()
 			}

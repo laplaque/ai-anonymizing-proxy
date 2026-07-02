@@ -19,6 +19,17 @@ import (
 	"time"
 )
 
+// Indirection seams for deterministic, portable testing of the crypto and
+// PEM-write error paths, which cannot otherwise be triggered (the real
+// crypto/rand entropy source never fails, and forcing a file-write error
+// would require platform-specific devices).
+var (
+	rsaGenerateKey        = rsa.GenerateKey
+	randInt               = rand.Int
+	x509CreateCertificate = x509.CreateCertificate
+	pemEncode             = pem.Encode
+)
+
 const maxCertCache = 10_000
 
 // CA holds certificate authority material for generating leaf certificates.
@@ -109,12 +120,12 @@ func LoadCA(certFile, keyFile string) (*CA, error) {
 // GenerateCA creates a new self-signed CA certificate and private key,
 // writing them to the specified PEM files.
 func GenerateCA(certFile, keyFile string) error {
-	key, err := rsa.GenerateKey(rand.Reader, 4096)
+	key, err := rsaGenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return fmt.Errorf("generate key: %w", err)
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := randInt(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return fmt.Errorf("generate serial: %w", err)
 	}
@@ -133,7 +144,7 @@ func GenerateCA(certFile, keyFile string) error {
 		MaxPathLen:            1,
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	derBytes, err := x509CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		return fmt.Errorf("create CA cert: %w", err)
 	}
@@ -143,8 +154,8 @@ func GenerateCA(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("create cert file: %w", err)
 	}
-	defer certOut.Close() //nolint:errcheck // best-effort close
-	if encErr := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
+	defer func() { _ = certOut.Close() }() // best-effort close
+	if encErr := pemEncode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); encErr != nil {
 		return fmt.Errorf("write cert PEM: %w", encErr)
 	}
 
@@ -153,8 +164,8 @@ func GenerateCA(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("create key file: %w", err)
 	}
-	defer keyOut.Close() //nolint:errcheck // best-effort close
-	if encErr := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
+	defer func() { _ = keyOut.Close() }() // best-effort close
+	if encErr := pemEncode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); encErr != nil {
 		return fmt.Errorf("write key PEM: %w", encErr)
 	}
 
@@ -177,13 +188,13 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 
 	log.Printf("[MITM] Generating certificate for %s", host)
 
-	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	leafKey, err := rsaGenerateKey(rand.Reader, 2048)
 	if err != nil {
 		log.Printf("[MITM] Failed to generate key for %s: %v", host, err)
 		return nil, fmt.Errorf("generate leaf key: %w", err)
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := randInt(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		log.Printf("[MITM] Failed to generate serial for %s: %v", host, err)
 		return nil, fmt.Errorf("generate serial: %w", err)
@@ -199,7 +210,7 @@ func (ca *CA) CertFor(host string) (*tls.Certificate, error) {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &leafKey.PublicKey, ca.key)
+	derBytes, err := x509CreateCertificate(rand.Reader, template, ca.cert, &leafKey.PublicKey, ca.key)
 	if err != nil {
 		log.Printf("[MITM] Failed to sign certificate for %s: %v", host, err)
 		return nil, fmt.Errorf("sign leaf cert: %w", err)

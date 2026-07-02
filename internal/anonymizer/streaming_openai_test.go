@@ -268,7 +268,7 @@ func TestOpenAIStreamingVerboseLogging(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, openAIDomain)
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
@@ -482,7 +482,7 @@ func TestDeepSeekReasoningVerboseLogging(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader(sseInput))
 	rc := a.StreamingDeanonymize(src, sessionID, deepSeekDomain)
-	defer rc.Close() //nolint:errcheck
+	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {

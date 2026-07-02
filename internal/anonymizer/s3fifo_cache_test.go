@@ -21,7 +21,7 @@ func newTestS3FIFO(capacity int) *s3fifoCache {
 func TestS3FIFOGetSetDelete(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Miss on empty cache.
 	if _, ok := c.Get("x"); ok {
@@ -58,7 +58,7 @@ func TestS3FIFOCapacityEnforced(t *testing.T) {
 	t.Parallel()
 	capacity := 10
 	c := newTestS3FIFO(capacity)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Fill to capacity with unique keys.
 	for i := 0; i < capacity+5; i++ {
@@ -82,7 +82,7 @@ func TestS3FIFOPromotionToM(t *testing.T) {
 	// S3-FIFO evicts only when total > capacity, so we need capacity+1 insertions
 	// to trigger eviction of the oldest S entry.
 	c := newTestS3FIFO(2)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Insert "hot" and access it so freq > 0.
 	c.Set("hot", "tok-hot")
@@ -113,7 +113,7 @@ func TestS3FIFOGhostBypassesS(t *testing.T) {
 	t.Parallel()
 	// capacity=2: eviction fires when total > 2.
 	c := newTestS3FIFO(2)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Insert "victim" (freq=0) and fill to capacity.
 	c.Set("victim", "tok-victim")
@@ -156,7 +156,7 @@ func TestS3FIFOGhostBounded(t *testing.T) {
 	t.Parallel()
 	// ghostCap = 2*sTarget = 2*(1) = 2, clamped to 4. Use capacity=20 → sTarget=2, ghostCap=4.
 	c := newTestS3FIFO(20)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	ghostCap := c.ghostCap
 
@@ -189,7 +189,7 @@ func TestS3FIFOColdReadRewarmsMemory(t *testing.T) {
 	if !ok {
 		t.Fatal("newS3FIFOCache did not return *s3fifoCache")
 	}
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Key is not in S3-FIFO memory yet.
 	c.mu.Lock()
@@ -219,7 +219,7 @@ func TestS3FIFOColdReadRewarmsMemory(t *testing.T) {
 func TestS3FIFOConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(100)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	const goroutines = 20
 	const ops = 200
@@ -263,7 +263,7 @@ func TestS3FIFOConcurrentAccess(t *testing.T) {
 func TestS3FIFOFrequencySaturation(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	c.Set("k", "v")
 	// Access many times; freq must saturate at 3.
@@ -291,7 +291,7 @@ func TestS3FIFOWithBboltBacking(t *testing.T) {
 	}
 
 	c := newS3FIFOCache(bbolt, 100)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	c.Set("persist@example.com", "[PII_feedbeef12345678]")
 
@@ -311,7 +311,7 @@ func TestS3FIFOWithBboltBacking(t *testing.T) {
 func TestS3FIFOGhostDedup(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(2) // capacity 2 → sTarget 1, ghostCap 4
-	defer c.Close()       //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Fill and evict to populate the ghost set.
 	c.Set("a", "t1")
@@ -334,7 +334,7 @@ func TestS3FIFOGhostDedup(t *testing.T) {
 func TestS3FIFOEvictFromSEmptyQueue(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Calling evictFromS on an empty S queue should be a no-op.
 	c.mu.Lock()
@@ -346,7 +346,7 @@ func TestS3FIFOEvictFromSEmptyQueue(t *testing.T) {
 func TestS3FIFOEvictFromMEmptyQueue(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Calling evictFromM on an empty M queue should be a no-op.
 	c.mu.Lock()
@@ -359,7 +359,7 @@ func TestS3FIFOEvictFromMEmptyQueue(t *testing.T) {
 func TestS3FIFOEvictFromSCorruptedElement(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Inject a corrupted (non-string) element into sQueue.
 	c.mu.Lock()
@@ -373,7 +373,7 @@ func TestS3FIFOEvictFromSCorruptedElement(t *testing.T) {
 func TestS3FIFOEvictFromMCorruptedElement(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Inject a corrupted (non-string) element into mQueue.
 	c.mu.Lock()
@@ -387,7 +387,7 @@ func TestS3FIFOEvictFromMCorruptedElement(t *testing.T) {
 func TestS3FIFOEvictFromSStaleEntry(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(10)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	c.Set("a", "t1")
 	c.Set("b", "t2")
@@ -408,7 +408,7 @@ func TestS3FIFONewWithZeroCapacity(t *testing.T) {
 	t.Parallel()
 	// Capacity 1 is the minimum — triggers sTarget=1, ghostCap=4 (min).
 	c := newTestS3FIFO(1)
-	defer c.Close() //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	c.Set("a", "t1")
 	c.Set("b", "t2") // triggers eviction
@@ -423,7 +423,7 @@ func TestS3FIFONewWithZeroCapacity(t *testing.T) {
 func TestS3FIFOEvictFromMPath(t *testing.T) {
 	t.Parallel()
 	c := newTestS3FIFO(2) // capacity 2, sTarget 1, mTarget 1
-	defer c.Close()       //nolint:errcheck
+	defer func() { _ = c.Close() }()
 
 	// Set a key and access it to bump freq, then overflow S to trigger promotion to M.
 	c.Set("a", "t1")

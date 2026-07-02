@@ -22,7 +22,7 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 		log.Printf("[MITM] TLS handshake failed for %s: %v", host, err)
 		return
 	}
-	defer tlsConn.Close() //nolint:errcheck // best-effort close on TLS connection
+	defer func() { _ = tlsConn.Close() }() // best-effort close on TLS connection
 
 	// Determine which protocol was negotiated
 	proto := tlsConn.ConnectionState().NegotiatedProtocol
@@ -51,7 +51,7 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		ln := &singleConnListener{conn: tlsConn}
-		srv.Serve(ln) //nolint:errcheck // always ErrServerClosed for single-conn listener
+		_ = srv.Serve(ln) // always ErrServerClosed for single-conn listener
 	}
 }
 
