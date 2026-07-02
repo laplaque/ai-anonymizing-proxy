@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"sync"
@@ -34,7 +35,11 @@ func (f *fakeReporter) StopPending()  { f.record("StopPending") }
 func (f *fakeReporter) Interrogate()  { f.record("Interrogate") }
 
 // freeAddr returns "127.0.0.1:<unused port>" — claim a port from the OS,
-// then release it. The lifecycle test re-binds it via srv.ListenAndServe.
+// then release it. The shutdown-timeout lifecycle test re-binds it via
+// srv.ListenAndServe. Inherently TOCTOU (issue #140): another process can
+// steal the port between Close and the re-bind, so the caller must treat a
+// lost bind race as retryable (see waitServiceReady). Lifecycle tests that
+// never dial the server avoid the race entirely by binding ":0" directly.
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	lc := &net.ListenConfig{}
@@ -48,7 +53,10 @@ func freeAddr(t *testing.T) string {
 }
 
 func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
-	srv := &http.Server{Addr: freeAddr(t), ReadHeaderTimeout: time.Second}
+	// ":0" lets ListenAndServe pick its own port at bind time — no
+	// close-then-rebind window (issue #140). This test never dials the
+	// server, so it doesn't need to know which port was chosen.
+	srv := &http.Server{Addr: "127.0.0.1:0", ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
 
@@ -84,7 +92,8 @@ func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
 }
 
 func TestRunServiceLifecycle_InterrogateReEmits(t *testing.T) {
-	srv := &http.Server{Addr: freeAddr(t), ReadHeaderTimeout: time.Second}
+	// ":0" — see TestRunServiceLifecycle_StopGracefully.
+	srv := &http.Server{Addr: "127.0.0.1:0", ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
 
@@ -124,23 +133,36 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 		<-hold
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
-	addr := freeAddr(t)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
-	rep := &fakeReporter{}
-	requests := make(chan svcCommand, 4)
-
-	done := make(chan uint32, 1)
-	go func() { done <- runServiceLifecycle(srv, requests, rep) }()
-
-	// Wait for Running, then fire a request that blocks past the deadline.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
+	// Unlike the other lifecycle tests this one must dial the server, so it
+	// can't bind ":0" — it re-binds a freeAddr port and can lose that bind
+	// race to another process (issue #140). Retry on a fresh address when
+	// the probe reports a lost race.
+	var (
+		addr     string
+		requests chan svcCommand
+		done     chan uint32
+	)
+	for attempt := 1; ; attempt++ {
+		a := freeAddr(t)
+		srv := &http.Server{Addr: a, Handler: mux, ReadHeaderTimeout: time.Second}
+		req := make(chan svcCommand, 4)
+		d := make(chan uint32, 1)
+		go func() { d <- runServiceLifecycle(srv, req, &fakeReporter{}) }()
+		if waitServiceReady(t, a, d, 2*time.Second) {
+			addr, requests, done = a, req, d
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		if attempt == maxBindAttempts {
+			t.Fatalf("lost the freeAddr bind race %d times in a row", attempt)
+		}
+		t.Logf("attempt %d/%d: lost the freeAddr bind race, retrying on a fresh port", attempt, maxBindAttempts)
 	}
+
+	// Fire a request that blocks past the shutdown deadline.
 	reqDone := make(chan struct{})
 	go func() {
 		defer close(reqDone)
@@ -198,6 +220,49 @@ func TestRunServiceLifecycle_BindFailureReturnsNonZero(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("lifecycle did not exit within 5s on bind failure")
 	}
+}
+
+// waitServiceReady polls the lifecycle's HTTP server until GET /ready
+// answers 204 — proof the port is served by *our* mux, not by whichever
+// process may have stolen it — or until the lifecycle goroutine exits
+// first, which on a freeAddr-allocated port means ListenAndServe lost the
+// re-bind race (issue #140). Returns false on a lost race so the caller
+// can retry on a fresh port; fails the test on timeout or an exit code
+// that a bind failure cannot produce.
+func waitServiceReady(t *testing.T, addr string, done <-chan uint32, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case code := <-done:
+			if code != 1 {
+				t.Fatalf("lifecycle exited with code %d before serving", code)
+			}
+			return false
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/ready", http.NoBody)
+		if err != nil {
+			cancel()
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- localhost URL from freeAddr(t), not external input
+		cancel()
+		if err == nil {
+			ours := resp.StatusCode == http.StatusNoContent
+			_ = resp.Body.Close()
+			if ours {
+				return true
+			}
+			// A response that isn't ours means a foreign server owns the
+			// port; our ListenAndServe already failed, so the next
+			// iteration's done check will observe the exit.
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("server at %s not ready within %v", addr, timeout)
+	return false // unreachable: Fatalf panics
 }
 
 func hasCall(calls []string, want string) bool {

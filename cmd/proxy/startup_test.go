@@ -96,12 +96,17 @@ func TestStartManagementAPI_ServesRequests(t *testing.T) {
 	}
 }
 
-// freePort returns a 127.0.0.1 TCP port that is unused at the moment of the
-// call. There is an inherent race: the OS may hand the same port to another
-// process between this call and the caller's re-bind. We accept that race —
-// no clean alternative exists when the consumer is a subprocess that must
-// open its own listener — and rely on the helper-process tests' own
-// log-based readiness probe to surface the rare collision.
+// freePort returns a 127.0.0.1 TCP port that was unused at the moment of the
+// call. Inherently TOCTOU (issue #140): the probe listener is closed before
+// the caller re-binds the port, so another process can steal it in between —
+// no reservation is possible when the consumer is a subprocess that must
+// open its own listener. Helper-process consumers therefore treat a
+// "bind: address already in use" exit as a lost race and relaunch on a fresh
+// port (see lifecycleAttempt and testHelperPortConflict) instead of failing.
+// TestStartManagementAPI_ServesRequests cannot retry — a lost race there
+// hits runManagementAPI's log.Fatalf — but its window is in-process
+// (microseconds between Close and re-bind, no fork/exec), so a collision is
+// vanishingly rare compared to the subprocess window this issue is about.
 func freePort(t *testing.T) int {
 	t.Helper()
 	l := listenLocal(t)
