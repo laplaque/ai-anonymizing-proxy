@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 )
@@ -256,5 +257,58 @@ func TestListenAndServe_BindError(t *testing.T) {
 
 	if err := s.ListenAndServe(); err == nil {
 		t.Error("expected ListenAndServe to fail binding an occupied port, got nil")
+	}
+	if s.Addr() != nil {
+		t.Errorf("Addr() after failed bind = %v, want nil", s.Addr())
+	}
+}
+
+// J) ListenAndServe success path: ManagementPort 0 binds a kernel-assigned
+// port with no free-port probing (issue #140); Addr() is nil before the
+// bind, publishes the bound address once up, and the served handler
+// answers on it.
+func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
+	cfg := &config.Config{ManagementPort: 0}
+	reg := NewDomainRegistry(cfg, "")
+	s := New(cfg, reg, nil)
+
+	if s.Addr() != nil {
+		t.Errorf("Addr() before ListenAndServe = %v, want nil", s.Addr())
+	}
+
+	go func() { _ = s.ListenAndServe() }() // serves until the test binary exits
+
+	var addr net.Addr
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if addr = s.Addr(); addr != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == nil {
+		t.Fatal("Addr() not published within 2s of ListenAndServe")
+	}
+	tcpAddr, ok := addr.(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("Addr() = %T, want *net.TCPAddr", addr)
+	}
+	if tcpAddr.Port == 0 {
+		t.Fatal("Addr() reports port 0; want the kernel-assigned port")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr.String()+"/status", http.NoBody)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- localhost URL from our own bound listener, not external input
+	if err != nil {
+		t.Fatalf("GET /status on published addr: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /status = %d, want 200", resp.StatusCode)
 	}
 }

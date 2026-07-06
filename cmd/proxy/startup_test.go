@@ -69,10 +69,13 @@ func TestProxyHTTPServer_WiringFromConfig(t *testing.T) {
 }
 
 func TestStartManagementAPI_ServesRequests(t *testing.T) {
-	port := freePort(t)
+	// ManagementPort 0 lets the server bind a kernel-assigned port and
+	// publish it via Addr() — no free-port probing, so the freePort TOCTOU
+	// race (issue #140) cannot occur here, and a bind failure can never
+	// trip runManagementAPI's log.Fatalf.
 	cfg := &config.Config{
 		BindAddress:    "127.0.0.1",
-		ManagementPort: port,
+		ManagementPort: 0,
 		EnabledPacks:   []string{"SECRETS", "GLOBAL"},
 	}
 	registry := management.NewDomainRegistry(cfg, "")
@@ -83,7 +86,21 @@ func TestStartManagementAPI_ServesRequests(t *testing.T) {
 		t.Fatal("startManagementAPI returned nil server")
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/status", port)
+	// The listener binds in startManagementAPI's goroutine; Addr() is nil
+	// until then.
+	var addr net.Addr
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if addr = got.Addr(); addr != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == nil {
+		t.Fatal("management API did not publish its bound address within 2s")
+	}
+
+	url := fmt.Sprintf("http://%s/status", addr)
 	resp, err := pollUntilUp(url, 2*time.Second)
 	if err != nil {
 		t.Fatalf("mgmt API not reachable: %v", err)
@@ -103,10 +120,8 @@ func TestStartManagementAPI_ServesRequests(t *testing.T) {
 // open its own listener. Helper-process consumers therefore treat a
 // "bind: address already in use" exit as a lost race and relaunch on a fresh
 // port (see lifecycleAttempt and testHelperPortConflict) instead of failing.
-// TestStartManagementAPI_ServesRequests cannot retry — a lost race there
-// hits runManagementAPI's log.Fatalf — but its window is in-process
-// (microseconds between Close and re-bind, no fork/exec), so a collision is
-// vanishingly rare compared to the subprocess window this issue is about.
+// In-process tests must not use this helper at all — bind port 0 and read
+// the actual address back instead (see TestStartManagementAPI_ServesRequests).
 func freePort(t *testing.T) int {
 	t.Helper()
 	l := listenLocal(t)

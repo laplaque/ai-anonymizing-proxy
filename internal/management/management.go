@@ -9,10 +9,12 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +36,9 @@ type Server struct {
 	domains   *DomainRegistry
 	token     string           // bearer token for auth; empty = no auth
 	metrics   *metrics.Metrics // nil = no metrics
+
+	mu        sync.Mutex
+	boundAddr net.Addr // set once ListenAndServe has bound; nil before
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -489,14 +494,38 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-// ListenAndServe starts the management HTTP server.
+// ListenAndServe starts the management HTTP server. It binds synchronously,
+// publishes the bound address (see Addr), then serves until the listener
+// fails or is closed. Binding before serving lets a caller configure
+// ManagementPort 0 and read the kernel-assigned port back from Addr — the
+// race-free alternative to probing for a free port and re-binding it
+// (issue #140).
 func (s *Server) ListenAndServe() error {
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort)
-	log.Printf("[MANAGEMENT] Listening on %s", addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort))
+	if err != nil {
+		return err
+	}
+	s.setBoundAddr(ln.Addr())
+	log.Printf("[MANAGEMENT] Listening on %s", ln.Addr())
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	return srv.ListenAndServe()
+	return srv.Serve(ln)
+}
+
+// Addr returns the address the management listener is bound to, or nil
+// before ListenAndServe has bound it. When the server was configured with
+// ManagementPort 0, this is the only way to learn the actual port.
+func (s *Server) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.boundAddr
+}
+
+func (s *Server) setBoundAddr(a net.Addr) {
+	s.mu.Lock()
+	s.boundAddr = a
+	s.mu.Unlock()
 }
