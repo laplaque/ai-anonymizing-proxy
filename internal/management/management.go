@@ -38,7 +38,8 @@ type Server struct {
 	metrics   *metrics.Metrics // nil = no metrics
 
 	mu        sync.Mutex
-	boundAddr net.Addr // set once ListenAndServe has bound; nil before
+	boundAddr net.Addr     // set once ListenAndServe has bound; nil before
+	srv       *http.Server // set with boundAddr; target for Close
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -506,12 +507,15 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	s.setBoundAddr(ln.Addr())
-	log.Printf("[MANAGEMENT] Listening on %s", ln.Addr())
 	srv := &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	s.mu.Lock()
+	s.boundAddr = ln.Addr()
+	s.srv = srv
+	s.mu.Unlock()
+	log.Printf("[MANAGEMENT] Listening on %s", ln.Addr())
 	return srv.Serve(ln)
 }
 
@@ -524,8 +528,14 @@ func (s *Server) Addr() net.Addr {
 	return s.boundAddr
 }
 
-func (s *Server) setBoundAddr(a net.Addr) {
+// Close immediately closes the management listener and any active
+// connections; a blocked ListenAndServe then returns http.ErrServerClosed.
+// Returns nil if the server never bound a listener.
+func (s *Server) Close() error {
 	s.mu.Lock()
-	s.boundAddr = a
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.srv == nil {
+		return nil
+	}
+	return s.srv.Close()
 }

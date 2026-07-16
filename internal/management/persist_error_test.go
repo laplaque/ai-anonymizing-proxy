@@ -261,12 +261,16 @@ func TestListenAndServe_BindError(t *testing.T) {
 	if s.Addr() != nil {
 		t.Errorf("Addr() after failed bind = %v, want nil", s.Addr())
 	}
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() on a never-bound server = %v, want nil", err)
+	}
 }
 
 // J) ListenAndServe success path: ManagementPort 0 binds a kernel-assigned
 // port with no free-port probing (issue #140); Addr() is nil before the
 // bind, publishes the bound address once up, and the served handler
-// answers on it.
+// answers on it. Close tears the server down and ListenAndServe returns
+// http.ErrServerClosed.
 func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 	cfg := &config.Config{ManagementPort: 0}
 	reg := NewDomainRegistry(cfg, "")
@@ -276,7 +280,8 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 		t.Errorf("Addr() before ListenAndServe = %v, want nil", s.Addr())
 	}
 
-	go func() { _ = s.ListenAndServe() }() // serves until the test binary exits
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- s.ListenAndServe() }()
 
 	var addr net.Addr
 	deadline := time.Now().Add(2 * time.Second)
@@ -297,18 +302,43 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 		t.Fatal("Addr() reports port 0; want the kernel-assigned port")
 	}
 
+	// Probe over a transport pinned to the published address. The request
+	// URL is a constant, so no URL is ever derived from runtime data — the
+	// pinned dial target is our own just-bound listener.
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr.String())
+		},
+	}}
+	defer client.CloseIdleConnections()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr.String()+"/status", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1/status", http.NoBody)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- localhost URL from our own bound listener, not external input
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /status on published addr: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /status = %d, want 200", resp.StatusCode)
+	}
+
+	// Bounded teardown: Close the server and observe the serve result so
+	// the listener and goroutine never outlive the test.
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("ListenAndServe after Close = %v, want http.ErrServerClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe did not return within 2s of Close")
 	}
 }

@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -206,18 +209,19 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 	}
 }
 
-// lifecycleAttempt runs one full start → ready → SIGTERM → clean-exit cycle
-// against a freshly launched helper subprocess. It returns false only when
-// the subprocess died because a freePort-allocated port was stolen before it
-// could bind (EADDRINUSE in its log), so the caller can relaunch; every
-// other failure fails the test in place.
+// lifecycleAttempt runs one full start → ready → served → SIGTERM →
+// clean-exit cycle against a freshly launched helper subprocess. It returns
+// false only when the subprocess died because a freePort-allocated port was
+// stolen before it could bind (EADDRINUSE in its log), so the caller can
+// relaunch; every other failure fails the test in place.
 func lifecycleAttempt(t *testing.T) bool {
 	t.Helper()
 
+	proxyPort := freePort(t)
 	cmd := helperCmd(t)
 	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
-		fmt.Sprintf("PROXY_PORT=%d", freePort(t)),
+		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
 		fmt.Sprintf("MANAGEMENT_PORT=%d", freePort(t)),
 		"ENABLED_PACKS=SECRETS,GLOBAL",
 		"USE_AI_DETECTION=false",
@@ -252,6 +256,34 @@ func lifecycleAttempt(t *testing.T) bool {
 				return false
 			}
 			t.Fatalf("helper exited before readiness:\n%s", stderr.String())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// "[PROXY] Listening on" is printed before ListenAndServe binds
+	// (main.go), so it alone doesn't prove the subprocess owns PROXY_PORT:
+	// a SIGTERM landing in that gap marks the server closed before Listen,
+	// ListenAndServe returns ErrServerClosed, and the process exits 0
+	// without ever serving. Prove ownership by driving a request through
+	// the proxy at a constant private target and waiting for the
+	// private-address block log that only our subprocess's handler emits.
+	// A thief squatting on the port cannot produce that line, and the
+	// proxy's own bind failure still surfaces via done as a lost race.
+	proxyURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", proxyPort)}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	defer client.CloseIdleConnections()
+	const servedLog = "Blocked request to private address"
+	for !strings.Contains(stderr.String(), servedLog) {
+		if time.Now().After(deadline) {
+			t.Fatalf("proxy did not serve a request within 10s of claiming readiness\n%s", stderr.String())
+		}
+		probeProxyOnce(client)
+		select {
+		case <-done:
+			if lostRace() {
+				return false
+			}
+			t.Fatalf("helper exited before serving a request:\n%s", stderr.String())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -294,6 +326,26 @@ func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
 // log.Fatalf branch.
 func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
 	testHelperPortConflict(t, "MANAGEMENT_PORT", "PROXY_PORT", "[MANAGEMENT] Fatal", "[PROXY] Fatal")
+}
+
+// probeProxyOnce sends one GET through the proxy configured on client,
+// targeting a constant private address so the proxy's SSRF guard rejects it
+// (and logs doing so). Errors are expected while the proxy is still coming
+// up — or when a port thief answers instead — and are ignored: the caller
+// asserts on the subprocess's log, not on the response.
+func probeProxyOnce(client *http.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:9/", http.NoBody)
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 // testHelperPortConflict launches the helper with the pinnedVar port held by

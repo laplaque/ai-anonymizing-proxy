@@ -52,6 +52,20 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
+// pinnedClient returns an http.Client whose transport dials addr no matter
+// what the request URL says. Probes use constant URLs — no request URL is
+// ever derived from runtime data (nothing for gosec's SSRF taint rules to
+// flag, and nothing to suppress) — while the dial still targets exactly
+// the listener under test.
+func pinnedClient(addr string) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}}
+}
+
 func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
 	// ":0" lets ListenAndServe pick its own port at bind time — no
 	// close-then-rebind window (issue #140). This test never dials the
@@ -142,7 +156,7 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	// race to another process (issue #140). Retry on a fresh address when
 	// the probe reports a lost race.
 	var (
-		addr     string
+		client   *http.Client
 		requests chan svcCommand
 		done     chan uint32
 	)
@@ -151,9 +165,10 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 		srv := &http.Server{Addr: a, Handler: mux, ReadHeaderTimeout: time.Second}
 		req := make(chan svcCommand, 4)
 		d := make(chan uint32, 1)
+		c := pinnedClient(a)
 		go func() { d <- runServiceLifecycle(srv, req, &fakeReporter{}) }()
-		if waitServiceReady(t, a, d, 2*time.Second) {
-			addr, requests, done = a, req, d
+		if waitServiceReady(t, c, d, 2*time.Second) {
+			client, requests, done = c, req, d
 			break
 		}
 		if attempt == maxBindAttempts {
@@ -161,14 +176,14 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 		}
 		t.Logf("attempt %d/%d: lost the freeAddr bind race, retrying on a fresh port", attempt, maxBindAttempts)
 	}
+	defer client.CloseIdleConnections()
 
 	// Fire a request that blocks past the shutdown deadline.
 	reqDone := make(chan struct{})
 	go func() {
 		defer close(reqDone)
-		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
-		// #nosec G107,G704 — addr is freeAddr(t)'s localhost loopback, not user input
-		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed below; lint flow analysis misses the err-guard
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1/hold", http.NoBody)
+		resp, err := client.Do(req) //nolint:bodyclose // body is closed below; lint flow analysis misses the err-guard
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 		}
@@ -222,14 +237,14 @@ func TestRunServiceLifecycle_BindFailureReturnsNonZero(t *testing.T) {
 	}
 }
 
-// waitServiceReady polls the lifecycle's HTTP server until GET /ready
-// answers 204 — proof the port is served by *our* mux, not by whichever
-// process may have stolen it — or until the lifecycle goroutine exits
-// first, which on a freeAddr-allocated port means ListenAndServe lost the
-// re-bind race (issue #140). Returns false on a lost race so the caller
-// can retry on a fresh port; fails the test on timeout or an exit code
-// that a bind failure cannot produce.
-func waitServiceReady(t *testing.T, addr string, done <-chan uint32, timeout time.Duration) bool {
+// waitServiceReady polls the lifecycle's HTTP server (via a pinnedClient)
+// until GET /ready answers 204 — proof the port is served by *our* mux,
+// not by whichever process may have stolen it — or until the lifecycle
+// goroutine exits first, which on a freeAddr-allocated port means
+// ListenAndServe lost the re-bind race (issue #140). Returns false on a
+// lost race so the caller can retry on a fresh port; fails the test on
+// timeout or an exit code that a bind failure cannot produce.
+func waitServiceReady(t *testing.T, client *http.Client, done <-chan uint32, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -242,12 +257,12 @@ func waitServiceReady(t *testing.T, addr string, done <-chan uint32, timeout tim
 		default:
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/ready", http.NoBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1/ready", http.NoBody)
 		if err != nil {
 			cancel()
 			t.Fatalf("new request: %v", err)
 		}
-		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- localhost URL from freeAddr(t), not external input
+		resp, err := client.Do(req)
 		cancel()
 		if err == nil {
 			ours := resp.StatusCode == http.StatusNoContent
@@ -261,7 +276,7 @@ func waitServiceReady(t *testing.T, addr string, done <-chan uint32, timeout tim
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("server at %s not ready within %v", addr, timeout)
+	t.Fatalf("lifecycle server not ready within %v", timeout)
 	return false // unreachable: Fatalf panics
 }
 
