@@ -54,6 +54,8 @@ bash .github/scripts/delta-coverage.sh coverage.out 95.0 origin/main
 
 If any function is below 95%, do not open the PR — add tests until the gate passes. Never `// coverage-ignore` or suppress.
 
+If the script reports `UNSCORED` files (no profile rows on this platform, e.g. a `GOOS`-tagged file), record the alternate evidence for each here: at minimum a clean cross-platform `go vet`/`go build`, plus a structural mapping of every function in the unscored file to the covered platform-neutral code it delegates to.
+
 ## §6 Test Inventory — baseline vs head
 
 Method: checkout `main`, run `go test -race -count=1 -v <pkg>` and count `--- PASS` / `--- FAIL` lines (top-level + subtests). Repeat on the PR head SHA. Diff reasoning (e.g. "no `*_test.go` files touched") does NOT satisfy this gate — execution on both sides is required. See `docs/test-plans/ai-proxy-test-method.md` §6 for the inventory.

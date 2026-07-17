@@ -50,7 +50,18 @@ cover_output=$(go tool cover -func="$COVERAGE_FILE")
 failed=0
 checked=0
 
+unscored_files=""
+
 while IFS= read -r file; do
+  # A changed file with no rows in the coverage profile (e.g. excluded by a
+  # GOOS build tag on this runner) cannot be scored here. Disclose it
+  # explicitly instead of silently counting it as covered — the PR must
+  # carry alternate evidence for such files (see the PR template).
+  if ! grep -qF "/$file:" <<< "$cover_output"; then
+    echo "UNSCORED: ${file} — no coverage rows in the profile (build-tag excluded on this platform?); record alternate evidence in the PR's Delta Coverage Report"
+    unscored_files="${unscored_files} ${file}"
+    continue
+  fi
   # Match file path precisely using literal match with trailing colon
   # to prevent substring collisions (e.g. proxy.go matching reverse_proxy.go).
   while IFS= read -r line; do
@@ -88,10 +99,13 @@ done <<< "$changed_files"
 
 echo ""
 echo "Checked ${checked} functions in ${changed_files_count} changed files."
+if [ -n "$unscored_files" ]; then
+  echo "Unscored (no profile rows):${unscored_files}"
+fi
 
 if [ "$failed" -gt 0 ]; then
   echo "ERROR: ${failed} function(s) below ${THRESHOLD}% coverage threshold."
   exit 1
 fi
 
-echo "SUCCESS: All functions in changed files meet ${THRESHOLD}% coverage threshold."
+echo "SUCCESS: All scored functions in changed files meet ${THRESHOLD}% coverage threshold."

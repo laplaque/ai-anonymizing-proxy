@@ -9,8 +9,9 @@ import (
 
 // TestRunServerOrService_ServiceModeReturnsImmediately swaps the
 // service dispatcher with a fake that reports "yes, we're under SCM";
-// runServerOrService must return immediately without installing a
-// signal handler or starting the HTTP listener.
+// runServerOrService must return immediately, skipping the CLI arm's
+// signal-handler setup and srv.Serve. (The listener itself is pre-bound
+// by the test — binding happens in main, not here.)
 func TestRunServerOrService_ServiceModeReturnsImmediately(t *testing.T) {
 	original := serviceDispatcher
 	t.Cleanup(func() { serviceDispatcher = original })

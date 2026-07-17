@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func TestInstallShutdownHandler_GracefulOnSignal(t *testing.T) {
 }
 
 func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
+	logs := captureServiceLog(t)
 	hung := make(chan struct{})
 	defer close(hung)
 
@@ -88,10 +90,21 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 	select {
 	case <-done:
 		elapsed := time.Since(start)
+		// Both bounds matter: an implementation that skips Shutdown (or
+		// calls Close) returns in ~0ms and must fail the lower bound;
+		// one that waits for the drain blows the upper bound.
+		if elapsed < 200*time.Millisecond {
+			t.Errorf("shutdown returned in %v, before the 200ms budget — timeout branch not exercised", elapsed)
+		}
 		if elapsed > 1*time.Second {
 			t.Errorf("shutdown took %v, expected ~200ms (timeout path)", elapsed)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("installShutdownHandler did not return after Shutdown timeout")
+	}
+	// Pin the branch by its distinctive log line: srv.Shutdown returned a
+	// deadline error and installShutdownHandler logged it.
+	if !strings.Contains(logs.String(), "[PROXY] Shutdown error:") {
+		t.Errorf("expected '[PROXY] Shutdown error:' timeout log, got: %q", logs.String())
 	}
 }

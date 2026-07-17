@@ -497,16 +497,32 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// ErrAlreadyServing is returned by ListenAndServe when it is called more
+// than once for the same Server and the second bind succeeds (e.g. with
+// ManagementPort 0); with a fixed port the second call fails earlier, at
+// bind, against the first call's own listener. Either way the first
+// server stays bound and owned.
+var ErrAlreadyServing = errors.New("management: ListenAndServe called more than once")
+
 // ListenAndServe starts the management HTTP server. It binds synchronously,
 // publishes the bound address (see Addr), then serves until the listener
 // fails or is closed. Binding before serving lets a caller configure
 // ManagementPort 0 and read the kernel-assigned port back from Addr — the
 // race-free alternative to probing for a free port and re-binding it
-// (issue #140).
+// (issue #140). Single-shot: a second call returns ErrAlreadyServing.
 func (s *Server) ListenAndServe() error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort))
 	if err != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed {
+			// A deliberate Close outranks bind noise: the caller asked
+			// for teardown, so report the teardown state rather than an
+			// EADDRINUSE that runManagementAPI would treat as fatal
+			// (review N5).
+			return http.ErrServerClosed
+		}
 		return err
 	}
 	srv := &http.Server{
@@ -527,7 +543,7 @@ func (s *Server) ListenAndServe() error {
 		// boundAddr, orphaning the first server from Close's reach.
 		s.mu.Unlock()
 		_ = ln.Close()
-		return errors.New("management: ListenAndServe called more than once")
+		return ErrAlreadyServing
 	}
 	s.boundAddr = ln.Addr()
 	s.srv = srv

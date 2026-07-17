@@ -282,6 +282,18 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.ListenAndServe() }()
+	// Ownership cleanup registered before any assertion can Fatal: close
+	// the server and drain the result non-blockingly, so no failure path
+	// can leak the listener or goroutine (review N8). On the happy path
+	// the explicit teardown below has already consumed serveErr and the
+	// extra Close is idempotent.
+	t.Cleanup(func() {
+		_ = s.Close()
+		select {
+		case <-serveErr:
+		default:
+		}
+	})
 
 	var addr net.Addr
 	deadline := time.Now().Add(2 * time.Second)
@@ -332,14 +344,23 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 	}
 }
 
-// L) ListenAndServe is single-shot: a second call must be rejected rather
-// than overwrite srv/boundAddr and orphan the first server from Close.
+// L) ListenAndServe is single-shot: a second call must be rejected with the
+// stable ErrAlreadyServing identity — not just any error — and the first
+// server's published address must survive untouched (review N9).
 func TestListenAndServe_SecondCallRejected(t *testing.T) {
 	cfg := &config.Config{ManagementPort: 0}
 	s := New(cfg, NewDomainRegistry(cfg, ""), nil)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.ListenAndServe() }()
+	// Ownership cleanup before any Fatal-able assertion (review N8).
+	t.Cleanup(func() {
+		_ = s.Close()
+		select {
+		case <-serveErr:
+		default:
+		}
+	})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -351,9 +372,13 @@ func TestListenAndServe_SecondCallRejected(t *testing.T) {
 	if s.Addr() == nil {
 		t.Fatal("first ListenAndServe did not bind within 2s")
 	}
+	first := s.Addr().String()
 
-	if err := s.ListenAndServe(); err == nil || errors.Is(err, http.ErrServerClosed) {
-		t.Errorf("second ListenAndServe = %v, want a single-shot rejection error", err)
+	if err := s.ListenAndServe(); !errors.Is(err, ErrAlreadyServing) {
+		t.Errorf("second ListenAndServe = %v, want ErrAlreadyServing", err)
+	}
+	if got := s.Addr(); got == nil || got.String() != first {
+		t.Errorf("Addr() after rejected second call = %v, want the original %s preserved", got, first)
 	}
 
 	if err := s.Close(); err != nil {
@@ -366,6 +391,32 @@ func TestListenAndServe_SecondCallRejected(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("first ListenAndServe did not return within 2s of Close")
+	}
+}
+
+// M) A deliberate Close outranks bind noise: after Close, ListenAndServe
+// must report ErrServerClosed even when the configured port cannot be
+// bound — runManagementAPI treats ErrServerClosed as teardown, and a stray
+// EADDRINUSE here would turn a clean shutdown into a fatal (review N5).
+func TestClose_ThenBindConflict_ReturnsServerClosed(t *testing.T) {
+	lc := &net.ListenConfig{}
+	occupier, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to occupy a port: %v", err)
+	}
+	defer func() { _ = occupier.Close() }()
+	tcpAddr, ok := occupier.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("expected *net.TCPAddr, got %T", occupier.Addr())
+	}
+
+	cfg := &config.Config{ManagementPort: tcpAddr.Port}
+	s := New(cfg, NewDomainRegistry(cfg, ""), nil)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() before serve = %v, want nil", err)
+	}
+	if err := s.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		t.Errorf("ListenAndServe after Close on an occupied port = %v, want http.ErrServerClosed", err)
 	}
 }
 

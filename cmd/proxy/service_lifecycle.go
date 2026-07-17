@@ -49,7 +49,7 @@ func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcC
 
 	serveErr := make(chan error, 1)
 	go func() {
-		err := srv.Serve(ln)
+		err := serveFunc(srv, ln)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -78,6 +78,14 @@ func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcC
 		}
 	}
 }
+
+// serveFunc is a seam over (*http.Server).Serve so tests can drive the
+// post-Stop drain with a non-nil terminal error. That state is unreachable
+// deterministically through a real Server — its Serve maps every
+// post-Shutdown accept failure to ErrServerClosed — yet occurs in
+// production whenever a real Serve failure races a Stop command.
+// Production value is the real Serve; only tests swap it.
+var serveFunc = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
 
 // svcExitCode maps the serve goroutine's terminal error to the SCM
 // service-specific exit code, logging real failures. Shared by the

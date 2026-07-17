@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bytes"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -35,20 +36,19 @@ func (f *fakeReporter) Running()      { f.record("Running") }
 func (f *fakeReporter) StopPending()  { f.record("StopPending") }
 func (f *fakeReporter) Interrogate()  { f.record("Interrogate") }
 
-// captureServiceLog redirects the default logger to a buffer for the
-// duration of the test, so runServiceLifecycle's log lines can be asserted.
-// Reads must happen only after the lifecycle goroutine has delivered its
-// exit code (happens-before via the done channel). Tests in this package
+// captureServiceLog redirects the default logger to a mutex-guarded buffer
+// for the duration of the test, so log lines written by goroutines can be
+// both polled during the test and asserted after it. Tests in this package
 // are not parallel, so swapping the global logger is safe.
 //
 // Companion to captureLog (startup_test.go), which is fn-scoped and
 // restores before returning: use captureLog when the logging happens
 // synchronously inside a closure, and this test-lifetime variant when a
-// goroutine logs and the read is ordered by a channel.
-func captureServiceLog(t *testing.T) *bytes.Buffer {
+// goroutine logs concurrently.
+func captureServiceLog(t *testing.T) *syncBuffer {
 	t.Helper()
 	prev := log.Writer()
-	buf := &bytes.Buffer{}
+	buf := &syncBuffer{}
 	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(prev) })
 	return buf
@@ -221,6 +221,60 @@ func TestRunServiceLifecycle_ExternalCloseReturnsZero(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("lifecycle did not exit within 5s of external Close")
+	}
+}
+
+// TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero drives the
+// post-Stop drain with a non-nil Serve result via the serveFunc seam — a
+// state a real http.Server cannot produce deterministically (its Serve maps
+// post-Shutdown accept failures to ErrServerClosed) but which production
+// hits whenever a real Serve failure races a Stop command. The lifecycle
+// must log the failure and report exit code 1, not swallow it as a clean
+// stop; reverting svcExitCode's post-Stop call to an unconditional zero
+// fails this test.
+func TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero(t *testing.T) {
+	orig := serveFunc
+	t.Cleanup(func() { serveFunc = orig })
+	release := make(chan struct{})
+	serveFunc = func(_ *http.Server, _ net.Listener) error {
+		<-release
+		return errors.New("forced serve failure")
+	}
+
+	ln := listenLocal(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	rep := &fakeReporter{}
+	logs := captureServiceLog(t)
+	requests := make(chan svcCommand, 4)
+
+	done := make(chan uint32, 1)
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
+
+	requests <- cmdStop
+
+	// Only release the seam once the lifecycle is provably inside the
+	// cmdStop arm (StopPending recorded), so the error can only arrive
+	// through the post-Stop drain — never through the serveErr select arm.
+	deadline := time.Now().Add(5 * time.Second)
+	for !hasCall(rep.snapshot(), "StopPending") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not reach StopPending within 5s; calls=%v", rep.snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(release)
+
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("serve-failure-during-stop exit code = %d, want 1", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s of the seam releasing")
+	}
+	if !strings.Contains(logs.String(), "[SERVICE] HTTP server exited: forced serve failure") {
+		t.Errorf("expected the raced serve failure to be logged, got: %q", logs.String())
 	}
 }
 

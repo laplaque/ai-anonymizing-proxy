@@ -24,6 +24,11 @@ func runAsServiceIfNeeded(srv *http.Server, ln net.Listener) bool {
 	if !isService {
 		return false
 	}
+	// Readiness for the SCM path: stop requests arrive via the SCM
+	// channel (not OS signals) and are ordered by the StartPending →
+	// Running handshake inside Execute, so logging after the bind is
+	// race-free here (review N1's signal-gap concern is CLI-only).
+	log.Printf("[PROXY] Listening on %s", ln.Addr())
 	if err := svc.Run("ai-proxy", &proxyService{srv: srv, ln: ln}); err != nil {
 		log.Fatalf("[SERVICE] svc.Run: %v", err)
 	}

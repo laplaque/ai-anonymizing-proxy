@@ -95,11 +95,10 @@ func main() {
 		// readiness log below is a true ownership proof.
 		log.Fatalf("[PROXY] Fatal: %v", err)
 	}
-	// Logged only after a successful bind, so this line is proof the
-	// process owns its port (issue #140) — with ProxyPort 0 it reports
-	// the kernel-assigned address.
-	log.Printf("[PROXY] Listening on %s", ln.Addr())
-
+	// The readiness log is emitted inside runServerOrService, per path:
+	// only after the bind above AND after the shutdown handshake for that
+	// path is in place, so acting on the log can never race the graceful
+	// path (issue #140, review N1).
 	runServerOrService(srv, ln)
 }
 
@@ -125,6 +124,12 @@ func runServerOrService(srv *http.Server, ln net.Listener) {
 		defer close(shutdownDone)
 		installShutdownHandler(quit, srv, 15*time.Second)
 	}()
+	// Logged only after the bind (in main) AND after signal.Notify above,
+	// so a SIGTERM sent by an operator or test the moment this line
+	// appears is always routed to the graceful handler — never to the OS
+	// default action (review N1). ln.Addr() reports the kernel-assigned
+	// address when ProxyPort is 0.
+	log.Printf("[PROXY] Listening on %s", ln.Addr())
 	runHTTPServer(srv, ln)
 	// srv.Serve returns as soon as Shutdown closes the listener, but
 	// Shutdown may still be draining in-flight connections. Wait for the
