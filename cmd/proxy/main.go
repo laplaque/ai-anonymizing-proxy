@@ -26,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -85,9 +86,16 @@ func main() {
 	defer closeProxyServer(proxyServer)
 
 	srv := proxyHTTPServer(cfg, proxyServer)
-	log.Printf("[PROXY] Listening on %s", srv.Addr)
+	ln, err := bindListener(srv.Addr)
+	if err != nil {
+		log.Fatalf("[PROXY] Fatal: %v", err)
+	}
+	// Logged only after a successful bind, so this line is proof the
+	// process owns its port (issue #140) — with ProxyPort 0 it reports
+	// the kernel-assigned address.
+	log.Printf("[PROXY] Listening on %s", ln.Addr())
 
-	runServerOrService(srv)
+	runServerOrService(srv, ln)
 }
 
 // serviceDispatcher is the entry point that decides whether the process
@@ -99,15 +107,16 @@ var serviceDispatcher = runAsServiceIfNeeded
 
 // runServerOrService dispatches to the Windows SCM handler when the
 // process was launched by services.msc, and falls through to the
-// signal-driven HTTP loop otherwise.
-func runServerOrService(srv *http.Server) {
-	if serviceDispatcher(srv) {
+// signal-driven HTTP loop otherwise. ln is the already-bound proxy
+// listener from bindListener.
+func runServerOrService(srv *http.Server, ln net.Listener) {
+	if serviceDispatcher(srv, ln) {
 		return
 	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go installShutdownHandler(quit, srv, 15*time.Second)
-	runHTTPServer(srv)
+	runHTTPServer(srv, ln)
 }
 
 // runGenerateCA writes a freshly generated CA cert+key to the given paths.

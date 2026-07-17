@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -15,14 +16,16 @@ func TestRunServerOrService_ServiceModeReturnsImmediately(t *testing.T) {
 	t.Cleanup(func() { serviceDispatcher = original })
 
 	called := false
-	serviceDispatcher = func(_ *http.Server) bool {
+	serviceDispatcher = func(_ *http.Server, _ net.Listener) bool {
 		called = true
 		return true
 	}
 
+	ln := listenLocal(t)
+	defer func() { _ = ln.Close() }()
 	done := make(chan struct{})
 	go func() {
-		runServerOrService(&http.Server{Addr: "127.0.0.1:0", ReadHeaderTimeout: time.Second})
+		runServerOrService(&http.Server{ReadHeaderTimeout: time.Second}, ln)
 		close(done)
 	}()
 

@@ -2,12 +2,9 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,18 +27,6 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
-
-// maxBindAttempts bounds how many times a test re-launches the proxy after
-// losing the freePort/freeAddr TOCTOU race (issue #140): the helpers hand out
-// a port number, not a reservation, so another process can bind the port
-// before the consumer does. Each retry allocates fresh ports, so consecutive
-// losses are independent and five attempts make a spurious failure
-// vanishingly unlikely even under heavy ephemeral-port contention.
-const maxBindAttempts = 5
-
-// bindConflict is the kernel's EADDRINUSE text. It appears in the proxy's
-// log exactly when a listener lost the re-bind race for its port.
-const bindConflict = "bind: address already in use"
 
 // helperCmd builds an *exec.Cmd that re-execs this test binary as the
 // production proxy. Centralizing the os.Args[0] call site means there's
@@ -193,36 +178,16 @@ func TestRunGenerateCA(t *testing.T) {
 // daemon, waits for it to bind its listener, sends SIGTERM, and verifies a
 // clean exit. Exercises main()'s full startup-and-shutdown lifecycle.
 //
-// The subprocess re-binds ports handed out by freePort, so it can lose the
-// TOCTOU race (issue #140) at any point before shutdown — log.Fatalf then
-// exits it with an EADDRINUSE message. That is a lost coin toss, not a
-// regression: the test relaunches on fresh ports instead of flaking.
+// Both ports are 0: the kernel assigns them at bind time, so no port can be
+// stolen between allocation and bind (issue #140), and because main binds
+// before logging, "[PROXY] Listening on" is proof the subprocess owns its
+// port — no probing or retrying is needed.
 func TestMain_HelperProcess_Lifecycle(t *testing.T) {
-	for attempt := 1; ; attempt++ {
-		if lifecycleAttempt(t) {
-			return
-		}
-		if attempt == maxBindAttempts {
-			t.Fatalf("helper lost the freePort bind race %d times in a row", attempt)
-		}
-		t.Logf("attempt %d/%d: helper lost the freePort bind race, relaunching on fresh ports", attempt, maxBindAttempts)
-	}
-}
-
-// lifecycleAttempt runs one full start → ready → served → SIGTERM →
-// clean-exit cycle against a freshly launched helper subprocess. It returns
-// false only when the subprocess died because a freePort-allocated port was
-// stolen before it could bind (EADDRINUSE in its log), so the caller can
-// relaunch; every other failure fails the test in place.
-func lifecycleAttempt(t *testing.T) bool {
-	t.Helper()
-
-	proxyPort := freePort(t)
 	cmd := helperCmd(t)
 	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
-		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
-		fmt.Sprintf("MANAGEMENT_PORT=%d", freePort(t)),
+		"PROXY_PORT=0",
+		"MANAGEMENT_PORT=0",
 		"ENABLED_PACKS=SECRETS,GLOBAL",
 		"USE_AI_DETECTION=false",
 	)
@@ -234,17 +199,13 @@ func lifecycleAttempt(t *testing.T) bool {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	// Reap in a goroutine so exit is observable while polling the log. Once
-	// done receives, cmd.Wait has returned, which also guarantees stderr
-	// holds everything the subprocess wrote.
+	// Reap in a goroutine so an early exit is observable while polling the
+	// log. Once done receives, cmd.Wait has returned, which also guarantees
+	// stderr holds everything the subprocess wrote.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	t.Cleanup(func() { _ = cmd.Process.Kill() }) // no-op once reaped
 
-	lostRace := func() bool { return strings.Contains(stderr.String(), bindConflict) }
-
-	// Startup: wait for the readiness line, watching for an early exit so a
-	// lost bind race is detected immediately instead of eating the timeout.
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(stderr.String(), "[PROXY] Listening on") {
 		if time.Now().After(deadline) {
@@ -252,109 +213,44 @@ func lifecycleAttempt(t *testing.T) bool {
 		}
 		select {
 		case <-done:
-			if lostRace() {
-				return false
-			}
 			t.Fatalf("helper exited before readiness:\n%s", stderr.String())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 
-	// "[PROXY] Listening on" is printed before ListenAndServe binds
-	// (main.go), so it alone doesn't prove the subprocess owns PROXY_PORT:
-	// a SIGTERM landing in that gap marks the server closed before Listen,
-	// ListenAndServe returns ErrServerClosed, and the process exits 0
-	// without ever serving. Prove ownership by driving a request through
-	// the proxy at a constant private target and waiting for the
-	// private-address block log that only our subprocess's handler emits.
-	// A thief squatting on the port cannot produce that line, and the
-	// proxy's own bind failure still surfaces via done as a lost race.
-	proxyURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", proxyPort)}
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
-	defer client.CloseIdleConnections()
-	const servedLog = "Blocked request to private address"
-	for !strings.Contains(stderr.String(), servedLog) {
-		if time.Now().After(deadline) {
-			t.Fatalf("proxy did not serve a request within 10s of claiming readiness\n%s", stderr.String())
-		}
-		probeProxyOnce(client)
-		select {
-		case <-done:
-			if lostRace() {
-				return false
-			}
-			t.Fatalf("helper exited before serving a request:\n%s", stderr.String())
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	// Shutdown. The management listener binds concurrently with proxy
-	// readiness, so a stolen management port can still kill the subprocess
-	// anywhere in this phase — those paths return false like the ones above.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		if lostRace() {
-			return false
-		}
 		t.Fatalf("signal: %v\n%s", err, stderr.String())
 	}
 	select {
 	case err := <-done:
-		if err == nil {
-			return true
+		if err != nil {
+			t.Errorf("process exited with error: %v\n%s", err, stderr.String())
 		}
-		if lostRace() {
-			return false
-		}
-		t.Errorf("process exited with error: %v\n%s", err, stderr.String())
-		return true
 	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatalf("process did not exit within 10s of SIGTERM\n%s", stderr.String())
-		return false // unreachable: Fatalf panics
 	}
 }
 
 // TestMain_HelperProcess_ProxyPortConflict_Fatal pre-binds the proxy port so
-// the subprocess's srv.ListenAndServe() fails, exercising runHTTPServer's
-// log.Fatalf branch.
+// the subprocess's bindListener call fails, exercising main()'s
+// "[PROXY] Fatal" branch.
 func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
-	testHelperPortConflict(t, "PROXY_PORT", "MANAGEMENT_PORT", "[PROXY] Fatal", "[MANAGEMENT] Fatal")
+	testHelperPortConflict(t, "PROXY_PORT", "MANAGEMENT_PORT", "[PROXY] Fatal")
 }
 
 // TestMain_HelperProcess_MgmtPortConflict_Fatal pre-binds the management port
-// so the subprocess's mgmt.ListenAndServe() fails, exercising runManagementAPI's
-// log.Fatalf branch.
+// so the subprocess's mgmt.ListenAndServe() fails, exercising
+// runManagementAPI's fatal branch.
 func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
-	testHelperPortConflict(t, "MANAGEMENT_PORT", "PROXY_PORT", "[MANAGEMENT] Fatal", "[PROXY] Fatal")
-}
-
-// probeProxyOnce sends one GET through the proxy configured on client,
-// targeting a constant private address so the proxy's SSRF guard rejects it
-// (and logs doing so). Errors are expected while the proxy is still coming
-// up — or when a port thief answers instead — and are ignored: the caller
-// asserts on the subprocess's log, not on the response.
-func probeProxyOnce(client *http.Client) {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:9/", http.NoBody)
-	if err != nil {
-		return
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	testHelperPortConflict(t, "MANAGEMENT_PORT", "PROXY_PORT", "[MANAGEMENT] Fatal")
 }
 
 // testHelperPortConflict launches the helper with the pinnedVar port held by
 // a live listener in this process, so the subprocess must die with wantTag.
-// The other port (freeVar) comes from freePort and can be stolen before the
-// subprocess binds it (issue #140); when the subprocess instead dies with
-// otherTag plus EADDRINUSE, that's the lost race — relaunch with a fresh
-// port rather than flake.
-func testHelperPortConflict(t *testing.T, pinnedVar, freeVar, wantTag, otherTag string) {
+// The other port is 0 (kernel-assigned at bind), so no second conflict is
+// possible and the failure is deterministic (issue #140).
+func testHelperPortConflict(t *testing.T, pinnedVar, otherVar, wantTag string) {
 	t.Helper()
 	ln := listenLocal(t)
 	defer func() { _ = ln.Close() }()
@@ -363,29 +259,21 @@ func testHelperPortConflict(t *testing.T, pinnedVar, freeVar, wantTag, otherTag 
 		t.Fatalf("listener address %T is not *net.TCPAddr", ln.Addr())
 	}
 
-	for attempt := 1; ; attempt++ {
-		cmd := helperCmd(t)
-		cmd.Env = append(cmd.Env,
-			"BIND_ADDRESS=127.0.0.1",
-			fmt.Sprintf("%s=%d", pinnedVar, addr.Port),
-			fmt.Sprintf("%s=%d", freeVar, freePort(t)),
-			"ENABLED_PACKS=SECRETS,GLOBAL",
-			"USE_AI_DETECTION=false",
-		)
-		cmd.Dir = t.TempDir()
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("expected non-zero exit on %s conflict, got success\n%s", pinnedVar, out)
-		}
-		if strings.Contains(string(out), wantTag) {
-			return
-		}
-		if strings.Contains(string(out), otherTag) && strings.Contains(string(out), bindConflict) && attempt < maxBindAttempts {
-			t.Logf("attempt %d/%d: %s stolen (lost freePort race), relaunching", attempt, maxBindAttempts, freeVar)
-			continue
-		}
+	cmd := helperCmd(t)
+	cmd.Env = append(cmd.Env,
+		"BIND_ADDRESS=127.0.0.1",
+		fmt.Sprintf("%s=%d", pinnedVar, addr.Port),
+		fmt.Sprintf("%s=0", otherVar),
+		"ENABLED_PACKS=SECRETS,GLOBAL",
+		"USE_AI_DETECTION=false",
+	)
+	cmd.Dir = t.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on %s conflict, got success\n%s", pinnedVar, out)
+	}
+	if !strings.Contains(string(out), wantTag) {
 		t.Errorf("expected %q in output, got:\n%s", wantTag, out)
-		return
 	}
 }
 

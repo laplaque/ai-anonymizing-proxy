@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
@@ -36,16 +37,19 @@ type svcStatusReporter interface {
 var shutdownDeadline = 15 * time.Second
 
 // runServiceLifecycle implements the SCM contract in a platform-neutral
-// way: report StartPending, hand the HTTP server to a goroutine, report
-// Running, then either propagate a server error or honor a Stop command
-// with a bounded graceful shutdown. Returns the SCM service-specific
-// exit code (0 on clean stop, 1 on server failure).
-func runServiceLifecycle(srv *http.Server, requests <-chan svcCommand, status svcStatusReporter) uint32 {
+// way: report StartPending, hand the HTTP server and its already-bound
+// listener to a goroutine, report Running, then either propagate a server
+// error or honor a Stop command with a bounded graceful shutdown. Returns
+// the SCM service-specific exit code (0 on clean stop, 1 on server
+// failure). Taking a bound listener (rather than binding internally) means
+// startup bind failures surface in main before the SCM handshake, and the
+// serve loop cannot lose a port race (issue #140).
+func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcCommand, status svcStatusReporter) uint32 {
 	status.StartPending()
 
 	serveErr := make(chan error, 1)
 	go func() {
-		err := srv.ListenAndServe()
+		err := srv.Serve(ln)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}

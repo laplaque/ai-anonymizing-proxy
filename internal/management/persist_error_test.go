@@ -302,24 +302,13 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 		t.Fatal("Addr() reports port 0; want the kernel-assigned port")
 	}
 
-	// Probe over a transport pinned to the published address. The request
-	// URL is a constant, so no URL is ever derived from runtime data — the
-	// pinned dial target is our own just-bound listener.
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr.String())
-		},
-	}}
-	defer client.CloseIdleConnections()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1/status", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr.String()+"/status", http.NoBody)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /status on published addr: %v", err)
 	}
@@ -340,5 +329,24 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ListenAndServe did not return within 2s of Close")
+	}
+}
+
+// K) Close-before-serve: Close is sticky. Called before ListenAndServe has
+// bound, a subsequent ListenAndServe must release its listener and return
+// http.ErrServerClosed instead of serving — the stop request is never
+// silently lost, whichever side wins the startup race.
+func TestClose_BeforeListenAndServe_PreventsServing(t *testing.T) {
+	cfg := &config.Config{ManagementPort: 0}
+	s := New(cfg, NewDomainRegistry(cfg, ""), nil)
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() before serve = %v, want nil", err)
+	}
+	if err := s.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		t.Errorf("ListenAndServe after Close = %v, want http.ErrServerClosed", err)
+	}
+	if s.Addr() != nil {
+		t.Errorf("Addr() after refused serve = %v, want nil", s.Addr())
 	}
 }

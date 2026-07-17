@@ -40,6 +40,7 @@ type Server struct {
 	mu        sync.Mutex
 	boundAddr net.Addr     // set once ListenAndServe has bound; nil before
 	srv       *http.Server // set with boundAddr; target for Close
+	closed    bool         // sticky: Close called; ListenAndServe must not serve
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -512,6 +513,14 @@ func (s *Server) ListenAndServe() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	s.mu.Lock()
+	if s.closed {
+		// Close won the race with startup: release the listener and
+		// report the same terminal state a post-serve Close produces,
+		// so the stop request is never silently lost.
+		s.mu.Unlock()
+		_ = ln.Close()
+		return http.ErrServerClosed
+	}
 	s.boundAddr = ln.Addr()
 	s.srv = srv
 	s.mu.Unlock()
@@ -530,10 +539,14 @@ func (s *Server) Addr() net.Addr {
 
 // Close immediately closes the management listener and any active
 // connections; a blocked ListenAndServe then returns http.ErrServerClosed.
-// Returns nil if the server never bound a listener.
+// Close is sticky: called before ListenAndServe has bound, it makes a
+// concurrent or later ListenAndServe release its listener and return
+// http.ErrServerClosed instead of serving. Returns nil if the server never
+// bound a listener.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	if s.srv == nil {
 		return nil
 	}

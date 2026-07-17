@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -11,6 +14,11 @@ import (
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
 )
+
+// logFatalf is a seam over log.Fatalf so the fatal branches of the run*
+// helpers below can be asserted in-process without exiting the test binary.
+// Production value is log.Fatalf; only tests swap it.
+var logFatalf = log.Fatalf
 
 // proxyHTTPServer builds the *http.Server wrapping the MITM proxy handler.
 // Caller is responsible for invoking ListenAndServe / Serve.
@@ -31,20 +39,31 @@ func startManagementAPI(cfg *config.Config, registry *management.DomainRegistry,
 	return mgmt
 }
 
-// runManagementAPI blocks on mgmt.ListenAndServe and calls log.Fatalf if it
-// returns an error. Intended to run as a goroutine — the proxy must not stay
-// alive without its control plane.
+// runManagementAPI blocks on mgmt.ListenAndServe and fatals if it returns a
+// non-shutdown error. Intended to run as a goroutine — the proxy must not
+// stay alive without its control plane. ErrServerClosed (produced by
+// mgmt.Close) is a deliberate teardown, not a failure.
 func runManagementAPI(mgmt *management.Server) {
-	if err := mgmt.ListenAndServe(); err != nil {
-		log.Fatalf("[MANAGEMENT] Fatal: %v", err)
+	if err := mgmt.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logFatalf("[MANAGEMENT] Fatal: %v", err)
 	}
 }
 
-// runHTTPServer blocks on srv.ListenAndServe and calls log.Fatalf if it returns
-// a non-shutdown error.
-func runHTTPServer(srv *http.Server) {
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[PROXY] Fatal: %v", err)
+// bindListener binds the proxy's TCP listener. Binding is separated from
+// serving so main can log a truthful "[PROXY] Listening on" only after the
+// port is actually owned, and so ProxyPort 0 works with the kernel-assigned
+// address reported by ln.Addr() — the race-free alternative to probing for
+// a free port and re-binding it (issue #140).
+func bindListener(addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	return lc.Listen(context.Background(), "tcp", addr)
+}
+
+// runHTTPServer blocks on srv.Serve and fatals if it returns a non-shutdown
+// error.
+func runHTTPServer(srv *http.Server, ln net.Listener) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logFatalf("[PROXY] Fatal: %v", err)
 	}
 }
 
