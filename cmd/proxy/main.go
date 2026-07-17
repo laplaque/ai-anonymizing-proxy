@@ -88,6 +88,11 @@ func main() {
 	srv := proxyHTTPServer(cfg, proxyServer)
 	ln, err := bindListener(srv.Addr)
 	if err != nil {
+		// TODO(#145): under the Windows SCM this exits before the service
+		// handshake, so services.msc reports a generic start error instead
+		// of the service-specific exit code. Needs an SCM-aware
+		// bind-failure reporter; deliberate trade-off for now so the
+		// readiness log below is a true ownership proof.
 		log.Fatalf("[PROXY] Fatal: %v", err)
 	}
 	// Logged only after a successful bind, so this line is proof the
