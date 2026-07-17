@@ -40,6 +40,11 @@ func (f *fakeReporter) Interrogate()  { f.record("Interrogate") }
 // Reads must happen only after the lifecycle goroutine has delivered its
 // exit code (happens-before via the done channel). Tests in this package
 // are not parallel, so swapping the global logger is safe.
+//
+// Companion to captureLog (startup_test.go), which is fn-scoped and
+// restores before returning: use captureLog when the logging happens
+// synchronously inside a closure, and this test-lifetime variant when a
+// goroutine logs and the read is ordered by a channel.
 func captureServiceLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	prev := log.Writer()
@@ -111,7 +116,11 @@ func TestRunServiceLifecycle_InterrogateReEmits(t *testing.T) {
 	requests <- cmdInterrogate
 	requests <- cmdStop
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s; calls=%v", rep.snapshot())
+	}
 
 	got := rep.snapshot()
 	if !hasCall(got, "Interrogate") {
@@ -168,12 +177,6 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 
 	requests <- cmdStop
 
-	// Release the holding request so Shutdown's drain can complete.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(hold)
-	}()
-
 	select {
 	case code := <-done:
 		if code != 0 {
@@ -182,12 +185,42 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("lifecycle did not exit within 5s on shutdown timeout")
 	}
+	// Release the held request only after the lifecycle exited: done can
+	// only have fired via the Shutdown-timeout branch, so the timeout is
+	// exercised by construction — no wall-clock window.
+	close(hold)
 	<-reqDone
 
 	// Pin the timeout branch by its distinctive log line — exit code alone
 	// cannot distinguish a timed-out Shutdown from a fast clean one.
 	if !strings.Contains(logs.String(), "[SERVICE] shutdown:") {
 		t.Errorf("expected '[SERVICE] shutdown:' timeout log, got: %q", logs.String())
+	}
+}
+
+// TestRunServiceLifecycle_ExternalCloseReturnsZero drives the serveErr
+// select arm's clean-exit path: the server is closed externally (no Stop
+// command ever sent), Serve returns ErrServerClosed which the goroutine
+// maps to nil, and the lifecycle must report exit code 0.
+func TestRunServiceLifecycle_ExternalCloseReturnsZero(t *testing.T) {
+	ln := listenLocal(t)
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	rep := &fakeReporter{}
+	requests := make(chan svcCommand, 4)
+
+	done := make(chan uint32, 1)
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
+
+	if err := srv.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("external-close exit code = %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s of external Close")
 	}
 }
 

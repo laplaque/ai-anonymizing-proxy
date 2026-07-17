@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -520,6 +521,13 @@ func (s *Server) ListenAndServe() error {
 		s.mu.Unlock()
 		_ = ln.Close()
 		return http.ErrServerClosed
+	}
+	if s.srv != nil {
+		// Single-shot: a second ListenAndServe would overwrite srv and
+		// boundAddr, orphaning the first server from Close's reach.
+		s.mu.Unlock()
+		_ = ln.Close()
+		return errors.New("management: ListenAndServe called more than once")
 	}
 	s.boundAddr = ln.Addr()
 	s.srv = srv

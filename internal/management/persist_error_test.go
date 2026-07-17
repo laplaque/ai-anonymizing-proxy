@@ -332,6 +332,43 @@ func TestListenAndServe_Port0_PublishesBoundAddr(t *testing.T) {
 	}
 }
 
+// L) ListenAndServe is single-shot: a second call must be rejected rather
+// than overwrite srv/boundAddr and orphan the first server from Close.
+func TestListenAndServe_SecondCallRejected(t *testing.T) {
+	cfg := &config.Config{ManagementPort: 0}
+	s := New(cfg, NewDomainRegistry(cfg, ""), nil)
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- s.ListenAndServe() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Addr() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.Addr() == nil {
+		t.Fatal("first ListenAndServe did not bind within 2s")
+	}
+
+	if err := s.ListenAndServe(); err == nil || errors.Is(err, http.ErrServerClosed) {
+		t.Errorf("second ListenAndServe = %v, want a single-shot rejection error", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("first ListenAndServe after Close = %v, want http.ErrServerClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ListenAndServe did not return within 2s of Close")
+	}
+}
+
 // K) Close-before-serve: Close is sticky. Called before ListenAndServe has
 // bound, a subsequent ListenAndServe must release its listener and return
 // http.ErrServerClosed instead of serving — the stop request is never

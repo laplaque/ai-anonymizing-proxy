@@ -44,9 +44,15 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 	hung := make(chan struct{})
 	defer close(hung)
 
+	// arrived guarantees the long-running request has reached the handler
+	// before SIGTERM is sent — without it, a slow request goroutine would
+	// let Shutdown complete instantly and the timeout branch would pass
+	// unexercised (same pattern as the service-lifecycle shutdown test).
+	arrived := make(chan struct{})
 	ln := listenLocal(t)
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			close(arrived)
 			<-hung
 		}),
 		ReadHeaderTimeout: 1 * time.Second,
@@ -64,7 +70,11 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach the handler within 5s")
+	}
 
 	quit := make(chan os.Signal, 1)
 	done := make(chan struct{})

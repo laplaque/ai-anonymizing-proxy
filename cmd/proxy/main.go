@@ -115,8 +115,18 @@ func runServerOrService(srv *http.Server, ln net.Listener) {
 	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	go installShutdownHandler(quit, srv, 15*time.Second)
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		installShutdownHandler(quit, srv, 15*time.Second)
+	}()
 	runHTTPServer(srv, ln)
+	// srv.Serve returns as soon as Shutdown closes the listener, but
+	// Shutdown may still be draining in-flight connections. Wait for the
+	// handler so the graceful budget is actually honored — mirroring the
+	// SCM path's post-Shutdown drain. Blocking is safe: the only non-fatal
+	// way Serve returns on this path is the handler's own Shutdown.
+	<-shutdownDone
 }
 
 // runGenerateCA writes a freshly generated CA cert+key to the given paths.

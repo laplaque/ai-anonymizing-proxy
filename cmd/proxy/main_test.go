@@ -288,6 +288,11 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 	}
 
 	cmd := helperCmd(t)
+	// Hermeticity: an ambient ENABLED_PACKS in the parent environment would
+	// override the empty file config (env wins in config layering) and
+	// defeat the guard. os/exec keeps the last duplicate env entry, and
+	// loadEnvStringSlice treats an empty value as unset.
+	cmd.Env = append(cmd.Env, "ENABLED_PACKS=")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err == nil {

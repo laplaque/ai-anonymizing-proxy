@@ -61,11 +61,7 @@ func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcC
 	for {
 		select {
 		case err := <-serveErr:
-			if err != nil {
-				log.Printf("[SERVICE] HTTP server exited: %v", err)
-				return 1
-			}
-			return 0
+			return svcExitCode(err)
 		case cmd := <-requests:
 			switch cmd {
 			case cmdInterrogate:
@@ -77,9 +73,20 @@ func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcC
 					log.Printf("[SERVICE] shutdown: %v", err)
 				}
 				cancel()
-				<-serveErr
-				return 0
+				return svcExitCode(<-serveErr)
 			}
 		}
 	}
+}
+
+// svcExitCode maps the serve goroutine's terminal error to the SCM
+// service-specific exit code, logging real failures. Shared by the
+// error arm and the post-Stop drain so a Serve failure that races a Stop
+// command is reported instead of silently swallowed as a clean stop.
+func svcExitCode(err error) uint32 {
+	if err != nil {
+		log.Printf("[SERVICE] HTTP server exited: %v", err)
+		return 1
+	}
+	return 0
 }

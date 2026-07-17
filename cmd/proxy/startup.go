@@ -31,8 +31,9 @@ func proxyHTTPServer(cfg *config.Config, h http.Handler) *http.Server {
 }
 
 // startManagementAPI constructs the management server and launches its
-// listener in a background goroutine. Returns the server so callers can hold
-// a reference for shutdown.
+// listener in a background goroutine. Returns the server so callers can
+// reach Addr and Close — tests use both; production deliberately runs the
+// control plane for the process lifetime and discards the handle.
 func startManagementAPI(cfg *config.Config, registry *management.DomainRegistry, m *metrics.Metrics) *management.Server {
 	mgmt := management.New(cfg, registry, m)
 	go runManagementAPI(mgmt)

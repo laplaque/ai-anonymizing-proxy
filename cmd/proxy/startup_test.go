@@ -24,7 +24,9 @@ type fakeCloser struct{ err error }
 func (f fakeCloser) Close() error { return f.err }
 
 // captureLog redirects the default logger's output to a buffer for the
-// duration of fn. Restores the previous destination on return.
+// duration of fn. Restores the previous destination on return. Companion
+// to captureServiceLog (service_lifecycle_test.go), the test-lifetime
+// variant for goroutine-driven logging ordered by a channel.
 func captureLog(t *testing.T, fn func()) string {
 	t.Helper()
 	prev := log.Writer()
