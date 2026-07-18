@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/envfile"
@@ -122,7 +121,7 @@ func runServerOrService(srv *http.Server, ln net.Listener) {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-		installShutdownHandler(quit, srv, 15*time.Second)
+		installShutdownHandler(quit, srv, shutdownDeadline)
 	}()
 	// Logged only after the bind (in main) AND after signal.Notify above,
 	// so a SIGTERM sent by an operator or test the moment this line

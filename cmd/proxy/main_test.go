@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -37,8 +38,19 @@ func TestMain(m *testing.M) {
 // they need them.
 func helperCmd(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
+	// t.Context() alone cannot bound a blocked CombinedOutput — it is
+	// canceled only after the test function returns. The explicit timeout
+	// turns a hung helper subprocess into a per-test failure instead of
+	// the package-wide 10m timeout panic.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
 	//nolint:gosec // G204: os.Args[0] is the test binary itself (the helper-process pattern from stdlib os/exec internal tests); the args are test-controlled flags, not external input.
-	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
+	cmd := exec.CommandContext(ctx, os.Args[0], args...)
+	// Inheriting os.Environ is load-bearing for coverage: the helper
+	// subprocess inherits GOCOVERDIR from `go test -cover`, which is the
+	// only way main() gets measured. Replacing this with a minimal
+	// hermetic env would silently zero cmd/proxy's subprocess coverage
+	// and fail the delta gate.
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	return cmd
 }
@@ -327,10 +339,11 @@ func TestMain_HelperProcess_GenerateCA(t *testing.T) {
 	}
 }
 
-// TestMain_HelperProcess_EnvFile_Loaded re-execs the binary with --env-file
+// TestMain_HelperProcess_EnvFile_Applied re-execs the binary with --env-file
 // pointing at a temp file that supplies ENABLED_PACKS, then exits via
-// --generate-ca. Asserts the success branch of main()'s envfile.Apply call.
-func TestMain_HelperProcess_EnvFile_Loaded(t *testing.T) {
+// --generate-ca. Asserts the success branch of main()'s envfile.Apply call
+// only — the run exits before config.Load consumes the loaded values.
+func TestMain_HelperProcess_EnvFile_Applied(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "test.env")
 	if err := os.WriteFile(envPath, []byte("ENABLED_PACKS=SECRETS\n"), 0o600); err != nil {

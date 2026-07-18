@@ -552,8 +552,9 @@ func (s *Server) ListenAndServe() error {
 	return srv.Serve(ln)
 }
 
-// Addr returns the address the management listener is bound to, or nil
-// before ListenAndServe has bound it. When the server was configured with
+// Addr returns the address the management listener was bound to, or nil
+// before ListenAndServe has bound it. The value is not cleared if the
+// serve loop later exits. When the server was configured with
 // ManagementPort 0, this is the only way to learn the actual port.
 func (s *Server) Addr() net.Addr {
 	s.mu.Lock()

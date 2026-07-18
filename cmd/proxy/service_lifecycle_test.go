@@ -70,9 +70,9 @@ func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
 
 	// Wait until the lifecycle has reported Running before sending Stop.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
-			break
+	for !hasCall(rep.snapshot(), "Running") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not report Running within 2s; calls=%v", rep.snapshot())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -106,9 +106,9 @@ func TestRunServiceLifecycle_InterrogateReEmits(t *testing.T) {
 	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
-			break
+	for !hasCall(rep.snapshot(), "Running") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not report Running within 2s; calls=%v", rep.snapshot())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -189,7 +189,11 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	// only have fired via the Shutdown-timeout branch, so the timeout is
 	// exercised by construction — no wall-clock window.
 	close(hold)
-	<-reqDone
+	select {
+	case <-reqDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("held request did not complete within 5s of release")
+	}
 
 	// Pin the timeout branch by its distinctive log line — exit code alone
 	// cannot distinguish a timed-out Shutdown from a fast clean one.

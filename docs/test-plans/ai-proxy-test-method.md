@@ -90,12 +90,12 @@ When multiple packs are enabled, patterns may compete for the same input. Rules:
 
 | Pack | Unit test file | Report test file | Testset doc |
 |------|---------------|-----------------|-------------|
-| GLOBAL | `packs/global_test.go` | — | `.idea/global-pack-testset.md` |
-| DE | `packs/de_test.go` | — | `.idea/de-pack-testset.md` |
-| US | `packs/us_test.go` | — | `.idea/us-pack-testset.md` |
-| FR | `packs/fr_test.go` | — | `.idea/phase-2a-pr2-testset.md` |
+| GLOBAL | `packs/global_test.go` | — | `docs/test-plans/global-pack-testset.md` |
+| DE | `packs/de_test.go` | — | `docs/test-plans/de-pack-testset.md` |
+| US | `packs/us_test.go` | — | `docs/test-plans/us-pack-testset.md` |
+| FR | `packs/fr_test.go` | — | `docs/test-plans/fr-pack-testset.md` |
 | SECRETS | `packs/secrets_test.go` | `secrets_report_test.go` | `docs/test-plans/secrets-pack-testset.md` |
-| NL | `packs/nl_test.go` | `nl_report_test.go` | `.idea/nl-pack-testset.md` |
-| FINANCE_EU | `packs/finance_eu_test.go` | `finance_eu_report_test.go` | `.idea/finance-eu-pack-testset.md` |
-| HEALTHCARE | `packs/healthcare_test.go` | `healthcare_report_test.go` | `.idea/healthcare-pack-testset.md` |
-| Cross-pack | — | all report tests | `.idea/multilang-integration-testset.md` |
+| NL | `packs/nl_test.go` | `nl_report_test.go` | `docs/test-plans/nl-pack-testset.md` |
+| FINANCE_EU | `packs/finance_eu_test.go` | `finance_eu_report_test.go` | `docs/test-plans/finance-eu-pack-testset.md` |
+| HEALTHCARE | `packs/healthcare_test.go` | `healthcare_report_test.go` | `docs/test-plans/healthcare-pack-testset.md` |
+| Cross-pack | — | all report tests | `docs/test-plans/multilang-integration-testset.md` |

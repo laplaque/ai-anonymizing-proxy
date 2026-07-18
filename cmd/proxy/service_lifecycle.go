@@ -30,10 +30,10 @@ type svcStatusReporter interface {
 	Interrogate() // re-emit the most recent status
 }
 
-// shutdownDeadline is how long the SCM handler waits for srv.Shutdown
-// before forcibly returning. Matches the CLI signal handler's budget so
-// behavior is consistent across platforms. Declared as a var so tests
-// can shrink it to exercise the timeout branch.
+// shutdownDeadline is how long a shutdown handler waits for srv.Shutdown
+// before forcibly returning. Shared by the SCM Stop arm and the CLI
+// signal handler so the graceful budget cannot drift between platforms.
+// Declared as a var so tests can shrink it to exercise the timeout branch.
 var shutdownDeadline = 15 * time.Second
 
 // runServiceLifecycle implements the SCM contract in a platform-neutral

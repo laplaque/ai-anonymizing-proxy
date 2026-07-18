@@ -26,7 +26,7 @@ Check each only after the gate is satisfied with concrete evidence. See `CLAUDE.
 - [ ] Coverage minimums met: 95% on `internal/anonymizer`, `internal/config`, `internal/anonymizer/packs`; 85% overall
 - [ ] Delta coverage ≥95% on all changed/new files — see [Delta Coverage Report](#delta-coverage-report) below
 - [ ] [§6 Test Inventory baseline-vs-head](#6-test-inventory--baseline-vs-head) completed below
-- [ ] No hacks introduced (no `//nolint` without a substantive reason; no `t.Skip()` without a linked issue; no `// coverage-ignore`; no hardcoded values whose only purpose is to satisfy a specific test assertion; no new `gosec` exclusions)
+- [ ] No hacks introduced (no `//nolint` without a substantive reason; no `t.Skip()` without a linked issue; no `// coverage-ignore`; no hardcoded values whose only purpose is to satisfy a specific test assertion; no new `gosec` exclusions — unless the exclusion is an explicit maintainer-authorized exception, declared both in the config with a substantive comment and in this PR body with a reference to the authorizing review)
 - [ ] All CI jobs green at the PR head SHA
 
 ## Delta Coverage Report
@@ -46,7 +46,7 @@ bash .github/scripts/delta-coverage.sh coverage.out 95.0 origin/main
 <paste>
 ```
 
-**Per-function table** — one row per function in every changed `.go` source file:
+**Per-function table** — one row per scored function in every changed `.go` source file (a file the script reports as `UNSCORED` carries the alternate-evidence record described below instead of table rows):
 
 | File | Function | Coverage % | ≥95% |
 |---|---|---|---|
@@ -66,6 +66,8 @@ Method: checkout `main`, run `go test -race -count=1 -v <pkg>` and count `--- PA
 | `./internal/anonymizer/` | / | / |  |
 | `./internal/anonymizer/packs/` | / | / |  |
 | `./internal/config/` | / | / |  |
+| `./internal/domainmatch/` | / | / |  |
+| `./internal/envfile/` | / | / |  |
 | `./internal/logger/` | / | / |  |
 | `./internal/management/` | / | / |  |
 | `./internal/metrics/` | / | / |  |

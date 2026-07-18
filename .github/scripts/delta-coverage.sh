@@ -79,9 +79,16 @@ while IFS= read -r file; do
     # coverage failure — it's a 0-of-0 ratio. Detect by summing numStmts from
     # all blocks in the raw profile whose start line equals the function's
     # declaration line. If the sum is 0, the function has nothing to cover.
+    # Literal match (-F) so path characters are never regex metachars, and
+    # guarded with `|| true` so a no-match cannot kill the script via
+    # errexit+pipefail. No-match is possible when cover -func reports a
+    # function at its declaration line while its profile blocks start at a
+    # later line (multi-line signature); in that case we must fall through
+    # and score the reported percentage — only a positively-matched 0-of-0
+    # (zero instrumented statements) may be skipped.
     func_start_line=$(echo "$line" | awk -F: '{print $2}')
-    stmt_sum=$(grep -E "/${file}:${func_start_line}\." "$COVERAGE_FILE" \
-      | awk '{sum += $2} END {print sum+0}')
+    stmt_sum=$( (grep -F "/${file}:${func_start_line}." "$COVERAGE_FILE" || true) \
+      | awk '{sum += $2} END {if (NR == 0) print "nomatch"; else print sum+0}')
     if [ "$stmt_sum" = "0" ]; then
       continue
     fi

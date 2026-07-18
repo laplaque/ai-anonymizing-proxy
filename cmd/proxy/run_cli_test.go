@@ -39,6 +39,22 @@ func TestRunServerOrService_CLI_DrainsInflightRequest(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() { runServerOrService(srv, ln); close(done) }()
+	// Failure-path teardown (runs before the releaseHold cleanup, LIFO):
+	// release the held handler and force the server closed so a t.Fatal
+	// between here and the drain join cannot leave the listener open and
+	// the handler goroutine blocked for the rest of the binary. Best
+	// effort by design: if SIGTERM was never sent, the signal-handler
+	// goroutine stays parked on its channel (production owns that channel
+	// internally and never calls signal.Stop) — harmless, and unreachable
+	// on the happy path where done has already closed.
+	t.Cleanup(func() {
+		releaseHold()
+		_ = srv.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	})
 
 	// The readiness log implies signal.Notify has completed (ordering
 	// contract in runServerOrService), so self-SIGTERM below is safe.
@@ -90,5 +106,9 @@ func TestRunServerOrService_CLI_DrainsInflightRequest(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServerOrService did not return within 5s of the request draining")
 	}
-	<-reqDone
+	select {
+	case <-reqDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("held request did not complete within 5s of the drain finishing")
+	}
 }
