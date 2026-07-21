@@ -82,7 +82,7 @@ jobs:
       - name: Run gosec
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude=G104,G304,G703,G706 ./...
+          make security
 
       - name: Run govulncheck
         run: |

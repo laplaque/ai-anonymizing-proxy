@@ -14,8 +14,10 @@ linters:
     - ineffassign
     - unused
 
-    # Security
-    - gosec
+    # Security: gosec runs standalone in `make security` (current engine,
+    # tests included, zero production exclusions) — the vendored copy here
+    # lags on taint-sanitizer recognition and produced false positives the
+    # standalone engine does not (e.g. G704 on tests' own :0 listeners).
 
     # Code quality
     - revive
@@ -39,10 +41,6 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: false
-
-    gosec:
-      severity: medium
-      confidence: medium
 
     revive:
       rules:
@@ -69,29 +67,11 @@ linters:
 
   exclusions:
     rules:
-      # MD5 in anonymizer is for deterministic PII tokens, not cryptographic use
-      - path: internal/anonymizer/anonymizer\.go
-        linters:
-          - gosec
-        text: "G401|G501|MD5"
-
       # select{} in singleConnListener is the intended design to block until close
       - path: internal/mitm/mitm\.go
         linters:
           - staticcheck
         text: "SA1000|empty branch"
-
-      # G704 (SSRF taint) fires on every test HTTP probe whose transport or
-      # URL involves a runtime-bound localhost port — inherent to testing
-      # dynamically bound listeners, where the port cannot be a constant.
-      # Declared here once for test files (maintainer decision, PR #142
-      # review) instead of per-site #nosec. Production code stays fully
-      # scanned: this rule matches _test.go only, and the standalone gosec
-      # run in `make security` does not scan test files at all.
-      - path: _test\.go$
-        linters:
-          - gosec
-        text: "G704"
 
 issues:
   max-issues-per-linter: 0

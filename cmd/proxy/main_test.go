@@ -30,22 +30,24 @@ func TestMain(m *testing.M) {
 }
 
 // helperCmd builds an *exec.Cmd that re-execs this test binary as the
-// production proxy. Centralizing the os.Args[0] call site means there's
-// exactly one gosec G204 suppression in the file (here) instead of one per
-// test — and the suppression sits next to the explanation of why the
-// pattern is safe (the target is the test binary itself, not external
-// input). Callers append cmd.Env / cmd.Dir / cmd.Stdout / cmd.Stderr as
-// they need them.
+// production proxy (the helper-process pattern from stdlib os/exec
+// internal tests). The target comes from os.Executable() — the OS's
+// answer for the running binary — rather than the caller-settable
+// os.Args[0]. Callers append cmd.Env / cmd.Dir / cmd.Stdout /
+// cmd.Stderr as they need them.
 func helperCmd(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
 	// t.Context() alone cannot bound a blocked CombinedOutput — it is
 	// canceled only after the test function returns. The explicit timeout
 	// turns a hung helper subprocess into a per-test failure instead of
 	// the package-wide 10m timeout panic.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
-	//nolint:gosec // G204: os.Args[0] is the test binary itself (the helper-process pattern from stdlib os/exec internal tests); the args are test-controlled flags, not external input.
-	cmd := exec.CommandContext(ctx, os.Args[0], args...)
+	cmd := exec.CommandContext(ctx, self, args...)
 	// Inheriting os.Environ is load-bearing for coverage: the helper
 	// subprocess inherits GOCOVERDIR from `go test -cover`, which is the
 	// only way main() gets measured. Replacing this with a minimal
