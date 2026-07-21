@@ -179,12 +179,7 @@ func TestLoadEnv_InvalidPort_Ignored(t *testing.T) {
 	}
 }
 
-func TestLoadFile_ValidJSON(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "config-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func TestMergeJSON_ValidJSON(t *testing.T) {
 	data, marshalErr := json.Marshal(map[string]any{
 		"proxyPort":      9999,
 		"ollamaModel":    "mistral:7b",
@@ -193,15 +188,9 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
-	if _, err := f.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	cfg := defaults()
-	loadFile(cfg, f.Name())
+	mergeJSON(cfg, configFileName, data)
 
 	if cfg.ProxyPort != 9999 {
 		t.Errorf("ProxyPort: got %d, want 9999", cfg.ProxyPort)
@@ -214,28 +203,35 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestLoadFile_Missing_IsNoOp(t *testing.T) {
+func TestLoadFile_ReadsConfigFromWorkingDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	data, err := json.Marshal(map[string]any{"proxyPort": 9999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configFileName, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	cfg := defaults()
-	loadFile(cfg, "/nonexistent/path/config.json")
+	loadFile(cfg)
+	if cfg.ProxyPort != 9999 {
+		t.Errorf("ProxyPort: got %d, want 9999 (file in cwd should load)", cfg.ProxyPort)
+	}
+}
+
+func TestLoadFile_Missing_IsNoOp(t *testing.T) {
+	t.Chdir(t.TempDir()) // empty dir: no proxy-config.json present
+	cfg := defaults()
+	loadFile(cfg)
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed unexpectedly: %d", cfg.ProxyPort)
 	}
 }
 
-func TestLoadFile_InvalidJSON_PreservesDefaults(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "config-bad-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString("{this is not json}"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
+func TestMergeJSON_InvalidJSON_PreservesDefaults(t *testing.T) {
 	cfg := defaults()
-	loadFile(cfg, f.Name())
+	mergeJSON(cfg, configFileName, []byte("{this is not json}"))
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed on bad JSON: %d", cfg.ProxyPort)
 	}

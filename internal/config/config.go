@@ -66,7 +66,7 @@ type Config struct {
 // domain admins must be able to override local user state.
 func Load() *Config {
 	cfg := defaults()
-	loadFile(cfg, "proxy-config.json")
+	loadFile(cfg)
 	loadEnv(cfg)
 	loadPolicy(cfg)
 	// Clamp PackDecayRate to [0, 1].
@@ -194,15 +194,26 @@ func (c *Config) ResolvePIIInstruction(model string) string {
 	return ""
 }
 
-func loadFile(cfg *Config, path string) {
-	data, err := os.ReadFile(path) //nolint:gosec // G703: path is a controlled config file path, not user input
+// configFileName is the optional JSON config file Load reads from the
+// process working directory. It is a package constant so the file read
+// below is never reachable from variable input.
+const configFileName = "proxy-config.json"
+
+func loadFile(cfg *Config) {
+	data, err := os.ReadFile(configFileName)
 	if err != nil {
 		return // file is optional
 	}
+	mergeJSON(cfg, configFileName, data)
+}
+
+// mergeJSON unmarshals data over cfg. name appears only in log messages.
+// A malformed document logs a warning and leaves cfg untouched.
+func mergeJSON(cfg *Config, name string, data []byte) {
 	if err := json.Unmarshal(data, cfg); err != nil {
-		log.Printf("[CONFIG] Warning: could not parse %s: %v", path, err)
+		log.Printf("[CONFIG] Warning: could not parse %s: %v", name, err)
 	} else {
-		log.Printf("[CONFIG] Loaded %s", path)
+		log.Printf("[CONFIG] Loaded %s", name)
 	}
 }
 

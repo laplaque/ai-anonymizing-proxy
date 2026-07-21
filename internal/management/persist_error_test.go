@@ -178,7 +178,7 @@ func TestPersist_HappyPath(t *testing.T) {
 	want := []string{"api.anthropic.com", "api.example.com"}
 	r.persist(want)
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("persist file not created: %v", err)
 	}

@@ -125,7 +125,7 @@ func TestDomainRegistry_Persistence(t *testing.T) {
 	r.Add("api.example.com")
 
 	// Verify file was written
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("persist file not created: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestDomainRegistry_PersistAtomicWrite(t *testing.T) {
 
 	// Remove and verify file updated
 	r.Remove("test.example.com")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("read persist file: %v", err)
 	}

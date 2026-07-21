@@ -41,8 +41,6 @@ linters:
       check-blank: false
 
     gosec:
-      excludes:
-        - G304
       severity: medium
       confidence: medium
 

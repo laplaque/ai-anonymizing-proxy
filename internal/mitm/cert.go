@@ -15,6 +15,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -74,11 +75,11 @@ func LoadOrGenerateCA(certFile, keyFile string) (*CA, error) {
 
 // LoadCA reads a CA certificate and private key from PEM files.
 func LoadCA(certFile, keyFile string) (*CA, error) {
-	certPEM, err := os.ReadFile(certFile)
+	certPEM, err := os.ReadFile(filepath.Clean(certFile))
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := os.ReadFile(keyFile)
+	keyPEM, err := os.ReadFile(filepath.Clean(keyFile))
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ func GenerateCA(certFile, keyFile string) error {
 	}
 
 	// Write cert PEM (public certificate — 0644 is intentional)
-	certOut, err := os.OpenFile(certFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec // public cert but using 0600 for consistency
+	certOut, err := os.OpenFile(filepath.Clean(certFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("create cert file: %w", err)
 	}
@@ -160,7 +161,7 @@ func GenerateCA(certFile, keyFile string) error {
 	}
 
 	// Write key PEM (restrictive permissions)
-	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	keyOut, err := os.OpenFile(filepath.Clean(keyFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("create key file: %w", err)
 	}

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -265,7 +266,7 @@ func (r *DomainRegistry) persist(domains []string) {
 		log.Printf("[DOMAINS] Persist error (close): %v", err)
 		return
 	}
-	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
+	if err := os.Rename(tmpName, filepath.Clean(r.persistPath)); err != nil {
 		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (rename): %v", err)
 		return
@@ -308,7 +309,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		const prefix = "Bearer "
 		if !strings.HasPrefix(auth, prefix) ||
 			subtle.ConstantTimeCompare([]byte(strings.TrimSpace(auth[len(prefix):])), []byte(s.token)) != 1 {
-			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", r.RemoteAddr, r.URL.Path)
+			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", strconv.Quote(r.RemoteAddr), strconv.Quote(r.URL.Path))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,7 +20,7 @@ import (
 // expects and what `Get-PfxCertificate | Select Thumbprint` reports, so
 // the MSI uninstall path can remove the exact cert it installed.
 func certThumbprint(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return "", fmt.Errorf("read cert %q: %w", path, err)
 	}
