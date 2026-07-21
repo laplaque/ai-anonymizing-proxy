@@ -20,7 +20,7 @@ package anonymizer
 import (
 	"bytes"
 	"context"
-	"crypto/md5" // #nosec G501 -- MD5 used for deterministic PII tokens, not cryptographic security
+	"crypto/md5" // #nosec G501 -- MD5 used for deterministic PII tokens, not cryptographic security. TODO(#146): suppression removal tracked.
 	"encoding/json"
 	"fmt"
 	"io"
@@ -568,7 +568,7 @@ func (a *Anonymizer) walkValue(v any, requestID string) any {
 //
 // Token format: [PII_TYPE_XXXXXXXXXXXXXXXX] — 16 hex chars, max 33 bytes.
 func (a *Anonymizer) replacement(piiType PIIType, original string) string {
-	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:16] // #nosec G401 -- deterministic token, not crypto
+	h := fmt.Sprintf("%x", md5.Sum([]byte(original)))[:16] // #nosec G401 -- deterministic token, not crypto. TODO(#146): suppression removal tracked.
 	return fmt.Sprintf("[PII_%s_%s]", strings.ToUpper(string(piiType)), h)
 }
 
@@ -739,7 +739,7 @@ Return ONLY the JSON array, no explanation. Example: [{"original":"John Smith","
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL from trusted config, not user input
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL from trusted config, not user input. TODO(#146): suppression removal tracked.
 	if err != nil {
 		return nil, err
 	}

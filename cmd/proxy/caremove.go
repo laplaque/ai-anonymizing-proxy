@@ -5,7 +5,7 @@ import (
 	// `certutil -delstore Root <thumbprint>`. It is not used as a
 	// security primitive here — only to look up an already-installed
 	// certificate by its publicly-known thumbprint.
-	"crypto/sha1" // #nosec G505 — see comment above on weak-primitive justification
+	"crypto/sha1" // #nosec G505 — see comment above on weak-primitive justification. TODO(#146): suppression removal tracked.
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -32,6 +32,22 @@ func certThumbprint(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse cert at %q: %w", path, err)
 	}
-	sum := sha1.Sum(cert.Raw) // #nosec G401 — see import comment
+	sum := sha1.Sum(cert.Raw) // #nosec G401 — see import comment. TODO(#146): suppression removal tracked.
 	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+}
+
+// isSHA1Thumbprint reports whether s has exactly the shape certThumbprint
+// produces: 40 uppercase hexadecimal characters (an SHA-1). Used by the
+// Windows uninstall path to validate the value before it becomes a
+// certutil argument.
+func isSHA1Thumbprint(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
