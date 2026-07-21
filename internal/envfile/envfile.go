@@ -19,7 +19,7 @@ import (
 // Caller-supplied paths are intentional: this is a CLI flag, and the
 // service operator chooses the file.
 func Apply(path string) error {
-	f, err := os.Open(path) //nolint:gosec // G304: path is an operator-supplied CLI flag value
+	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open env file %q: %w", path, err)
 	}
