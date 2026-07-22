@@ -208,13 +208,25 @@ func loadFile(cfg *Config) {
 }
 
 // mergeJSON unmarshals data over cfg. name appears only in log messages.
-// A malformed document logs a warning and leaves cfg untouched.
+// A malformed document logs a warning and leaves cfg untouched — including
+// documents that fail mid-decode: encoding/json applies fields that precede
+// a type error, so the decode targets a scratch copy (with its map field
+// cloned, since Unmarshal mutates an existing map in place) and cfg is
+// assigned only on full success.
 func mergeJSON(cfg *Config, name string, data []byte) {
-	if err := json.Unmarshal(data, cfg); err != nil {
-		log.Printf("[CONFIG] Warning: could not parse %s: %v", name, err)
-	} else {
-		log.Printf("[CONFIG] Loaded %s", name)
+	scratch := *cfg
+	if cfg.PIIInstructions != nil {
+		scratch.PIIInstructions = make(map[string]string, len(cfg.PIIInstructions))
+		for k, v := range cfg.PIIInstructions {
+			scratch.PIIInstructions[k] = v
+		}
 	}
+	if err := json.Unmarshal(data, &scratch); err != nil {
+		log.Printf("[CONFIG] Warning: could not parse %s: %v", name, err)
+		return
+	}
+	*cfg = scratch
+	log.Printf("[CONFIG] Loaded %s", name)
 }
 
 // loadEnvString sets *dst to the value of the named env var if it is non-empty.

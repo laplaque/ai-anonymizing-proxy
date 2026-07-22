@@ -31,7 +31,10 @@ func removeCAFromStore(certPath string) error {
 	// planted certutil.exe earlier in the search order cannot be executed
 	// by the (typically elevated) uninstall action.
 	systemRoot := os.Getenv("SystemRoot")
-	if systemRoot == "" {
+	if !filepath.IsAbs(systemRoot) {
+		// Empty, relative, or otherwise non-absolute values would let a
+		// poisoned environment redirect the (typically elevated) exec —
+		// fall back to the stock location instead of trusting them.
 		systemRoot = `C:\Windows`
 	}
 	cmd := exec.Command(filepath.Join(systemRoot, "System32", "certutil.exe"), "-delstore", "Root", thumbprint)

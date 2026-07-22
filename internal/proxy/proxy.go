@@ -279,7 +279,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[MITM] %s Hijack error for %s: %v", strconv.Quote(remoteHash), strconv.Quote(host), err)
+		log.Printf("[MITM] %s Hijack error for %s: %s", strconv.Quote(remoteHash), strconv.Quote(host), strconv.Quote(err.Error()))
 		return
 	}
 	defer func() { _ = clientConn.Close() }()
@@ -339,7 +339,7 @@ func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Reques
 
 	sessionID, err := s.anonymizeRequestBody(req)
 	if err != nil {
-		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
+		log.Printf("[MITM] %s Anonymization error for %s: %s", ctx.remoteHash, strconv.Quote(ctx.domain), strconv.Quote(err.Error()))
 		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
 		return "", false
 	}
@@ -390,7 +390,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 	defer cancel()
 	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
-		log.Printf("[TUNNEL] %s Connection failed for %s: %v", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), err)
+		log.Printf("[TUNNEL] %s Connection failed for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), strconv.Quote(err.Error()))
 		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
@@ -406,7 +406,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[TUNNEL] %s Hijack error for %s: %v", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), err)
+		log.Printf("[TUNNEL] %s Hijack error for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), strconv.Quote(err.Error()))
 		return
 	}
 	defer func() { _ = clientConn.Close() }()
@@ -451,7 +451,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		sessionID, err = s.anonymizeRequestBody(r)
 		if err != nil {
-			log.Printf("[HTTP] %s Anonymization error for %s: %v", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(domain), err)
+			log.Printf("[HTTP] %s Anonymization error for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(domain), strconv.Quote(err.Error()))
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -565,7 +565,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, 
 	// compressed the response even if we sent Accept-Encoding: identity,
 	// so handle it defensively here.
 	if err := decompressResponse(resp); err != nil {
-		log.Printf("[DEANON] decompression error sessionID=%s: %v", strconv.Quote(sessionID), err)
+		log.Printf("[DEANON] decompression error sessionID=%s: %s", strconv.Quote(sessionID), strconv.Quote(err.Error()))
 	}
 
 	ct := resp.Header.Get("Content-Type")

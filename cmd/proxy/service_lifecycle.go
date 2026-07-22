@@ -40,8 +40,9 @@ var shutdownDeadline = 15 * time.Second
 // way: report StartPending, hand the HTTP server and its already-bound
 // listener to a goroutine, report Running, then either propagate a server
 // error or honor a Stop command with a bounded graceful shutdown. Returns
-// the SCM service-specific exit code (0 on clean stop, 1 on server
-// failure). Taking a bound listener (rather than binding internally) means
+// the exit code (0 on clean stop, 1 on server failure); the Windows
+// bridge reports a non-zero value to the SCM as a service-specific exit
+// code by returning ssec=true from Execute. Taking a bound listener (rather than binding internally) means
 // startup bind failures surface in main before the SCM handshake, and the
 // serve loop cannot lose a port race (issue #140).
 func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcCommand, status svcStatusReporter) uint32 {
@@ -87,8 +88,9 @@ func runServiceLifecycle(srv *http.Server, ln net.Listener, requests <-chan svcC
 // Production value is the real Serve; only tests swap it.
 var serveFunc = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
 
-// svcExitCode maps the serve goroutine's terminal error to the SCM
-// service-specific exit code, logging real failures. Shared by the
+// svcExitCode maps the serve goroutine's terminal error to the exit
+// code the SCM bridge reports (service-specific when non-zero), logging
+// real failures. Shared by the
 // error arm and the post-Stop drain so a Serve failure that races a Stop
 // command is reported instead of silently swallowed as a clean stop.
 func svcExitCode(err error) uint32 {

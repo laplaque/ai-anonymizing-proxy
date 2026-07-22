@@ -173,6 +173,9 @@ func TestRunHTTPServer_ServeError_Fatal(t *testing.T) {
 func TestRunHTTPServer_Shutdown_NoFatal(t *testing.T) {
 	rec := swapLogFatalf(t)
 	ln := listenLocal(t)
+	// If Close wins before Serve registers the listener, Serve returns
+	// ErrServerClosed without closing ln — reclaim the fd.
+	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{ReadHeaderTimeout: time.Second}
 
 	done := make(chan struct{})

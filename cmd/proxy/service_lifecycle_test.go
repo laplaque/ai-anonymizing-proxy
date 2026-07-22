@@ -141,6 +141,10 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	// skipped by a scheduling delay.
 	arrived := make(chan struct{})
 	hold := make(chan struct{})
+	// Cleanup-registered so a t.Fatal before the explicit release cannot
+	// park the handler goroutine on <-hold for the rest of the binary.
+	releaseHold := sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(releaseHold)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hold", func(w http.ResponseWriter, _ *http.Request) {
 		close(arrived)
@@ -164,7 +168,7 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	go func() {
 		defer close(reqDone)
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
-		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed below; lint flow analysis misses the err-guard
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 		}
@@ -188,7 +192,7 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	// Release the held request only after the lifecycle exited: done can
 	// only have fired via the Shutdown-timeout branch, so the timeout is
 	// exercised by construction — no wall-clock window.
-	close(hold)
+	releaseHold()
 	select {
 	case <-reqDone:
 	case <-time.After(5 * time.Second):
@@ -208,6 +212,9 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 // maps to nil, and the lifecycle must report exit code 0.
 func TestRunServiceLifecycle_ExternalCloseReturnsZero(t *testing.T) {
 	ln := listenLocal(t)
+	// If Close wins the race before Serve registers the listener, stdlib
+	// Serve returns ErrServerClosed without closing ln — reclaim the fd.
+	t.Cleanup(func() { _ = ln.Close() })
 	srv := &http.Server{ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
@@ -240,6 +247,11 @@ func TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero(t *testing.T)
 	orig := serveFunc
 	t.Cleanup(func() { serveFunc = orig })
 	release := make(chan struct{})
+	// Cleanup-registered so a t.Fatal before the explicit release cannot
+	// leave the seam goroutine (and the lifecycle) parked for the rest of
+	// the binary, where it could later log into another test's buffer.
+	releaseSeam := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseSeam)
 	serveFunc = func(_ *http.Server, _ net.Listener) error {
 		<-release
 		return errors.New("forced serve failure")
@@ -267,7 +279,7 @@ func TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero(t *testing.T)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	close(release)
+	releaseSeam()
 
 	select {
 	case code := <-done:

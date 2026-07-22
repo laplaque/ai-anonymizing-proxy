@@ -70,7 +70,7 @@ func TestRunServerOrService_CLI_DrainsInflightRequest(t *testing.T) {
 	go func() {
 		defer close(reqDone)
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
-		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed under the err-guard below; lint flow analysis misses it
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 		}

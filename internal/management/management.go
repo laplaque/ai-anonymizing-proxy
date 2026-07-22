@@ -451,7 +451,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.domains.Add(req.Domain)
-	log.Printf("[MANAGEMENT] Added AI domain: %s", req.Domain)
+	log.Printf("[MANAGEMENT] Added AI domain: %s", strconv.Quote(req.Domain))
 	writeJSON(w, http.StatusOK, map[string]string{"added": req.Domain})
 }
 
@@ -478,7 +478,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "domain not registered", http.StatusNotFound)
 		return
 	}
-	log.Printf("[MANAGEMENT] Removed AI domain: %s", req.Domain)
+	log.Printf("[MANAGEMENT] Removed AI domain: %s", strconv.Quote(req.Domain))
 	writeJSON(w, http.StatusOK, map[string]string{"removed": req.Domain})
 }
 

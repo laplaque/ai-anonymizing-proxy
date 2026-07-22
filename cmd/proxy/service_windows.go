@@ -65,7 +65,10 @@ func (p *proxyService) Execute(_ []string, r <-chan svc.ChangeRequest, status ch
 				requests <- cmdStop
 			}
 		case code := <-exit:
-			return false, code
+			// A non-zero code must be flagged service-specific (ssec=true),
+			// otherwise svc maps it into Win32ExitCode and the Event Log
+			// shows a misleading generic error ("Incorrect function").
+			return code != 0, code
 		}
 	}
 }

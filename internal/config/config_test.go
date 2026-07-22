@@ -237,6 +237,33 @@ func TestMergeJSON_InvalidJSON_PreservesDefaults(t *testing.T) {
 	}
 }
 
+// TestMergeJSON_TypeError_LeavesConfigUntouched pins the contract that a
+// document failing mid-decode applies NOTHING. encoding/json sets fields
+// that precede a type error, so a naive Unmarshal(data, cfg) would leave
+// enabledPacks (the issue #70 ordering invariant) mutated while returning
+// an error — silently degrading PII stripping behind a "could not parse"
+// warning. mergeJSON must decode into a scratch copy and merge only on
+// full success.
+func TestMergeJSON_TypeError_LeavesConfigUntouched(t *testing.T) {
+	cfg := defaults()
+	wantPacks := append([]string(nil), cfg.EnabledPacks...)
+	wantModel := cfg.OllamaModel
+
+	// enabledPacks (valid) precedes proxyPort (type error) in the document,
+	// so a partial apply would take the reordered pack list before failing.
+	mergeJSON(cfg, configFileName, []byte(`{"enabledPacks":["GLOBAL"],"ollamaModel":"evil","proxyPort":"not-a-number"}`))
+
+	if got := cfg.EnabledPacks; len(got) != len(wantPacks) {
+		t.Errorf("EnabledPacks partially applied on type error: got %v, want %v", got, wantPacks)
+	}
+	if cfg.OllamaModel != wantModel {
+		t.Errorf("OllamaModel partially applied on type error: got %q, want %q", cfg.OllamaModel, wantModel)
+	}
+	if cfg.ProxyPort != 8080 {
+		t.Errorf("ProxyPort changed on type error: %d", cfg.ProxyPort)
+	}
+}
+
 func TestDefaults_EnabledPacks(t *testing.T) {
 	cfg := defaults()
 	wantOrder := []string{"SECRETS", "GLOBAL", "DE"}
