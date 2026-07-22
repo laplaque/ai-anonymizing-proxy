@@ -4,6 +4,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
 
 	"golang.org/x/sys/windows/svc"
@@ -13,8 +14,8 @@ import (
 // the Windows Service Control Manager and the service lifecycle has finished.
 // In that case main() must return immediately. When the process is a normal
 // CLI invocation it returns false so main() can fall through to its
-// signal-driven loop.
-func runAsServiceIfNeeded(srv *http.Server) bool {
+// signal-driven loop. ln is the already-bound proxy listener.
+func runAsServiceIfNeeded(srv *http.Server, ln net.Listener) bool {
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		log.Printf("[SERVICE] IsWindowsService check failed: %v", err)
@@ -23,7 +24,12 @@ func runAsServiceIfNeeded(srv *http.Server) bool {
 	if !isService {
 		return false
 	}
-	if err := svc.Run("ai-proxy", &proxyService{srv: srv}); err != nil {
+	// Readiness for the SCM path: stop requests arrive via the SCM
+	// channel (not OS signals) and are ordered by the StartPending →
+	// Running handshake inside Execute, so logging after the bind is
+	// race-free here (review N1's signal-gap concern is CLI-only).
+	log.Printf("[PROXY] Listening on %s", ln.Addr())
+	if err := svc.Run("ai-proxy", &proxyService{srv: srv, ln: ln}); err != nil {
 		log.Fatalf("[SERVICE] svc.Run: %v", err)
 	}
 	return true
@@ -35,6 +41,7 @@ func runAsServiceIfNeeded(srv *http.Server) bool {
 // platform-neutral reporter back to the SCM channel.
 type proxyService struct {
 	srv *http.Server
+	ln  net.Listener
 }
 
 const svcAccepts = svc.AcceptStop | svc.AcceptShutdown
@@ -45,7 +52,7 @@ func (p *proxyService) Execute(_ []string, r <-chan svc.ChangeRequest, status ch
 
 	exit := make(chan uint32, 1)
 	go func() {
-		exit <- runServiceLifecycle(p.srv, requests, reporter)
+		exit <- runServiceLifecycle(p.srv, p.ln, requests, reporter)
 	}()
 
 	for {
@@ -58,7 +65,10 @@ func (p *proxyService) Execute(_ []string, r <-chan svc.ChangeRequest, status ch
 				requests <- cmdStop
 			}
 		case code := <-exit:
-			return false, code
+			// A non-zero code must be flagged service-specific (ssec=true),
+			// otherwise svc maps it into Win32ExitCode and the Event Log
+			// shows a misleading generic error ("Incorrect function").
+			return code != 0, code
 		}
 	}
 }

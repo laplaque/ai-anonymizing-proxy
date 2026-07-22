@@ -179,12 +179,7 @@ func TestLoadEnv_InvalidPort_Ignored(t *testing.T) {
 	}
 }
 
-func TestLoadFile_ValidJSON(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "config-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func TestMergeJSON_ValidJSON(t *testing.T) {
 	data, marshalErr := json.Marshal(map[string]any{
 		"proxyPort":      9999,
 		"ollamaModel":    "mistral:7b",
@@ -193,15 +188,9 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
-	if _, err := f.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	cfg := defaults()
-	loadFile(cfg, f.Name())
+	mergeJSON(cfg, configFileName, data)
 
 	if cfg.ProxyPort != 9999 {
 		t.Errorf("ProxyPort: got %d, want 9999", cfg.ProxyPort)
@@ -214,30 +203,64 @@ func TestLoadFile_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestLoadFile_Missing_IsNoOp(t *testing.T) {
+func TestLoadFile_ReadsConfigFromWorkingDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	data, err := json.Marshal(map[string]any{"proxyPort": 9999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configFileName, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	cfg := defaults()
-	loadFile(cfg, "/nonexistent/path/config.json")
+	loadFile(cfg)
+	if cfg.ProxyPort != 9999 {
+		t.Errorf("ProxyPort: got %d, want 9999 (file in cwd should load)", cfg.ProxyPort)
+	}
+}
+
+func TestLoadFile_Missing_IsNoOp(t *testing.T) {
+	t.Chdir(t.TempDir()) // empty dir: no proxy-config.json present
+	cfg := defaults()
+	loadFile(cfg)
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed unexpectedly: %d", cfg.ProxyPort)
 	}
 }
 
-func TestLoadFile_InvalidJSON_PreservesDefaults(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "config-bad-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString("{this is not json}"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
+func TestMergeJSON_InvalidJSON_PreservesDefaults(t *testing.T) {
 	cfg := defaults()
-	loadFile(cfg, f.Name())
+	mergeJSON(cfg, configFileName, []byte("{this is not json}"))
 	if cfg.ProxyPort != 8080 {
 		t.Errorf("ProxyPort changed on bad JSON: %d", cfg.ProxyPort)
+	}
+}
+
+// TestMergeJSON_TypeError_LeavesConfigUntouched pins the contract that a
+// document failing mid-decode applies NOTHING. encoding/json sets fields
+// that precede a type error, so a naive Unmarshal(data, cfg) would leave
+// enabledPacks (the issue #70 ordering invariant) mutated while returning
+// an error — silently degrading PII stripping behind a "could not parse"
+// warning. mergeJSON must decode into a scratch copy and merge only on
+// full success.
+func TestMergeJSON_TypeError_LeavesConfigUntouched(t *testing.T) {
+	cfg := defaults()
+	wantPacks := append([]string(nil), cfg.EnabledPacks...)
+	wantModel := cfg.OllamaModel
+
+	// enabledPacks (valid) precedes proxyPort (type error) in the document,
+	// so a partial apply would take the reordered pack list before failing.
+	mergeJSON(cfg, configFileName, []byte(`{"enabledPacks":["GLOBAL"],"ollamaModel":"evil","proxyPort":"not-a-number"}`))
+
+	if got := cfg.EnabledPacks; len(got) != len(wantPacks) {
+		t.Errorf("EnabledPacks partially applied on type error: got %v, want %v", got, wantPacks)
+	}
+	if cfg.OllamaModel != wantModel {
+		t.Errorf("OllamaModel partially applied on type error: got %q, want %q", cfg.OllamaModel, wantModel)
+	}
+	if cfg.ProxyPort != 8080 {
+		t.Errorf("ProxyPort changed on type error: %d", cfg.ProxyPort)
 	}
 }
 

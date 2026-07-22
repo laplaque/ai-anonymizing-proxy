@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,33 +36,43 @@ func (f *fakeReporter) Running()      { f.record("Running") }
 func (f *fakeReporter) StopPending()  { f.record("StopPending") }
 func (f *fakeReporter) Interrogate()  { f.record("Interrogate") }
 
-// freeAddr returns "127.0.0.1:<unused port>" — claim a port from the OS,
-// then release it. The lifecycle test re-binds it via srv.ListenAndServe.
-func freeAddr(t *testing.T) string {
+// captureServiceLog redirects the default logger to a mutex-guarded buffer
+// for the duration of the test, so log lines written by goroutines can be
+// both polled during the test and asserted after it. Tests in this package
+// are not parallel, so swapping the global logger is safe.
+//
+// Companion to captureLog (startup_test.go), which is fn-scoped and
+// restores before returning: use captureLog when the logging happens
+// synchronously inside a closure, and this test-lifetime variant when a
+// goroutine logs concurrently.
+func captureServiceLog(t *testing.T) *syncBuffer {
 	t.Helper()
-	lc := &net.ListenConfig{}
-	l, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	prev := log.Writer()
+	buf := &syncBuffer{}
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return buf
 }
 
+// runServiceLifecycle takes an already-bound listener, so every test binds
+// "127.0.0.1:0" itself (via listenLocal) and hands the listener over — the
+// kernel assigns the port at bind time and no close-then-rebind window
+// exists anywhere (issue #140).
+
 func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
-	srv := &http.Server{Addr: freeAddr(t), ReadHeaderTimeout: time.Second}
+	ln := listenLocal(t)
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
 
 	done := make(chan uint32, 1)
-	go func() { done <- runServiceLifecycle(srv, requests, rep) }()
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
 
 	// Wait until the lifecycle has reported Running before sending Stop.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
-			break
+	for !hasCall(rep.snapshot(), "Running") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not report Running within 2s; calls=%v", rep.snapshot())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -84,17 +97,18 @@ func TestRunServiceLifecycle_StopGracefully(t *testing.T) {
 }
 
 func TestRunServiceLifecycle_InterrogateReEmits(t *testing.T) {
-	srv := &http.Server{Addr: freeAddr(t), ReadHeaderTimeout: time.Second}
+	ln := listenLocal(t)
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
 
 	done := make(chan uint32, 1)
-	go func() { done <- runServiceLifecycle(srv, requests, rep) }()
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
-			break
+	for !hasCall(rep.snapshot(), "Running") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not report Running within 2s; calls=%v", rep.snapshot())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -102,7 +116,11 @@ func TestRunServiceLifecycle_InterrogateReEmits(t *testing.T) {
 	requests <- cmdInterrogate
 	requests <- cmdStop
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s; calls=%v", rep.snapshot())
+	}
 
 	got := rep.snapshot()
 	if !hasCall(got, "Interrogate") {
@@ -118,49 +136,50 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	t.Cleanup(func() { shutdownDeadline = original })
 	shutdownDeadline = 50 * time.Millisecond
 
+	// arrived guarantees the held request has reached the handler before
+	// cmdStop is sent, so the Shutdown-timeout branch cannot be silently
+	// skipped by a scheduling delay.
+	arrived := make(chan struct{})
 	hold := make(chan struct{})
+	// Cleanup-registered so a t.Fatal before the explicit release cannot
+	// park the handler goroutine on <-hold for the rest of the binary.
+	releaseHold := sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(releaseHold)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hold", func(w http.ResponseWriter, _ *http.Request) {
+		close(arrived)
 		<-hold
 		w.WriteHeader(http.StatusOK)
 	})
 
-	addr := freeAddr(t)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
-	rep := &fakeReporter{}
+	ln := listenLocal(t)
+	addr := ln.Addr().String()
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	logs := captureServiceLog(t)
 	requests := make(chan svcCommand, 4)
 
 	done := make(chan uint32, 1)
-	go func() { done <- runServiceLifecycle(srv, requests, rep) }()
+	go func() { done <- runServiceLifecycle(srv, ln, requests, &fakeReporter{}) }()
 
-	// Wait for Running, then fire a request that blocks past the deadline.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hasCall(rep.snapshot(), "Running") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Fire the request that blocks past the shutdown deadline. The bound
+	// listener queues the connection even before Serve accepts, so no
+	// readiness poll is needed.
 	reqDone := make(chan struct{})
 	go func() {
 		defer close(reqDone)
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/hold", http.NoBody)
-		// #nosec G107,G704 — addr is freeAddr(t)'s localhost loopback, not user input
-		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body is closed below; lint flow analysis misses the err-guard
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil && resp != nil {
 			_ = resp.Body.Close()
 		}
 	}()
-	// Give the request a moment to land.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("held request did not reach the handler within 5s")
+	}
 
 	requests <- cmdStop
-
-	// Release the holding request so Shutdown's drain can complete.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(hold)
-	}()
 
 	select {
 	case code := <-done:
@@ -170,33 +189,136 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("lifecycle did not exit within 5s on shutdown timeout")
 	}
-	<-reqDone
+	// Release the held request only after the lifecycle exited: done can
+	// only have fired via the Shutdown-timeout branch, so the timeout is
+	// exercised by construction — no wall-clock window.
+	releaseHold()
+	select {
+	case <-reqDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("held request did not complete within 5s of release")
+	}
+
+	// Pin the timeout branch by its distinctive log line — exit code alone
+	// cannot distinguish a timed-out Shutdown from a fast clean one.
+	if !strings.Contains(logs.String(), "[SERVICE] shutdown:") {
+		t.Errorf("expected '[SERVICE] shutdown:' timeout log, got: %q", logs.String())
+	}
 }
 
-func TestRunServiceLifecycle_BindFailureReturnsNonZero(t *testing.T) {
-	// Bind 127.0.0.1:0 first to capture an actually-bound port, then
-	// hand that same address to a fresh server so ListenAndServe collides.
-	lc := &net.ListenConfig{}
-	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-
-	srv := &http.Server{Addr: listener.Addr().String(), ReadHeaderTimeout: time.Second}
+// TestRunServiceLifecycle_ExternalCloseReturnsZero drives the serveErr
+// select arm's clean-exit path: the server is closed externally (no Stop
+// command ever sent), Serve returns ErrServerClosed which the goroutine
+// maps to nil, and the lifecycle must report exit code 0.
+func TestRunServiceLifecycle_ExternalCloseReturnsZero(t *testing.T) {
+	ln := listenLocal(t)
+	// If Close wins the race before Serve registers the listener, stdlib
+	// Serve returns ErrServerClosed without closing ln — reclaim the fd.
+	t.Cleanup(func() { _ = ln.Close() })
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
 	rep := &fakeReporter{}
 	requests := make(chan svcCommand, 4)
 
 	done := make(chan uint32, 1)
-	go func() { done <- runServiceLifecycle(srv, requests, rep) }()
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
+
+	if err := srv.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("external-close exit code = %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s of external Close")
+	}
+}
+
+// TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero drives the
+// post-Stop drain with a non-nil Serve result via the serveFunc seam — a
+// state a real http.Server cannot produce deterministically (its Serve maps
+// post-Shutdown accept failures to ErrServerClosed) but which production
+// hits whenever a real Serve failure races a Stop command. The lifecycle
+// must log the failure and report exit code 1, not swallow it as a clean
+// stop; reverting svcExitCode's post-Stop call to an unconditional zero
+// fails this test.
+func TestRunServiceLifecycle_ServeFailureDuringStop_ReturnsNonZero(t *testing.T) {
+	orig := serveFunc
+	t.Cleanup(func() { serveFunc = orig })
+	release := make(chan struct{})
+	// Cleanup-registered so a t.Fatal before the explicit release cannot
+	// leave the seam goroutine (and the lifecycle) parked for the rest of
+	// the binary, where it could later log into another test's buffer.
+	releaseSeam := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseSeam)
+	serveFunc = func(_ *http.Server, _ net.Listener) error {
+		<-release
+		return errors.New("forced serve failure")
+	}
+
+	ln := listenLocal(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	rep := &fakeReporter{}
+	logs := captureServiceLog(t)
+	requests := make(chan svcCommand, 4)
+
+	done := make(chan uint32, 1)
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
+
+	requests <- cmdStop
+
+	// Only release the seam once the lifecycle is provably inside the
+	// cmdStop arm (StopPending recorded), so the error can only arrive
+	// through the post-Stop drain — never through the serveErr select arm.
+	deadline := time.Now().Add(5 * time.Second)
+	for !hasCall(rep.snapshot(), "StopPending") {
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle did not reach StopPending within 5s; calls=%v", rep.snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	releaseSeam()
 
 	select {
 	case code := <-done:
 		if code != 1 {
-			t.Errorf("bind-failure exit code = %d, want 1", code)
+			t.Errorf("serve-failure-during-stop exit code = %d, want 1", code)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("lifecycle did not exit within 5s on bind failure")
+		t.Fatalf("lifecycle did not exit within 5s of the seam releasing")
+	}
+	if !strings.Contains(logs.String(), "[SERVICE] HTTP server exited: forced serve failure") {
+		t.Errorf("expected the raced serve failure to be logged, got: %q", logs.String())
+	}
+}
+
+// TestRunServiceLifecycle_ServeFailureReturnsNonZero closes the listener
+// before handing it over, so srv.Serve fails immediately — exercising the
+// serveErr error branch and its non-zero exit code.
+func TestRunServiceLifecycle_ServeFailureReturnsNonZero(t *testing.T) {
+	ln := listenLocal(t)
+	_ = ln.Close()
+
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	rep := &fakeReporter{}
+	logs := captureServiceLog(t)
+	requests := make(chan svcCommand, 4)
+
+	done := make(chan uint32, 1)
+	go func() { done <- runServiceLifecycle(srv, ln, requests, rep) }()
+
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("serve-failure exit code = %d, want 1", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("lifecycle did not exit within 5s on serve failure")
+	}
+	if !strings.Contains(logs.String(), "[SERVICE] HTTP server exited:") {
+		t.Errorf("expected '[SERVICE] HTTP server exited:' log, got: %q", logs.String())
 	}
 }
 

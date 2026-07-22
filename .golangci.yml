@@ -14,8 +14,10 @@ linters:
     - ineffassign
     - unused
 
-    # Security
-    - gosec
+    # Security: gosec runs standalone in `make security` (current engine,
+    # tests included, zero production exclusions) — the vendored copy here
+    # lags on taint-sanitizer recognition and produced false positives the
+    # standalone engine does not (e.g. G704 on tests' own :0 listeners).
 
     # Code quality
     - revive
@@ -39,12 +41,6 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: false
-
-    gosec:
-      excludes:
-        - G304
-      severity: medium
-      confidence: medium
 
     revive:
       rules:
@@ -71,12 +67,6 @@ linters:
 
   exclusions:
     rules:
-      # MD5 in anonymizer is for deterministic PII tokens, not cryptographic use
-      - path: internal/anonymizer/anonymizer\.go
-        linters:
-          - gosec
-        text: "G401|G501|MD5"
-
       # select{} in singleConnListener is the intended design to block until close
       - path: internal/mitm/mitm\.go
         linters:

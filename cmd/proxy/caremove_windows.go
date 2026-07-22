@@ -4,7 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -18,8 +20,24 @@ func removeCAFromStore(certPath string) error {
 		return err
 	}
 
-	// #nosec G204 — certutil.exe is a Windows-supplied tool; thumbprint is hex SHA-1 not external input
-	cmd := exec.Command("certutil.exe", "-delstore", "Root", thumbprint)
+	// Defense-in-depth before handing the value to certutil: enforce the
+	// exact shape certThumbprint promises. A 40-char uppercase-hex string
+	// cannot carry flags or argument structure, so the exec's safety is
+	// checked here rather than argued in a comment.
+	if !isSHA1Thumbprint(thumbprint) {
+		return fmt.Errorf("refusing certutil call: thumbprint %q is not 40 uppercase hex chars", thumbprint)
+	}
+	// Anchor certutil to System32 instead of resolving it via PATH, so a
+	// planted certutil.exe earlier in the search order cannot be executed
+	// by the (typically elevated) uninstall action.
+	systemRoot := os.Getenv("SystemRoot")
+	if !filepath.IsAbs(systemRoot) {
+		// Empty, relative, or otherwise non-absolute values would let a
+		// poisoned environment redirect the (typically elevated) exec —
+		// fall back to the stock location instead of trusting them.
+		systemRoot = `C:\Windows`
+	}
+	cmd := exec.Command(filepath.Join(systemRoot, "System32", "certutil.exe"), "-delstore", "Root", thumbprint)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil

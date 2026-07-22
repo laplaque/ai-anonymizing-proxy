@@ -9,7 +9,7 @@ import (
 )
 
 // installShutdownHandler blocks on quit, then calls srv.Shutdown with the given
-// timeout. Intended to run in a goroutine spawned by main().
+// timeout. Intended to run in a goroutine spawned by runServerOrService.
 func installShutdownHandler(quit <-chan os.Signal, srv *http.Server, timeout time.Duration) {
 	<-quit
 	log.Printf("[PROXY] Shutting down…")

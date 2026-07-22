@@ -26,11 +26,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/envfile"
@@ -85,9 +85,20 @@ func main() {
 	defer closeProxyServer(proxyServer)
 
 	srv := proxyHTTPServer(cfg, proxyServer)
-	log.Printf("[PROXY] Listening on %s", srv.Addr)
-
-	runServerOrService(srv)
+	ln, err := bindListener(srv.Addr)
+	if err != nil {
+		// TODO(#145): under the Windows SCM this exits before the service
+		// handshake, so services.msc reports a generic start error instead
+		// of the service-specific exit code. Needs an SCM-aware
+		// bind-failure reporter; deliberate trade-off for now so the
+		// readiness log below is a true ownership proof.
+		log.Fatalf("[PROXY] Fatal: %v", err)
+	}
+	// The readiness log is emitted inside runServerOrService, per path:
+	// only after the bind above AND after the shutdown handshake for that
+	// path is in place, so acting on the log can never race the graceful
+	// path (issue #140, review N1).
+	runServerOrService(srv, ln)
 }
 
 // serviceDispatcher is the entry point that decides whether the process
@@ -99,15 +110,32 @@ var serviceDispatcher = runAsServiceIfNeeded
 
 // runServerOrService dispatches to the Windows SCM handler when the
 // process was launched by services.msc, and falls through to the
-// signal-driven HTTP loop otherwise.
-func runServerOrService(srv *http.Server) {
-	if serviceDispatcher(srv) {
+// signal-driven HTTP loop otherwise. ln is the already-bound proxy
+// listener from bindListener.
+func runServerOrService(srv *http.Server, ln net.Listener) {
+	if serviceDispatcher(srv, ln) {
 		return
 	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	go installShutdownHandler(quit, srv, 15*time.Second)
-	runHTTPServer(srv)
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		installShutdownHandler(quit, srv, shutdownDeadline)
+	}()
+	// Logged only after the bind (in main) AND after signal.Notify above,
+	// so a SIGTERM sent by an operator or test the moment this line
+	// appears is always routed to the graceful handler — never to the OS
+	// default action (review N1). ln.Addr() reports the kernel-assigned
+	// address when ProxyPort is 0.
+	log.Printf("[PROXY] Listening on %s", ln.Addr())
+	runHTTPServer(srv, ln)
+	// srv.Serve returns as soon as Shutdown closes the listener, but
+	// Shutdown may still be draining in-flight connections. Wait for the
+	// handler so the graceful budget is actually honored — mirroring the
+	// SCM path's post-Shutdown drain. Blocking is safe: the only non-fatal
+	// way Serve returns on this path is the handler's own Shutdown.
+	<-shutdownDone
 }
 
 // runGenerateCA writes a freshly generated CA cert+key to the given paths.

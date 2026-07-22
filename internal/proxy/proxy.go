@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,7 +130,7 @@ func ssrfSafeDialContext(d *net.Dialer) func(ctx context.Context, network, addr 
 
 		for _, ipAddr := range ips {
 			if isPrivateIP(ipAddr.IP) {
-				log.Printf("[SSRF] Blocked connection to private IP %s (host: %s)", ipAddr.IP, host)
+				log.Printf("[SSRF] Blocked connection to private IP %s (host: %s)", ipAddr.IP, strconv.Quote(host))
 				return nil, errPrivateIP
 			}
 		}
@@ -264,11 +265,11 @@ type mitmContext struct {
 // reads the plaintext HTTP request, anonymizes it, and forwards upstream.
 func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, domain string) {
 	remoteHash := hashRemoteAddr(r.RemoteAddr)
-	log.Printf("[MITM] %s Intercepting CONNECT %s", remoteHash, host)
+	log.Printf("[MITM] %s Intercepting CONNECT %s", strconv.Quote(remoteHash), strconv.Quote(host))
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Printf("[MITM] %s Hijacking not supported for %s", remoteHash, host)
+		log.Printf("[MITM] %s Hijacking not supported for %s", strconv.Quote(remoteHash), strconv.Quote(host))
 		s.handleOpaqueTunnel(w, r, host)
 		return
 	}
@@ -278,7 +279,7 @@ func (s *Server) handleMITMTunnel(w http.ResponseWriter, r *http.Request, host, 
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[MITM] %s Hijack error for %s: %v", remoteHash, host, err)
+		log.Printf("[MITM] %s Hijack error for %s: %s", strconv.Quote(remoteHash), strconv.Quote(host), strconv.Quote(err.Error()))
 		return
 	}
 	defer func() { _ = clientConn.Close() }()
@@ -332,19 +333,19 @@ func (s *Server) recordMITMMetrics(isAuth bool) {
 // or ("", false) on error (error response already sent to client).
 func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) (string, bool) {
 	if isAuth {
-		log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", ctx.remoteHash, req.Method, ctx.domain, req.URL.Path)
+		log.Printf("[MITM] %s %s %s [AUTH][PASS]", ctx.remoteHash, strconv.Quote(req.Method), strconv.Quote(ctx.domain+req.URL.Path))
 		return "", true
 	}
 
 	sessionID, err := s.anonymizeRequestBody(req)
 	if err != nil {
-		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
+		log.Printf("[MITM] %s Anonymization error for %s: %s", ctx.remoteHash, strconv.Quote(ctx.domain), strconv.Quote(err.Error()))
 		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
 		return "", false
 	}
 
-	log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
-		ctx.remoteHash, req.Method, ctx.domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+	log.Printf("[MITM] %s %s %s [ANON] sessionID=%s tokens=%d",
+		ctx.remoteHash, strconv.Quote(req.Method), strconv.Quote(ctx.domain+req.URL.Path), sessionID, s.anon.SessionTokenCount(sessionID))
 	return sessionID, true
 }
 
@@ -376,10 +377,10 @@ func (s *Server) forwardMITMRequest(rw http.ResponseWriter, req *http.Request, s
 
 // handleOpaqueTunnel establishes a TCP tunnel without inspecting the traffic.
 func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host string) {
-	log.Printf("[TUNNEL] %s CONNECT %s", hashRemoteAddr(r.RemoteAddr), host)
+	log.Printf("[TUNNEL] %s CONNECT %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host))
 
 	if isPrivateHost(host) {
-		log.Printf("[TUNNEL] %s Blocked CONNECT to private address: %s", hashRemoteAddr(r.RemoteAddr), host)
+		log.Printf("[TUNNEL] %s Blocked CONNECT to private address: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -389,7 +390,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 	defer cancel()
 	destConn, err := s.dialContext(ctx, "tcp", host)
 	if err != nil {
-		log.Printf("[TUNNEL] %s Connection failed for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
+		log.Printf("[TUNNEL] %s Connection failed for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), strconv.Quote(err.Error()))
 		http.Error(w, errBadGateway, http.StatusBadGateway)
 		return
 	}
@@ -405,7 +406,7 @@ func (s *Server) handleOpaqueTunnel(w http.ResponseWriter, r *http.Request, host
 
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[TUNNEL] %s Hijack error for %s: %v", hashRemoteAddr(r.RemoteAddr), host, err)
+		log.Printf("[TUNNEL] %s Hijack error for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(host), strconv.Quote(err.Error()))
 		return
 	}
 	defer func() { _ = clientConn.Close() }()
@@ -450,19 +451,19 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		sessionID, err = s.anonymizeRequestBody(r)
 		if err != nil {
-			log.Printf("[HTTP] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
+			log.Printf("[HTTP] %s Anonymization error for %s: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(domain), strconv.Quote(err.Error()))
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		if sessionID != "" {
 			defer s.anon.DeleteSession(sessionID)
 		}
-		log.Printf("[HTTP] %s %s %s%s [ANON] sessionID=%s tokens=%d",
-			hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
+		log.Printf("[HTTP] %s %s %s [ANON] sessionID=%s tokens=%d",
+			strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(r.Method), strconv.Quote(domain+r.URL.Path), sessionID, s.anon.SessionTokenCount(sessionID))
 	} else if isAuth {
-		log.Printf("[HTTP] %s %s %s%s [AUTH][PASS]", hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path)
+		log.Printf("[HTTP] %s %s %s [AUTH][PASS]", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(r.Method), strconv.Quote(domain+r.URL.Path))
 	} else {
-		log.Printf("[HTTP] %s %s %s%s [PASS]", hashRemoteAddr(r.RemoteAddr), r.Method, domain, r.URL.Path)
+		log.Printf("[HTTP] %s %s %s [PASS]", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(r.Method), strconv.Quote(domain+r.URL.Path))
 	}
 
 	// Forward the request
@@ -479,7 +480,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	}
 
 	if isPrivateHost(r.URL.Host) {
-		log.Printf("[HTTP] %s Blocked request to private address: %s", hashRemoteAddr(r.RemoteAddr), r.URL.Host)
+		log.Printf("[HTTP] %s Blocked request to private address: %s", strconv.Quote(hashRemoteAddr(r.RemoteAddr)), strconv.Quote(r.URL.Host))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -556,7 +557,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 
 func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, domain string) {
 	if sessionID == "" || resp == nil || resp.Body == nil {
-		log.Printf("[DEANON] skipping: sessionID=%q resp=%v bodyNil=%v", sessionID, resp == nil, resp != nil && resp.Body == nil)
+		log.Printf("[DEANON] skipping: sessionID=%s resp=%s bodyNil=%s", strconv.Quote(sessionID), strconv.Quote(strconv.FormatBool(resp == nil)), strconv.Quote(strconv.FormatBool(resp != nil && resp.Body == nil)))
 		return
 	}
 
@@ -564,12 +565,12 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, 
 	// compressed the response even if we sent Accept-Encoding: identity,
 	// so handle it defensively here.
 	if err := decompressResponse(resp); err != nil {
-		log.Printf("[DEANON] decompression error sessionID=%s: %v", sessionID, err)
+		log.Printf("[DEANON] decompression error sessionID=%s: %s", strconv.Quote(sessionID), strconv.Quote(err.Error()))
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	streaming := isStreamingResponse(resp)
-	log.Printf("[DEANON] sessionID=%s content-type=%q streaming=%v encoding=%q", sessionID, ct, streaming, resp.Header.Get(headerContentEncoding))
+	log.Printf("[DEANON] sessionID=%s content-type=%s streaming=%s encoding=%s", strconv.Quote(sessionID), strconv.Quote(ct), strconv.Quote(strconv.FormatBool(streaming)), strconv.Quote(resp.Header.Get(headerContentEncoding)))
 
 	// Streaming responses (SSE or unknown-length chunked) must never be fully
 	// buffered: io.ReadAll blocks until the upstream closes the connection.
@@ -587,7 +588,7 @@ func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, 
 		return
 	}
 	deanonymized := s.anon.DeanonymizeText(string(body), sessionID)
-	log.Printf("[DEANON] non-streaming: body=%d bytes, deanon=%d bytes", len(body), len(deanonymized))
+	log.Printf("[DEANON] non-streaming: body=%s bytes, deanon=%s bytes", strconv.Itoa(len(body)), strconv.Itoa(len(deanonymized)))
 	resp.Body = io.NopCloser(strings.NewReader(deanonymized))
 	resp.ContentLength = int64(len(deanonymized))
 }
@@ -712,7 +713,7 @@ func decompressResponse(resp *http.Response) error {
 	case "", "identity":
 		// nothing to do
 	default:
-		log.Printf("[DEANON] unsupported Content-Encoding %q — token replacement may fail", enc)
+		log.Printf("[DEANON] unsupported Content-Encoding %s — token replacement may fail", strconv.Quote(enc))
 	}
 	return nil
 }

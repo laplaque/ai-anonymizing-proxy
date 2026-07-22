@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -29,16 +30,29 @@ func TestMain(m *testing.M) {
 }
 
 // helperCmd builds an *exec.Cmd that re-execs this test binary as the
-// production proxy. Centralizing the os.Args[0] call site means there's
-// exactly one gosec G204 suppression in the file (here) instead of one per
-// test — and the suppression sits next to the explanation of why the
-// pattern is safe (the target is the test binary itself, not external
-// input). Callers append cmd.Env / cmd.Dir / cmd.Stdout / cmd.Stderr as
-// they need them.
+// production proxy (the helper-process pattern from stdlib os/exec
+// internal tests). The target comes from os.Executable() — the OS's
+// answer for the running binary — rather than the caller-settable
+// os.Args[0]. Callers append cmd.Env / cmd.Dir / cmd.Stdout /
+// cmd.Stderr as they need them.
 func helperCmd(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
-	//nolint:gosec // G204: os.Args[0] is the test binary itself (the helper-process pattern from stdlib os/exec internal tests); the args are test-controlled flags, not external input.
-	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	// t.Context() alone cannot bound a blocked CombinedOutput — it is
+	// canceled only after the test function returns. The explicit timeout
+	// turns a hung helper subprocess into a per-test failure instead of
+	// the package-wide 10m timeout panic.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, self, args...)
+	// Inheriting os.Environ is load-bearing for coverage: the helper
+	// subprocess inherits GOCOVERDIR from `go test -cover`, which is the
+	// only way main() gets measured. Replacing this with a minimal
+	// hermetic env would silently zero cmd/proxy's subprocess coverage
+	// and fail the delta gate.
 	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	return cmd
 }
@@ -177,15 +191,17 @@ func TestRunGenerateCA(t *testing.T) {
 // TestMain_HelperProcess_Lifecycle re-execs this test binary as the proxy
 // daemon, waits for it to bind its listener, sends SIGTERM, and verifies a
 // clean exit. Exercises main()'s full startup-and-shutdown lifecycle.
+//
+// Both ports are 0: the kernel assigns them at bind time, so no port can be
+// stolen between allocation and bind (issue #140), and because main binds
+// before logging, "[PROXY] Listening on" is proof the subprocess owns its
+// port — no probing or retrying is needed.
 func TestMain_HelperProcess_Lifecycle(t *testing.T) {
-	proxyPort := freePort(t)
-	mgmtPort := freePort(t)
-
 	cmd := helperCmd(t)
 	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
-		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
-		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
+		"PROXY_PORT=0",
+		"MANAGEMENT_PORT=0",
 		"ENABLED_PACKS=SECRETS,GLOBAL",
 		"USE_AI_DETECTION=false",
 	)
@@ -197,21 +213,28 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
-	})
-
-	waitForLog(t, stderr, "[PROXY] Listening on", 10*time.Second)
-
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signal: %v", err)
-	}
-
+	// Reap in a goroutine so an early exit is observable while polling the
+	// log. Once done receives, cmd.Wait has returned, which also guarantees
+	// stderr holds everything the subprocess wrote.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() }) // no-op once reaped
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "[PROXY] Listening on") {
+		if time.Now().After(deadline) {
+			t.Fatalf("did not see %q in log within 10s\n%s", "[PROXY] Listening on", stderr.String())
+		}
+		select {
+		case <-done:
+			t.Fatalf("helper exited before readiness:\n%s", stderr.String())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal: %v\n%s", err, stderr.String())
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -224,64 +247,47 @@ func TestMain_HelperProcess_Lifecycle(t *testing.T) {
 }
 
 // TestMain_HelperProcess_ProxyPortConflict_Fatal pre-binds the proxy port so
-// the subprocess's srv.ListenAndServe() fails, exercising runHTTPServer's
-// log.Fatalf branch.
+// the subprocess's bindListener call fails, exercising main()'s
+// "[PROXY] Fatal" branch.
 func TestMain_HelperProcess_ProxyPortConflict_Fatal(t *testing.T) {
-	ln := listenLocal(t)
-	defer func() { _ = ln.Close() }()
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address %T is not *net.TCPAddr", ln.Addr())
-	}
-	proxyPort := addr.Port
-	mgmtPort := freePort(t)
-
-	cmd := helperCmd(t)
-	cmd.Env = append(cmd.Env,
-		"BIND_ADDRESS=127.0.0.1",
-		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
-		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
-		"ENABLED_PACKS=SECRETS,GLOBAL",
-		"USE_AI_DETECTION=false",
-	)
-	cmd.Dir = t.TempDir()
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected non-zero exit on proxy port conflict, got success\n%s", out)
-	}
-	if !strings.Contains(string(out), "[PROXY] Fatal") {
-		t.Errorf("expected '[PROXY] Fatal' in output, got:\n%s", out)
-	}
+	testHelperPortConflict(t, "PROXY_PORT", "MANAGEMENT_PORT", "[PROXY] Fatal")
 }
 
 // TestMain_HelperProcess_MgmtPortConflict_Fatal pre-binds the management port
-// so the subprocess's mgmt.ListenAndServe() fails, exercising runManagementAPI's
-// log.Fatalf branch.
+// so the subprocess's mgmt.ListenAndServe() fails, exercising
+// runManagementAPI's fatal branch.
 func TestMain_HelperProcess_MgmtPortConflict_Fatal(t *testing.T) {
+	testHelperPortConflict(t, "MANAGEMENT_PORT", "PROXY_PORT", "[MANAGEMENT] Fatal")
+}
+
+// testHelperPortConflict launches the helper with the pinnedVar port held by
+// a live listener in this process, so the subprocess must die with wantTag.
+// The other port is 0 (kernel-assigned at bind), so no second conflict is
+// possible and the failure is deterministic (issue #140).
+func testHelperPortConflict(t *testing.T, pinnedVar, otherVar, wantTag string) {
+	t.Helper()
 	ln := listenLocal(t)
 	defer func() { _ = ln.Close() }()
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {
 		t.Fatalf("listener address %T is not *net.TCPAddr", ln.Addr())
 	}
-	mgmtPort := addr.Port
-	proxyPort := freePort(t)
 
 	cmd := helperCmd(t)
 	cmd.Env = append(cmd.Env,
 		"BIND_ADDRESS=127.0.0.1",
-		fmt.Sprintf("PROXY_PORT=%d", proxyPort),
-		fmt.Sprintf("MANAGEMENT_PORT=%d", mgmtPort),
+		fmt.Sprintf("%s=%d", pinnedVar, addr.Port),
+		fmt.Sprintf("%s=0", otherVar),
 		"ENABLED_PACKS=SECRETS,GLOBAL",
 		"USE_AI_DETECTION=false",
 	)
 	cmd.Dir = t.TempDir()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("expected non-zero exit on mgmt port conflict, got success\n%s", out)
+		t.Fatalf("expected non-zero exit on %s conflict, got success\n%s", pinnedVar, out)
 	}
-	if !strings.Contains(string(out), "[MANAGEMENT] Fatal") {
-		t.Errorf("expected '[MANAGEMENT] Fatal' in output, got:\n%s", out)
+	if !strings.Contains(string(out), wantTag) {
+		t.Errorf("expected %q in output, got:\n%s", wantTag, out)
 	}
 }
 
@@ -296,6 +302,11 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 	}
 
 	cmd := helperCmd(t)
+	// Hermeticity: an ambient ENABLED_PACKS in the parent environment would
+	// override the empty file config (env wins in config layering) and
+	// defeat the guard. os/exec keeps the last duplicate env entry, and
+	// loadEnvStringSlice treats an empty value as unset.
+	cmd.Env = append(cmd.Env, "ENABLED_PACKS=")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -330,10 +341,11 @@ func TestMain_HelperProcess_GenerateCA(t *testing.T) {
 	}
 }
 
-// TestMain_HelperProcess_EnvFile_Loaded re-execs the binary with --env-file
+// TestMain_HelperProcess_EnvFile_Applied re-execs the binary with --env-file
 // pointing at a temp file that supplies ENABLED_PACKS, then exits via
-// --generate-ca. Asserts the success branch of main()'s envfile.Apply call.
-func TestMain_HelperProcess_EnvFile_Loaded(t *testing.T) {
+// --generate-ca. Asserts the success branch of main()'s envfile.Apply call
+// only — the run exits before config.Load consumes the loaded values.
+func TestMain_HelperProcess_EnvFile_Applied(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "test.env")
 	if err := os.WriteFile(envPath, []byte("ENABLED_PACKS=SECRETS\n"), 0o600); err != nil {
@@ -423,16 +435,4 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
-}
-
-func waitForLog(t *testing.T, buf *syncBuffer, substr string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(buf.String(), substr) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("did not see %q in log within %v\n%s", substr, timeout, buf.String())
 }

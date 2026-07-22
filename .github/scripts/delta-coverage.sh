@@ -50,7 +50,18 @@ cover_output=$(go tool cover -func="$COVERAGE_FILE")
 failed=0
 checked=0
 
+unscored_files=""
+
 while IFS= read -r file; do
+  # A changed file with no rows in the coverage profile (e.g. excluded by a
+  # GOOS build tag on this runner) cannot be scored here. Disclose it
+  # explicitly instead of silently counting it as covered — the PR must
+  # carry alternate evidence for such files (see the PR template).
+  if ! grep -qF "/$file:" <<< "$cover_output"; then
+    echo "UNSCORED: ${file} — no coverage rows in the profile (build-tag excluded on this platform?); record alternate evidence in the PR's Delta Coverage Report"
+    unscored_files="${unscored_files} ${file}"
+    continue
+  fi
   # Match file path precisely using literal match with trailing colon
   # to prevent substring collisions (e.g. proxy.go matching reverse_proxy.go).
   while IFS= read -r line; do
@@ -68,9 +79,16 @@ while IFS= read -r file; do
     # coverage failure — it's a 0-of-0 ratio. Detect by summing numStmts from
     # all blocks in the raw profile whose start line equals the function's
     # declaration line. If the sum is 0, the function has nothing to cover.
+    # Literal match (-F) so path characters are never regex metachars, and
+    # guarded with `|| true` so a no-match cannot kill the script via
+    # errexit+pipefail. No-match is possible when cover -func reports a
+    # function at its declaration line while its profile blocks start at a
+    # later line (multi-line signature); in that case we must fall through
+    # and score the reported percentage — only a positively-matched 0-of-0
+    # (zero instrumented statements) may be skipped.
     func_start_line=$(echo "$line" | awk -F: '{print $2}')
-    stmt_sum=$(grep -E "/${file}:${func_start_line}\." "$COVERAGE_FILE" \
-      | awk '{sum += $2} END {print sum+0}')
+    stmt_sum=$( (grep -F "/${file}:${func_start_line}." "$COVERAGE_FILE" || true) \
+      | awk '{sum += $2} END {if (NR == 0) print "nomatch"; else print sum+0}')
     if [ "$stmt_sum" = "0" ]; then
       continue
     fi
@@ -88,10 +106,13 @@ done <<< "$changed_files"
 
 echo ""
 echo "Checked ${checked} functions in ${changed_files_count} changed files."
+if [ -n "$unscored_files" ]; then
+  echo "Unscored (no profile rows):${unscored_files}"
+fi
 
 if [ "$failed" -gt 0 ]; then
   echo "ERROR: ${failed} function(s) below ${THRESHOLD}% coverage threshold."
   exit 1
 fi
 
-echo "SUCCESS: All functions in changed files meet ${THRESHOLD}% coverage threshold."
+echo "SUCCESS: All scored functions in changed files meet ${THRESHOLD}% coverage threshold."

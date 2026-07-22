@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestInstallShutdownHandler_GracefulOnSignal(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
-		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- in-test URL from a net.Listener owned by this test
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			t.Error("server still accepting requests after Shutdown")
@@ -41,12 +42,19 @@ func TestInstallShutdownHandler_GracefulOnSignal(t *testing.T) {
 }
 
 func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
+	logs := captureServiceLog(t)
 	hung := make(chan struct{})
 	defer close(hung)
 
+	// arrived guarantees the long-running request has reached the handler
+	// before SIGTERM is sent — without it, a slow request goroutine would
+	// let Shutdown complete instantly and the timeout branch would pass
+	// unexercised (same pattern as the service-lifecycle shutdown test).
+	arrived := make(chan struct{})
 	ln := listenLocal(t)
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			close(arrived)
 			<-hung
 		}),
 		ReadHeaderTimeout: 1 * time.Second,
@@ -59,12 +67,16 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
-		resp, err := http.DefaultClient.Do(req) // #nosec G107,G704 -- in-test URL from a net.Listener owned by this test
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach the handler within 5s")
+	}
 
 	quit := make(chan os.Signal, 1)
 	done := make(chan struct{})
@@ -78,10 +90,21 @@ func TestInstallShutdownHandler_TimeoutPath(t *testing.T) {
 	select {
 	case <-done:
 		elapsed := time.Since(start)
+		// Both bounds matter: an implementation that skips Shutdown (or
+		// calls Close) returns in ~0ms and must fail the lower bound;
+		// one that waits for the drain blows the upper bound.
+		if elapsed < 200*time.Millisecond {
+			t.Errorf("shutdown returned in %v, before the 200ms budget — timeout branch not exercised", elapsed)
+		}
 		if elapsed > 1*time.Second {
 			t.Errorf("shutdown took %v, expected ~200ms (timeout path)", elapsed)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("installShutdownHandler did not return after Shutdown timeout")
+	}
+	// Pin the branch by its distinctive log line: srv.Shutdown returned a
+	// deadline error and installShutdownHandler logged it.
+	if !strings.Contains(logs.String(), "[PROXY] Shutdown error:") {
+		t.Errorf("expected '[PROXY] Shutdown error:' timeout log, got: %q", logs.String())
 	}
 }

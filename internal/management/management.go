@@ -9,15 +9,19 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +38,11 @@ type Server struct {
 	domains   *DomainRegistry
 	token     string           // bearer token for auth; empty = no auth
 	metrics   *metrics.Metrics // nil = no metrics
+
+	mu        sync.Mutex
+	boundAddr net.Addr     // set once ListenAndServe has bound; nil before
+	srv       *http.Server // set with boundAddr; target for Close
+	closed    bool         // sticky: Close called; ListenAndServe must not serve
 }
 
 // DomainRegistry holds the mutable set of AI API domains.
@@ -257,7 +266,7 @@ func (r *DomainRegistry) persist(domains []string) {
 		log.Printf("[DOMAINS] Persist error (close): %v", err)
 		return
 	}
-	if err := os.Rename(tmpName, r.persistPath); err != nil { // #nosec G703 -- paths from trusted config
+	if err := os.Rename(tmpName, filepath.Clean(r.persistPath)); err != nil {
 		_ = os.Remove(tmpName) // best-effort cleanup
 		log.Printf("[DOMAINS] Persist error (rename): %v", err)
 		return
@@ -300,7 +309,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		const prefix = "Bearer "
 		if !strings.HasPrefix(auth, prefix) ||
 			subtle.ConstantTimeCompare([]byte(strings.TrimSpace(auth[len(prefix):])), []byte(s.token)) != 1 {
-			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", r.RemoteAddr, r.URL.Path)
+			log.Printf("[MANAGEMENT] Unauthorized access attempt from %s to %s", strconv.Quote(r.RemoteAddr), strconv.Quote(r.URL.Path))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -442,7 +451,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.domains.Add(req.Domain)
-	log.Printf("[MANAGEMENT] Added AI domain: %s", req.Domain)
+	log.Printf("[MANAGEMENT] Added AI domain: %s", strconv.Quote(req.Domain))
 	writeJSON(w, http.StatusOK, map[string]string{"added": req.Domain})
 }
 
@@ -469,7 +478,7 @@ func (s *Server) handleRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "domain not registered", http.StatusNotFound)
 		return
 	}
-	log.Printf("[MANAGEMENT] Removed AI domain: %s", req.Domain)
+	log.Printf("[MANAGEMENT] Removed AI domain: %s", strconv.Quote(req.Domain))
 	writeJSON(w, http.StatusOK, map[string]string{"removed": req.Domain})
 }
 
@@ -489,14 +498,83 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-// ListenAndServe starts the management HTTP server.
+// ErrAlreadyServing is returned by ListenAndServe when it is called more
+// than once for the same Server and the second bind succeeds (e.g. with
+// ManagementPort 0); with a fixed port the second call fails earlier, at
+// bind, against the first call's own listener. Either way the first
+// server stays bound and owned.
+var ErrAlreadyServing = errors.New("management: ListenAndServe called more than once")
+
+// ListenAndServe starts the management HTTP server. It binds synchronously,
+// publishes the bound address (see Addr), then serves until the listener
+// fails or is closed. Binding before serving lets a caller configure
+// ManagementPort 0 and read the kernel-assigned port back from Addr — the
+// race-free alternative to probing for a free port and re-binding it
+// (issue #140). Single-shot: a second call returns ErrAlreadyServing.
 func (s *Server) ListenAndServe() error {
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort)
-	log.Printf("[MANAGEMENT] Listening on %s", addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.ManagementPort))
+	if err != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed {
+			// A deliberate Close outranks bind noise: the caller asked
+			// for teardown, so report the teardown state rather than an
+			// EADDRINUSE that runManagementAPI would treat as fatal
+			// (review N5).
+			return http.ErrServerClosed
+		}
+		return err
+	}
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	return srv.ListenAndServe()
+	s.mu.Lock()
+	if s.closed {
+		// Close won the race with startup: release the listener and
+		// report the same terminal state a post-serve Close produces,
+		// so the stop request is never silently lost.
+		s.mu.Unlock()
+		_ = ln.Close()
+		return http.ErrServerClosed
+	}
+	if s.srv != nil {
+		// Single-shot: a second ListenAndServe would overwrite srv and
+		// boundAddr, orphaning the first server from Close's reach.
+		s.mu.Unlock()
+		_ = ln.Close()
+		return ErrAlreadyServing
+	}
+	s.boundAddr = ln.Addr()
+	s.srv = srv
+	s.mu.Unlock()
+	log.Printf("[MANAGEMENT] Listening on %s", ln.Addr())
+	return srv.Serve(ln)
+}
+
+// Addr returns the address the management listener was bound to, or nil
+// before ListenAndServe has bound it. The value is not cleared if the
+// serve loop later exits. When the server was configured with
+// ManagementPort 0, this is the only way to learn the actual port.
+func (s *Server) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.boundAddr
+}
+
+// Close immediately closes the management listener and any active
+// connections; a blocked ListenAndServe then returns http.ErrServerClosed.
+// Close is sticky: called before ListenAndServe has bound, it makes a
+// concurrent or later ListenAndServe release its listener and return
+// http.ErrServerClosed instead of serving. Returns nil if the server never
+// bound a listener.
+func (s *Server) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	if s.srv == nil {
+		return nil
+	}
+	return s.srv.Close()
 }

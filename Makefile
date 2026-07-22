@@ -27,9 +27,30 @@ test:
 lint:
 	golangci-lint run ./...
 
+# Pass 1: production code, every rule armed, zero exclusions.
+# Pass 2: adds _test.go files. Two rules are excluded there, each because the
+# rule's letter is category-impossible for this repo's tests, not because the
+# findings are inconvenient:
+#   G101 (hardcoded credentials): the SECRETS/PII packs' test corpus is
+#     credential-shaped by design — a secrets detector must be tested against
+#     realistic-looking values. All fixtures are synthetic (CLAUDE.md
+#     invariant, PII-scanned); a value that stopped looking like a secret
+#     would defeat the test.
+#   G204 (subprocess with variable): the helper-process pattern re-execs the
+#     test binary via os.Executable(), which can never be a compile-time
+#     constant. Taint-based command injection (G702) stays armed and would
+#     still catch genuinely tainted exec arguments in tests.
+#
+# Engine version: gosec v2.28.0 (CI pins this exact version in ci.yml; the
+# "zero findings, zero exclusions" result is engine-dependent — taint
+# sanitizer recognition varies across releases, so install the pinned
+# version locally to reproduce CI: go install
+# github.com/securego/gosec/v2/cmd/gosec@v2.28.0).
 security:
-	@echo "Running gosec security scanner..."
-	gosec -exclude=G104,G304,G703,G706 $$(go list -f '{{.Dir}}' ./...)
+	@echo "Running gosec security scanner (production, all rules)..."
+	gosec $$(go list -f '{{.Dir}}' ./...)
+	@echo "Running gosec security scanner (tests included)..."
+	gosec -tests -exclude=G101,G204 $$(go list -f '{{.Dir}}' ./...)
 
 vulncheck:
 	@echo "Running govulncheck..."

@@ -87,3 +87,32 @@ func writeTestCert(t *testing.T) (string, []byte) {
 	}
 	return path, der
 }
+
+// TestIsSHA1Thumbprint pins the validator the Windows uninstall path uses
+// before passing a thumbprint to certutil: exactly 40 uppercase hex chars,
+// nothing else. The rejection cases are shapes that could smuggle flags or
+// argument structure into an exec if the validator regressed.
+func TestIsSHA1Thumbprint(t *testing.T) {
+	valid := strings.Repeat("AB12", 10)
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "valid 40 uppercase hex", in: valid, want: true},
+		{name: "empty", in: "", want: false},
+		{name: "too short", in: valid[:39], want: false},
+		{name: "too long", in: valid + "A", want: false},
+		{name: "lowercase hex rejected", in: strings.ToLower(valid), want: false},
+		{name: "flag injection", in: "-delstore" + valid[:31], want: false},
+		{name: "space smuggling", in: valid[:20] + " " + valid[:19], want: false},
+		{name: "non-hex letter", in: valid[:39] + "G", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSHA1Thumbprint(tc.in); got != tc.want {
+				t.Errorf("isSHA1Thumbprint(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

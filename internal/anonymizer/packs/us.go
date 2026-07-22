@@ -13,7 +13,7 @@ func validateSSN(s string) bool {
 	digits := make([]byte, 0, 9)
 	for _, c := range s {
 		if c >= '0' && c <= '9' {
-			digits = append(digits, byte(c)-'0') // #nosec G115 -- c is range-checked to '0'..'9'
+			digits = append(digits, byte(c)-'0') // #nosec G115 -- c is range-checked to '0'..'9'. TODO(#146): suppression removal tracked.
 		}
 	}
 	if len(digits) != 9 {

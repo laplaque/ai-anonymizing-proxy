@@ -1406,7 +1406,7 @@ func TestHandleMITMTunnel(t *testing.T) {
 
 	// Act as a TLS client on the hijacked connection.
 	roots := x509.NewCertPool()
-	certPEM, readErr := os.ReadFile(certFile)
+	certPEM, readErr := os.ReadFile(filepath.Clean(certFile))
 	if readErr != nil {
 		t.Fatalf("read CA cert: %v", readErr)
 	}

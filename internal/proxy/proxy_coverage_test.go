@@ -309,7 +309,7 @@ func TestHandleTunnel_MITMBranch(t *testing.T) {
 	// the hijacker fallback). If the AI-domain branch were removed, the request
 	// would route straight to handleOpaqueTunnel — same 502, but no MITM log — so
 	// asserting the status alone does not prove MITM routing for this privacy path.
-	if !strings.Contains(logs.String(), "Intercepting CONNECT api.example.com:443") {
+	if !strings.Contains(logs.String(), `Intercepting CONNECT "api.example.com:443"`) {
 		t.Errorf("expected handleTunnel to route the AI domain into MITM (Intercepting CONNECT log), got: %q", logs.String())
 	}
 	if w.Code != http.StatusBadGateway {
@@ -534,7 +534,7 @@ func TestForward_URLHostFallbackPrivate(t *testing.T) {
 	// the URL.Host fallback ran (it logs the filled-in r.URL.Host = "10.0.0.1").
 	// Asserting the 403 alone is environment-coupled: an outbound proxy can also
 	// return 403 for a private dial even if this block branch were removed.
-	if !strings.Contains(logs.String(), "Blocked request to private address: 10.0.0.1") {
+	if !strings.Contains(logs.String(), `Blocked request to private address: "10.0.0.1"`) {
 		t.Errorf("expected private-address block log for the fallback host, got: %q", logs.String())
 	}
 	if w.Code != http.StatusForbidden {
