@@ -118,6 +118,46 @@ func TestRunWarnsForBuildExcludedFile(t *testing.T) {
 	}
 }
 
+// TestRunAcceptsFilesWithoutInstrumentableCode pins that a built file with no
+// function bodies or literals passes without profile blocks: the coverage
+// instrumenter emits none for types, constants, plain variables or
+// body-less declarations, so their absence is not missing coverage.
+func TestRunAcceptsFilesWithoutInstrumentableCode(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir) // file arguments are relative, as in delta-coverage.sh
+	writeFile(t, dir, "types.go", "package lib\n\ntype T struct{ Value int }\n\ntype Doer interface{ Do() }\n")
+	writeFile(t, dir, "consts.go", "package lib\n\nconst Default = 1\n\nconst (\n\tLow = iota\n\tHigh\n)\n\nvar Names = []string{\"a\"}\n")
+	writeFile(t, dir, "external.go", "package lib\n\ntype U int\n\nfunc External() int\n")
+	writeFile(t, dir, "excluded_types.go", "//go:build funccoverage_never\n\npackage lib\n\ntype W int\n")
+	profile := writeFile(t, dir, "cover.out", "mode: set\nfixture/covered.go:3.1,3.5 1 1\n")
+	var out, warn bytes.Buffer
+	if err := run([]string{profile, "types.go", "consts.go", "external.go", "excluded_types.go"}, &out, &warn); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out.Len() != 0 || warn.Len() != 0 {
+		t.Errorf("stdout = %q, stderr = %q; want both empty", out.String(), warn.String())
+	}
+}
+
+// TestRunRejectsUninstrumentedEmptyFunction pins the other side of that rule:
+// the instrumenter emits a (zero-statement) block even for an empty body, so
+// a built file whose only function is empty but which has no blocks was left
+// out of the coverage run.
+func TestRunRejectsUninstrumentedEmptyFunction(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir) // file arguments are relative, as in delta-coverage.sh
+	writeFile(t, dir, "empty.go", "package lib\n\ntype T struct{}\n\nfunc (T) Marker() {}\n")
+	profile := writeFile(t, dir, "cover.out", "mode: set\nfixture/covered.go:3.1,3.5 1 1\n")
+	var out bytes.Buffer
+	err := run([]string{profile, "empty.go"}, &out, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "no blocks in the coverage profile for empty.go,") {
+		t.Fatalf("run error = %v, want empty.go reported as uninstrumented", err)
+	}
+	if out.String() != "empty.go:5\tMarker\t0\t0\n" {
+		t.Errorf("output = %q", out.String())
+	}
+}
+
 // TestRunFailsClosed pins that unusable input is an error, never an empty
 // (and therefore passing) report.
 func TestRunFailsClosed(t *testing.T) {

@@ -49,8 +49,10 @@ echo ""
 # line/column extent (the rule `go tool cover -func` uses), so blocks of
 # package-level function literals never count toward a neighboring
 # declaration. Fail closed if the helper cannot be built, a file cannot be
-# parsed, or a changed file built on this platform has no blocks in the
-# profile (its package was left out of the coverage run). The helper lives in
+# parsed, or a changed file built on this platform has function bodies or
+# literals but no blocks in the profile (its package was left out of the
+# coverage run). A file with only types, constants or plain variables has no
+# blocks by construction and nothing to check. The helper lives in
 # tools/funccoverage so that ./... covers and gates it too.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER_SRC="$SCRIPT_DIR/../../tools/funccoverage"
@@ -80,7 +82,8 @@ while IFS=$'\t' read -r location func_name covered total; do
   # empty body, such as an interface-compliance method), so it has nothing
   # to cover: 0 of 0 is not a failure. The only other source of 0 is a file
   # that build constraints exclude on this platform, which funccoverage
-  # names in a warning; any other uninstrumented file already failed above.
+  # names in a warning; any other uninstrumented file with executable code
+  # already failed above.
   if [ "$total" -eq 0 ]; then
     skipped=$((skipped + 1))
     continue

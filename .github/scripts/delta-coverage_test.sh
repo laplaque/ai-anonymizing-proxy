@@ -279,6 +279,105 @@ EOF
 run_case "build-excluded changed file is skipped with a warning" 0 "$dir" \
   "funccoverage: warning: lib/excluded.go is excluded by build constraints" "Checked 1 functions" "SUCCESS"
 
+# 9. A changed file with only type declarations has no executable code, so
+# the compiler emits no coverage blocks for it; it must not fail the gate.
+dir="$(new_repo types-only-file)"
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cat > "$dir/lib/lib.go" <<'EOF'
+package lib
+
+func Covered(n int) int { return n + 1 }
+EOF
+cat > "$dir/lib/types.go" <<'EOF'
+package lib
+
+type T struct {
+	Value int
+}
+
+type Doer interface {
+	Do(n int) int
+}
+EOF
+run_case "types-only changed file is accepted" 0 "$dir" \
+  "Checked 1 functions" "SUCCESS" "!no blocks" "!FAIL"
+
+# 10. Likewise a file with only constants and variables without function
+# literals.
+dir="$(new_repo constants-only-file)"
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cp "$work/types-only-file/lib/lib.go" "$dir/lib/lib.go"
+cat > "$dir/lib/consts.go" <<'EOF'
+package lib
+
+const Default = 1
+
+const (
+	Low  = iota
+	High
+)
+
+var Names = []string{"a", "b"}
+EOF
+run_case "constants-only changed file is accepted" 0 "$dir" \
+  "Checked 1 functions" "SUCCESS" "!no blocks" "!FAIL"
+
+# 11. Mixed declarations and executable code: the types and constants add
+# nothing, and the file's function is checked as usual.
+dir="$(new_repo mixed-declarations-covered)"
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cat > "$dir/lib/lib.go" <<'EOF'
+package lib
+
+type T struct{ Value int }
+
+const Default = 1
+
+func Covered(n int) int { return n + Default }
+EOF
+run_case "mixed declarations with covered code pass" 0 "$dir" \
+  "Checked 1 functions" "SUCCESS"
+
+# 12. Control: the same mixed file with an uncovered function still fails.
+dir="$(new_repo mixed-declarations-uncovered)"
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cat > "$dir/lib/lib.go" <<'EOF'
+package lib
+
+type T struct{ Value int }
+
+const Default = 1
+
+func Covered(n int) int { return n + 1 }
+
+func Uncovered(n int) int {
+	m := n * Default
+	return m
+}
+EOF
+run_case "mixed declarations with uncovered code fail" 1 "$dir" \
+  "FAIL: lib/lib.go:9: Uncovered 0.0% (0/2 statements)"
+
+# 13. Control: an executable file missing from the profile still fails,
+# and a types-only file beside it in the same uninstrumented directory is
+# not reported in its place.
+dir="$(new_repo executable-missing-with-types)"
+mkdir -p "$dir/.hidden"
+cat > "$dir/.hidden/types.go" <<'EOF'
+package hidden
+
+type T struct{ Value int }
+EOF
+cat > "$dir/.hidden/tool.go" <<'EOF'
+package hidden
+
+func Tool(n int) int { return n + 1 }
+EOF
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cp "$work/types-only-file/lib/lib.go" "$dir/lib/lib.go"
+run_case "executable file missing from the profile fails beside a types-only file" 1 "$dir" \
+  "funccoverage: no blocks in the coverage profile for .hidden/tool.go, although" "!types.go, although" "ERROR: funccoverage failed" "!SUCCESS"
+
 echo ""
 echo "${passed} passed, ${failed} failed"
 [ "$failed" -eq 0 ]

@@ -21,16 +21,20 @@
 // "func literal", so their statements are checked rather than dropped or
 // attributed to a neighboring declaration.
 //
-// A file with no blocks in the profile was not instrumented by the test run.
-// If build constraints exclude it on this platform (a _windows.go file on a
-// Linux runner, say), funccoverage lists its functions with 0 total
-// statements and prints a warning naming the file to stderr: nothing here
-// could have covered it. Otherwise its package was left out of the coverage
-// run, which is an error: an uninstrumented file must not pass as one with
-// nothing to cover.
+// The coverage instrumenter emits a block for every function body and
+// function literal, even an empty one, so a file with neither (only types,
+// constants, plain variables or body-less declarations) has no blocks and
+// nothing to check. A file that has such units but no blocks in the profile
+// was not instrumented. If build constraints exclude it on this platform (a
+// _windows.go file on a Linux runner, say), funccoverage lists its functions
+// with 0 total statements and prints a warning naming the file to stderr:
+// nothing here could have covered it. Otherwise its package was left out of
+// the coverage run, which is an error: an uninstrumented file must not pass
+// as one with nothing to cover.
 //
 // It exits non-zero if the profile or any file cannot be read or parsed, or
-// if a file built on this platform has no blocks in the profile.
+// if a file built on this platform has function bodies or literals but no
+// blocks in the profile.
 package main
 
 import (
@@ -81,20 +85,29 @@ func run(args []string, w, warn io.Writer) error {
 	var uninstrumented []string
 	for _, file := range args[1:] {
 		fileBlocks := blocksFor(blocks, file)
+		built := true
 		if len(fileBlocks) == 0 {
-			built, err := build.Default.MatchFile(filepath.Dir(file), filepath.Base(file))
-			if err != nil {
+			var err error
+			if built, err = build.Default.MatchFile(filepath.Dir(file), filepath.Base(file)); err != nil {
 				return err
 			}
-			if built {
-				uninstrumented = append(uninstrumented, file)
-			} else {
-				_, _ = fmt.Fprintf(warn, "funccoverage: warning: %s is excluded by build constraints on %s/%s; not checked\n",
-					file, build.Default.GOOS, build.Default.GOARCH)
-			}
 		}
-		if err := reportFile(w, file, fileBlocks); err != nil {
+		units, err := reportFile(w, file, fileBlocks)
+		if err != nil {
 			return err
+		}
+		// The coverage instrumenter emits a block for every function body and
+		// function literal, even an empty one, and for nothing else. A file
+		// without such units (types, constants, plain variables, body-less
+		// declarations) legitimately has no blocks; one with units but no
+		// blocks was not instrumented.
+		switch {
+		case units == 0 || len(fileBlocks) > 0:
+		case built:
+			uninstrumented = append(uninstrumented, file)
+		default:
+			_, _ = fmt.Fprintf(warn, "funccoverage: warning: %s is excluded by build constraints on %s/%s; not checked\n",
+				file, build.Default.GOOS, build.Default.GOARCH)
 		}
 	}
 	if len(uninstrumented) > 0 {
@@ -208,21 +221,24 @@ func blocksFor(blocks []block, file string) []block {
 
 // reportFile parses file and writes one line per function declaration with
 // a body and per function literal outside any declaration, counting the
-// blocks that lie within each extent.
-func reportFile(w io.Writer, file string, blocks []block) error {
+// blocks that lie within each extent. It returns the number of lines, which
+// is the number of units the coverage instrumenter emits blocks for.
+func reportFile(w io.Writer, file string, blocks []block) (int, error) {
 	fset := token.NewFileSet()
 	parsed, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	units := 0
 	for _, decl := range parsed.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			if fn.Body == nil {
 				continue // implemented elsewhere (assembly, linkname): no statements
 			}
 			if err := reportExtent(w, fset, file, fn.Name.Name, fn, blocks); err != nil {
-				return err
+				return units, err
 			}
+			units++
 			continue
 		}
 		// Outermost function literals in package-level declarations; literals
@@ -237,11 +253,12 @@ func reportFile(w io.Writer, file string, blocks []block) error {
 		})
 		for _, lit := range lits {
 			if err := reportExtent(w, fset, file, "func literal", lit, blocks); err != nil {
-				return err
+				return units, err
 			}
+			units++
 		}
 	}
-	return nil
+	return units, nil
 }
 
 // reportExtent writes the row for one function extent.
