@@ -157,10 +157,12 @@ curl http://localhost:8081/metrics
   checked at TCP connection time, not DNS resolution time, to prevent DNS rebinding attacks.
 - **Isolated outbound transport.** The proxy transport never reads `HTTP_PROXY` / `HTTPS_PROXY`
   from the environment; upstream proxy chaining is configured explicitly via `UPSTREAM_PROXY`.
-- **Request bodies.** There is no built-in request-size cutoff: bodies are anonymized as a
-  stream with bounded memory and, above 1 MiB, spooled to a temporary file encrypted with a
-  per-request key held only in memory (raw, un-anonymized bytes never touch disk). Operators may
-  set `maxRequestBodyBytes` to reject larger bodies with HTTP 413; see
+- **Request bodies.** There is no built-in request-size cutoff: bodies declared as JSON are
+  anonymized as a stream and, above 1 MiB, spooled to a temporary file encrypted with a
+  per-request key held only in memory (raw, un-anonymized bytes never touch disk). A body declared
+  as JSON that is not valid JSON is rejected with HTTP 400 rather than partially anonymized.
+  Operators may set `maxRequestBodyBytes` to reject larger bodies with HTTP 413 (an invalid value
+  stops startup); see
   [Request body size and resources](docs/configuration.md#request-body-size-and-resources).
   Ollama response reads are capped at 10 MB.
 - **Error sanitization.** Upstream errors are logged server-side but never exposed to clients
@@ -180,9 +182,13 @@ curl http://localhost:8081/metrics
   when a 33-byte suffix guard confirms no partial token straddles the boundary.
 - **Large requests are bounded by regex detection speed.** Anonymization processes about
   4.5 MB/s (GLOBAL pack) to 1.15 MB/s (default packs) per request; a 64 MiB request with the
-  default packs takes about a minute before it is forwarded. Memory does not grow with body size,
-  but each JSON string value is held whole, so a single very large string costs memory in
-  proportion to its size. See [Request body size and resources](docs/configuration.md#request-body-size-and-resources).
+  default packs takes about a minute before it is forwarded.
+- **Request memory depends on the largest string and on distinct PII.** Memory does not grow with
+  body size as such, but each JSON string value is held whole (up to ≈ 8.5× its size for prose
+  with PII), and every distinct detected value stays mapped until the response ends (≈ 110–140
+  bytes each). Size `maxRequestBodyBytes` to your memory and concurrency; the documented
+  reference envelope is 4 GiB for 4 concurrent requests of up to 112 MiB. See
+  [Request body size and resources](docs/configuration.md#request-body-size-and-resources).
 - **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token
   auth. Without it, anyone with network access to port 8081 can add or remove domains.
 

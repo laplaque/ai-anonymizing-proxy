@@ -114,7 +114,7 @@ workload rationale) is gone.
 
 | Resource | Bound |
 |---|---|
-| Memory | ≈ 1 MiB spool buffer + 128 KiB I/O buffers + a multiple of the **largest single JSON string value**, which detection needs whole. Measured peak RSS is ≈ 1.6× that string for base64 data and up to ≈ 7.5× for prose that contains PII matches and escapes. It does not grow with the number of strings or the total body size, but a single string is held whole, so one very large string costs memory in proportion to its size (a 128 MiB prose string peaked at 981 MiB). Use `maxRequestBodyBytes` to cap it. |
+| Memory | Two terms, both per in-flight request (see [Memory envelope](#memory-envelope) below). **Workspace:** ≈ 1 MiB spool buffer + 128 KiB I/O buffers + a multiple of the **largest single JSON string value**, which detection needs whole: measured ≈ 1.6× that string for base64 data and up to ≈ 8.5× for prose with PII matches and escapes (a 128 MiB prose string peaked at 981–1085 MiB). **Session mappings:** every distinct detected value and its token stay in memory until the response has been de-anonymized, however long the response takes: measured 110–140 bytes per distinct value (1M distinct addresses in one request held 133 MiB). Neither term grows with body size as such; the first grows with the largest string, the second with the number of distinct PII values. Bodies not declared as JSON are held whole (see Processing model). |
 | Disk | The anonymized body size, for bodies over 1 MiB, until the request completes. |
 | CPU | Regex detection dominates: about 4.3–4.8 MB/s with the GLOBAL pack and about 1.1–1.2 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core, 0–10% slower than the previous implementation in the measurements below. Concurrent requests use separate cores. |
 
@@ -129,6 +129,30 @@ to the client as an upstream error.
 | 413 Request Entity Too Large | The body exceeds the operator-set `maxRequestBodyBytes` (checked against `Content-Length` before reading, and while streaming bodies of unknown length). |
 | 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload), or it is declared as JSON but is not valid JSON. |
 | 507 Insufficient Storage | The proxy could not buffer the body: `requestSpoolDir` is missing, not writable, or full. |
+
+<a id="memory-envelope"></a>**Memory envelope.** The proxy does not choose a memory budget for you, and running out of
+memory terminates the process (it cannot answer 507 for that). Size `maxRequestBodyBytes` to the
+memory you give the proxy and the number of requests you expect at once:
+
+```text
+peak memory ≈ concurrent requests × 8.5 × maxRequestBodyBytes        (worst case: one prose string)
+```
+
+Dense distinct PII stays below this: about 5× the body at peak (1M distinct addresses in a 33 MiB
+body peaked at 159 MiB). The **reference envelope**, verified with
+`BenchmarkFullContextEnvelope` (4 vCPU, GLOBAL pack, production build): **4 GiB, 4 concurrent
+requests, `maxRequestBodyBytes` = 117440512 (112 MiB)**. Each scenario sends four requests of about
+110 MiB at once, and all complete:
+
+| Four concurrent requests of ≈ 110 MiB | Time | Peak RSS |
+|---|---|---|
+| one prose string with PII each (largest-string term) | 27.5 s | 2688 MiB |
+| prose dense with distinct addresses, ≈ 3.3M per request (mapping term) | 41.7 s | 2805 MiB |
+| mixed full context: tool history, prose, 8 MiB inline images | 28.4 s | 187 MiB |
+
+Scale the limit with the formula for other budgets (for example 8 GiB and 4 requests: 224 MiB). With
+no limit, a single prose string of size *S* needs about 8.5 × *S* of memory per request. Typical
+full-context requests, where no single string is huge, use far less (the last row).
 
 **Optional administrative limit.** `maxRequestBodyBytes` (`MAX_REQUEST_BODY_BYTES`) caps the
 request body as received from the client: it counts input bytes, before anonymization (the
@@ -162,12 +186,17 @@ implementation before #152 on the same data.
 | one 128 MiB prose string with PII | GLOBAL | 28.2 s | 981 MiB | rejected (413) |
 | one 16 MiB base64 string | GLOBAL | 3.3 s | 33 MiB | 62 MiB |
 | one 128 MiB base64 string | GLOBAL | 25.5 s | 201 MiB | rejected (413) |
+| 100 000 distinct addresses (3.3 MiB) | GLOBAL | 0.7 s | 18 MiB (10.4 MiB retained by the session map) | — |
+| 1 000 000 distinct addresses (33 MiB) | GLOBAL | 7.5 s | 159 MiB (133 MiB retained) | — |
+| 4 × 1 000 000 distinct addresses concurrently | GLOBAL | 12.2 s | 785 MiB (533 MiB retained) | — |
 
 A single huge prose string costs slightly more than before (129 vs 108 MiB at 16 MiB) because
 its original escaped bytes are kept so that an unchanged string can be forwarded byte for byte.
 
 Reproduce with `go test -run '^$' -bench 'BenchmarkFullContext' -benchtime 1x ./internal/proxy/`
 (one scenario per process for meaningful peak RSS); see `internal/proxy/fullcontext_bench_test.go`.
+The session-map rows come from `BenchmarkFullContextHighCardinality` ("retained" is the heap the
+maps still hold after the bodies were sent), the envelope from `BenchmarkFullContextEnvelope`.
 The request paths beyond the former 50 MiB limit are verified byte for byte with the default packs
 by `TestFullContextBeyondFormerLimitDefaultPacks`.
 

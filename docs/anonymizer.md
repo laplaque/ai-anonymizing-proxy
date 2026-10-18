@@ -47,7 +47,9 @@ system message — the same rules as before.
 Memory per request is the I/O buffers plus a small multiple of the largest single string value,
 which detection needs whole: regex patterns have no fixed maximum match length, so splitting a
 string could miss PII that spans the split. Measured peak RSS is ≈ 1.6× that string for base64
-data and up to ≈ 7.5× for prose with PII matches; see
+data and up to ≈ 8.5× for prose with PII matches. Separately, every distinct detected value and
+its token stay in the session map until the response is de-anonymized, about 110–140 bytes each;
+see
 [Request body size and resources](configuration.md#request-body-size-and-resources). Container nesting is limited to 10 000 levels, the same limit as
 `encoding/json`. The proxy writes the output into a
 [bounded-memory spool](configuration.md#request-body-size-and-resources), never the raw input.

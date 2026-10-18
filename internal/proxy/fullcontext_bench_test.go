@@ -251,3 +251,155 @@ func BenchmarkFullContextConcurrent(b *testing.B) {
 		})
 	}
 }
+
+// highCardinalityBody returns a chat request whose prose carries n distinct
+// synthetic addresses, 50 per message.
+func highCardinalityBody(n int) []byte {
+	var b bytes.Buffer
+	b.WriteString(`{"model":"gpt-x","messages":[`)
+	for i := 0; i < n; i += 50 {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"role":"user","content":"`)
+		for j := i; j < min(i+50, n); j++ {
+			fmt.Fprintf(&b, "contact u%07d@example.com now. ", j)
+		}
+		b.WriteString(`"}`)
+	}
+	b.WriteString(`]}`)
+	return b.Bytes()
+}
+
+// BenchmarkFullContextHighCardinality measures the memory term that grows
+// with the number of distinct detected values rather than with the largest
+// string: each value and its token stay in the request's session map until
+// the response has been de-anonymized, however long that response takes.
+// conc requests run at once, as conc long-lived responses would hold them.
+//
+//	retained-MiB       heap still held by the session maps after the bodies
+//	                   were anonymized and their spools released (after GC)
+//	retained-B/value   retained-MiB per distinct value
+func BenchmarkFullContextHighCardinality(b *testing.B) {
+	for _, sc := range []struct{ conc, values int }{
+		{1, 10_000}, {1, 100_000}, {1, 1_000_000}, {4, 100_000}, {4, 1_000_000},
+	} {
+		b.Run(fmt.Sprintf("n=%d/values=%d/packs=global", sc.conc, sc.values), func(b *testing.B) {
+			body := highCardinalityBody(sc.values)
+			srv, _ := benchProxy(b, benchPackSets["global"])
+			b.SetBytes(int64(len(body) * sc.conc))
+			b.ResetTimer()
+			for range b.N {
+				runtime.GC()
+				var before runtime.MemStats
+				runtime.ReadMemStats(&before)
+				sampler := startMemSampler()
+				sessions := make([]string, sc.conc)
+				errs := make([]error, sc.conc)
+				var wg sync.WaitGroup
+				for i := range sc.conc {
+					wg.Go(func() {
+						req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+							"http://localhost/v1/chat/completions", bytes.NewReader(body))
+						req.ContentLength = int64(len(body))
+						req.Header.Set("Content-Type", "application/json")
+						sid, release, err := srv.anonymizeRequestBody(req)
+						if err == nil {
+							release() // keep only what outlives the upload: the session map
+						}
+						sessions[i], errs[i] = sid, err
+					})
+				}
+				wg.Wait()
+				sampler.finish(b)
+				for i, err := range errs {
+					if err != nil {
+						b.Fatalf("request %d: %v", i, err)
+					}
+					if n := srv.anon.SessionTokenCount(sessions[i]); n != sc.values {
+						b.Fatalf("request %d recorded %d tokens, want %d", i, n, sc.values)
+					}
+				}
+				runtime.GC()
+				var held runtime.MemStats
+				runtime.ReadMemStats(&held)
+				retained := float64(held.HeapAlloc) - float64(before.HeapAlloc)
+				b.ReportMetric(retained/(1<<20), "retained-MiB")
+				b.ReportMetric(retained/float64(sc.values*sc.conc), "retained-B/value")
+				for _, sid := range sessions {
+					srv.anon.DeleteSession(sid)
+				}
+			}
+			b.ReportMetric(float64(len(body))/(1<<20), "body-MiB")
+		})
+	}
+}
+
+// envelopeLimit is the per-request cap of the documented reference envelope
+// (docs/configuration.md): 4 concurrent requests in 4 GiB of proxy memory.
+const envelopeLimit = 112 << 20
+
+// BenchmarkFullContextEnvelope runs the reference envelope's worst cases:
+// four concurrent requests of about envelopeLimit bytes each, all of the same
+// shape: one prose string with PII (the largest-string term), a mixed
+// full-context request with tool history and inline images, or prose dense
+// with distinct addresses (the session-map term). The proxy runs with
+// maxRequestBodyBytes = envelopeLimit, so every request must pass the cap
+// and complete.
+func BenchmarkFullContextEnvelope(b *testing.B) {
+	const conc = 4
+	shapes := map[string]func() (io.Reader, int64){
+		"single-prose-string": func() (io.Reader, int64) {
+			wl := fullContextWorkload{turns: 1, proseBytes: envelopeLimit * 97 / 100, instruction: fullContextInstruction}
+			raw, _, _ := wl.digests()
+			return wl.rawStream(), raw.n
+		},
+		"mixed-full-context": func() (io.Reader, int64) {
+			wl := workloadOfSize(envelopeLimit>>20 - 8)
+			raw, _, _ := wl.digests()
+			return wl.rawStream(), raw.n
+		},
+		"dense-distinct-pii": func() (io.Reader, int64) {
+			body := highCardinalityBody(envelopeLimit / 35)
+			return bytes.NewReader(body), int64(len(body))
+		},
+	}
+	for _, name := range []string{"single-prose-string", "mixed-full-context", "dense-distinct-pii"} {
+		b.Run(fmt.Sprintf("n=%d/shape=%s/limit=%dMiB/packs=global", conc, name, envelopeLimit>>20), func(b *testing.B) {
+			srv, up := benchProxy(b, benchPackSets["global"])
+			srv.cfg.MaxRequestBodyBytes = envelopeLimit
+			host := backendHostPort(&testing.T{}, up.URL, "http")
+			_, size := shapes[name]()
+			if size > envelopeLimit {
+				b.Fatalf("%s request is %d bytes, above the %d-byte cap", name, size, envelopeLimit)
+			}
+			b.SetBytes(size * conc)
+			b.ResetTimer()
+			for range b.N {
+				sampler := startMemSampler()
+				codes := make([]int, conc)
+				var wg sync.WaitGroup
+				for i := range conc {
+					wg.Go(func() {
+						body, n := shapes[name]()
+						req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+							"http://"+host+"/v1/chat/completions", body)
+						req.Host, req.URL.Host, req.ContentLength = host, host, n
+						req.Header.Set("Content-Type", "application/json")
+						w := httptest.NewRecorder()
+						srv.ServeHTTP(w, req)
+						codes[i] = w.Code
+					})
+				}
+				wg.Wait()
+				sampler.finish(b)
+				for i, c := range codes {
+					if c != http.StatusOK {
+						b.Fatalf("request %d: status %d", i, c)
+					}
+				}
+			}
+			b.ReportMetric(float64(size)/(1<<20), "body-MiB")
+		})
+	}
+}
