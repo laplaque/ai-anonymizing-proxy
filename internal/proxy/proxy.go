@@ -557,14 +557,20 @@ func (e *clientBodyError) Unwrap() error { return e.err }
 
 // limitedBody reads a client request body, counting bytes, enforcing the
 // optional administrative limit (0 = none), and tagging read failures so
-// they can be told apart from spool failures.
+// they can be told apart from spool failures. It stops as soon as ctx (the
+// request's context) is done, so a request the client abandoned is not read
+// and anonymized to the end.
 type limitedBody struct {
+	ctx   context.Context
 	r     io.Reader
 	limit int64
 	n     int64
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, &clientBodyError{err: err}
+	}
 	n, err := b.r.Read(p)
 	b.n += int64(n)
 	if b.limit > 0 && b.n > b.limit {
@@ -634,7 +640,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 
 	sessionID := newSessionID()
 	spool := bodyspool.New(s.cfg.RequestSpoolDir, requestSpoolMemory)
-	src := &limitedBody{r: r.Body, limit: limit}
+	src := &limitedBody{ctx: r.Context(), r: r.Body, limit: limit}
 	streamed := declaresJSON(r.Header.Get("Content-Type"))
 
 	anonStart := time.Now()

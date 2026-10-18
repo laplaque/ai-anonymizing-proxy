@@ -127,7 +127,7 @@ to the client as an upstream error.
 | Status | Cause |
 |---|---|
 | 413 Request Entity Too Large | The body exceeds the operator-set `maxRequestBodyBytes` (checked against `Content-Length` before reading, and while streaming bodies of unknown length). |
-| 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload), or it is declared as JSON but is not valid JSON. |
+| 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload, which cancels the request: reading and anonymization stop at the next read), or it is declared as JSON but is not valid JSON. |
 | 507 Insufficient Storage | The proxy could not buffer the body: `requestSpoolDir` is missing, not writable, or full. |
 
 <a id="memory-envelope"></a>**Memory envelope.** The proxy does not choose a memory budget for you, and running out of
