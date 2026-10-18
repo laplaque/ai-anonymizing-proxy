@@ -121,8 +121,10 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 	shutdownDeadline = 50 * time.Millisecond
 
 	hold := make(chan struct{})
+	entered := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hold", func(w http.ResponseWriter, _ *http.Request) {
+		close(entered) // the request is now in flight, so Shutdown must wait
 		<-hold
 		w.WriteHeader(http.StatusOK)
 	})
@@ -153,25 +155,32 @@ func TestRunServiceLifecycle_ShutdownTimeoutLogged(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}()
-	// Give the request a moment to land.
-	time.Sleep(50 * time.Millisecond)
-
-	requests <- cmdStop
-
-	// Release the holding request so Shutdown's drain can complete.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(hold)
-	}()
-
+	// Stop only once the handler holds the request; a fixed sleep raced
+	// with the request under -race, so Shutdown sometimes succeeded and the
+	// timeout branch went untested.
 	select {
-	case code := <-done:
-		if code != 0 {
-			t.Errorf("exit code = %d, want 0 (Shutdown-timeout path still exits clean)", code)
-		}
+	case <-entered:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("lifecycle did not exit within 5s on shutdown timeout")
+		t.Fatal("request never reached the handler")
 	}
+
+	logs := captureLog(t, func() {
+		requests <- cmdStop
+
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Errorf("exit code = %d, want 0 (Shutdown-timeout path still exits clean)", code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("lifecycle did not exit within 5s on shutdown timeout")
+		}
+	})
+	if !strings.Contains(logs, "[SERVICE] shutdown: context deadline exceeded") {
+		t.Errorf("shutdown timeout not logged; got %q", logs)
+	}
+	// Release the holding request so its client goroutine finishes.
+	close(hold)
 	<-reqDone
 }
 
