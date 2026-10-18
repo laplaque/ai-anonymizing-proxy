@@ -135,10 +135,12 @@ func parseContentEncoding(values []string) ([]*contentCoding, error) {
 			}
 			c, ok := supportedCodings[tok]
 			if !ok {
+				// The token is client-controlled header data; it is kept out of
+				// the error because callers log it.
 				return nil, &requestBodyError{
 					status: http.StatusUnsupportedMediaType,
 					msg:    "unsupported Content-Encoding",
-					err:    fmt.Errorf("content coding %q is not supported", tok),
+					err:    errUnsupportedCoding,
 				}
 			}
 			codings = append(codings, c)
@@ -204,6 +206,9 @@ func encodeBody(dst io.Writer, data []byte, codings []*contentCoding) error {
 	}
 	return nil
 }
+
+// errUnsupportedCoding reports a Content-Encoding token outside supportedCodings.
+var errUnsupportedCoding = errors.New("content coding is not supported")
 
 // errTrailingData reports bytes after the end of a compressed stream.
 var errTrailingData = errors.New("trailing data after compressed stream")

@@ -736,6 +736,14 @@ func TestParseContentEncoding(t *testing.T) {
 		got, err := parseContentEncoding(tc.values)
 		if tc.wantErr {
 			assertRequestBodyError(t, err, http.StatusUnsupportedMediaType)
+			if !errors.Is(err, errUnsupportedCoding) {
+				t.Fatalf("parseContentEncoding(%q): expected errUnsupportedCoding, got %v", tc.values, err)
+			}
+			for _, v := range tc.values {
+				if strings.Contains(err.Error(), v) {
+					t.Fatalf("error %q echoes client header value %q", err.Error(), v)
+				}
+			}
 			continue
 		}
 		if err != nil {
