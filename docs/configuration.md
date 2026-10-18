@@ -85,6 +85,73 @@ Environment variables override the corresponding `proxy-config.json` fields.
 > `proxy-config.json`) instead. This prevents the proxy from accidentally routing its own traffic
 > back through itself when those shell variables are set for clients on the same machine.
 
+## Request body size and resources
+
+The proxy has **no built-in request-size cutoff**. Requests to AI API domains are anonymized as
+a stream and forwarded complete, however large; the former hardcoded 50 MiB limit (which had no
+workload rationale) is gone.
+
+**Processing model.**
+
+1. The client body is read through a 64 KiB buffer and rewritten JSON token by JSON token
+   (see [Request body processing](anonymizer.md#request-body-processing)). Every string value is
+   still anonymized; nothing is skipped because of size.
+2. The **anonymized** output goes to a spool: the first 1 MiB stays in memory; larger bodies move
+   to a temporary file in `requestSpoolDir`, encrypted with AES-256-CTR under a per-request key
+   that exists only in process memory. The file is unlinked as soon as it is created on Linux and
+   macOS (removed after forwarding on Windows). The raw, un-anonymized body is never written to
+   disk.
+3. The body is forwarded with an exact `Content-Length` (and a replayable body for transport
+   retries), then the spool is released.
+
+**Resources per in-flight request.**
+
+| Resource | Bound |
+|---|---|
+| Memory | ≈ 1 MiB spool buffer + 128 KiB I/O buffers + about 5–6× the **largest single JSON string value** (detection needs each string whole). Independent of total body size. |
+| Disk | The anonymized body size, for bodies over 1 MiB, until the request completes. |
+| CPU | Regex detection dominates: about 4.8 MB/s with the GLOBAL pack and about 1.15 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core. Concurrent requests use separate cores. |
+
+**Failures are reported, never truncated or forwarded partially.**
+
+| Status | Cause |
+|---|---|
+| 413 Request Entity Too Large | The body exceeds the operator-set `maxRequestBodyBytes` (checked against `Content-Length` before reading, and while streaming bodies of unknown length). |
+| 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload). |
+| 507 Insufficient Storage | The proxy could not buffer the body: `requestSpoolDir` is missing, not writable, or full. |
+
+**Optional administrative limit.** `maxRequestBodyBytes` (`MAX_REQUEST_BODY_BYTES`) caps the
+anonymized request size; `0`, the default, means no limit. Use it to bound disk and CPU per request
+on shared hosts; it is never applied implicitly.
+
+**Measured capacity** (synthetic OpenAI-style requests with long prose, tool history and inline
+base64 images of 8 MiB each above 16 MiB; one request at a time unless noted; 4 vCPU Linux,
+go1.27.2; peak RSS above the pre-request baseline). The previous implementation is shown for
+comparison where it accepted the request.
+
+| Request | Packs | Time | Peak RSS (streaming) | Peak RSS (previous) |
+|---|---|---|---|---|
+| 4.4 MiB (prose + tools, ≈ 1M tokens) | GLOBAL | 1.1 s | 1.3 MiB | 41 MiB |
+| 17.6 MiB (prose + tools) | GLOBAL | 3.9 s | 1.8 MiB | 180 MiB |
+| 42.4 MiB (with images) | GLOBAL | 9.2 s | 43 MiB | 424 MiB |
+| 67.2 MiB (with images) | GLOBAL | 14.4 s | 48 MiB | rejected (413) |
+| 134 MiB (with images) | GLOBAL | 28.5 s | 47 MiB | rejected (413) |
+| 269 MiB (with images) | GLOBAL | 60 s | 54 MiB | rejected (413) |
+| 67.2 MiB (with images) | default | 61.7 s | 52 MiB | rejected (413) |
+| 8 × 17.6 MiB concurrently | GLOBAL | 9.9 s | 22 MiB | 1345 MiB |
+| 4 × 67.2 MiB concurrently | GLOBAL | 18.5 s | 166 MiB | rejected (413) |
+
+Reproduce with `go test -run '^$' -bench 'BenchmarkFullContext' -benchtime 1x ./internal/proxy/`
+(one scenario per process for meaningful peak RSS); see `internal/proxy/fullcontext_bench_test.go`.
+
+**Not covered here.** Compressed request bodies (`Content-Encoding: gzip`, `zstd`, …) are not
+decoded by this path; they are handled as non-JSON text, which is the defect tracked in #153.
+Verifying compressed full-context requests end to end depends on that fix. Inline base64
+inputs (images, files) are anonymized like any other string; with the default packs they pass
+through unchanged, but some optional packs (e.g. FINANCE_EU, US, NL) can match short spans inside
+base64 and corrupt the payload (#160). Response bodies are unchanged: SSE responses stream, other
+responses are buffered for de-anonymization.
+
 ## Confidence threshold and AI detection
 
 The regex pass assigns a per-pattern confidence score. If any match falls below

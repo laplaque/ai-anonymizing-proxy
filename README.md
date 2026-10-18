@@ -178,6 +178,10 @@ curl http://localhost:8081/metrics
 - **Streaming responses use on-the-fly de-anonymization.** SSE / chunked responses are never
   fully buffered; text is accumulated across consecutive `text_delta` events and flushed only
   when a 33-byte suffix guard confirms no partial token straddles the boundary.
+- **Large requests are bounded by regex detection speed, not memory.** Anonymization processes
+  about 4.8 MB/s (GLOBAL pack) to 1.15 MB/s (default packs) per request; a 64 MiB request with the
+  default packs takes about a minute before it is forwarded. Memory stays bounded by the largest
+  single JSON string. See [Request body size and resources](docs/configuration.md#request-body-size-and-resources).
 - **Management API authentication is optional.** Set `MANAGEMENT_TOKEN` to require bearer token
   auth. Without it, anyone with network access to port 8081 can add or remove domains.
 
