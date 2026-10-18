@@ -3,23 +3,26 @@ package bodyspool
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
 
-// syntheticBody returns n deterministic pseudo-random bytes.
+// syntheticBody returns n reproducible, incompressible bytes (SHA-256 in
+// counter mode).
 func syntheticBody(n int) []byte {
-	r := rand.New(rand.NewPCG(1, 2))
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = byte(r.Uint32())
+	b := make([]byte, 0, n+sha256.Size)
+	var ctr [8]byte
+	for i := uint64(0); len(b) < n; i++ {
+		binary.BigEndian.PutUint64(ctr[:], i)
+		sum := sha256.Sum256(ctr[:])
+		b = append(b, sum[:]...)
 	}
-	return b
+	return b[:n]
 }
 
 // writeInChunks writes b to s in uneven chunks, as a streaming producer does.
@@ -159,7 +162,7 @@ func TestSpoolCreateFailure(t *testing.T) {
 // closedTemp returns a createTemp seam whose file is already closed, so every
 // write to it fails.
 func closedTemp(t *testing.T) func(string, string) (*os.File, error) {
-	return func(dir, pattern string) (*os.File, error) {
+	return func(_, pattern string) (*os.File, error) {
 		f, err := os.CreateTemp(t.TempDir(), pattern)
 		if err != nil {
 			return nil, err

@@ -166,6 +166,47 @@ func BenchmarkFullContext(b *testing.B) {
 	}
 }
 
+// BenchmarkFullContextSingleString measures requests dominated by one JSON
+// string value of sizeMiB, the case that bounds per-request memory: "prose"
+// is one text string with a synthetic email every ~2 KiB (every pattern pass
+// that matches copies the string), "base64" is one inline image data URL
+// (no matches).
+func BenchmarkFullContextSingleString(b *testing.B) {
+	for _, sizeMiB := range []int{16, 64, 128} {
+		for _, kind := range []string{"prose", "base64"} {
+			b.Run(fmt.Sprintf("size=%dMiB/kind=%s/packs=global", sizeMiB, kind), func(b *testing.B) {
+				wl := fullContextWorkload{turns: 1, proseBytes: sizeMiB << 20, instruction: fullContextInstruction}
+				if kind == "base64" {
+					wl.proseBytes = 1 << 10
+					wl.images = 1
+					wl.imageBytes = sizeMiB << 20 / 4 * 3
+				}
+				raw, _, err := wl.digests()
+				if err != nil {
+					b.Fatal(err)
+				}
+				srv, up := benchProxy(b, benchPackSets["global"])
+				host := backendHostPort(&testing.T{}, up.URL, "http")
+				b.SetBytes(raw.n)
+				b.ResetTimer()
+				for range b.N {
+					sampler := startMemSampler()
+					req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+						"http://"+host+"/v1/chat/completions", wl.rawStream())
+					req.Host, req.URL.Host, req.ContentLength = host, host, raw.n
+					w := httptest.NewRecorder()
+					srv.ServeHTTP(w, req)
+					sampler.finish(b)
+					if w.Code != http.StatusOK {
+						b.Fatalf("status %d: %s", w.Code, w.Body.String())
+					}
+				}
+				b.ReportMetric(float64(raw.n)/(1<<20), "body-MiB")
+			})
+		}
+	}
+}
+
 // BenchmarkFullContextConcurrent measures n simultaneous requests of sizeMiB.
 func BenchmarkFullContextConcurrent(b *testing.B) {
 	for _, sc := range []struct{ n, sizeMiB int }{{4, 16}, {8, 16}, {4, 64}} {

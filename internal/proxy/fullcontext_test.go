@@ -119,32 +119,41 @@ func assertForwardedExactly(t *testing.T, got upstreamCheck, want workloadDigest
 	}
 }
 
-// largeWorkload exceeds the former 50 MiB cutoff: ~33 MiB of prose, tool
-// history and ~32 MiB of inline base64 images.
-var largeWorkload = fullContextWorkload{
-	turns:       1600,
-	proseBytes:  20 << 10,
-	images:      4,
-	imageBytes:  6 << 20,
+// spooledWorkload is large enough to spill to the encrypted disk spool and
+// carries every element of a full-context request (prose with PII, tool
+// calls and results, an inline image), while staying fast enough for the
+// race-instrumented test run. The beyond-50-MiB variants live in
+// fullcontext_large_test.go.
+var spooledWorkload = fullContextWorkload{
+	turns:       200,
+	proseBytes:  16 << 10,
+	images:      1,
+	imageBytes:  2 << 20,
 	instruction: fullContextInstruction,
 }
 
-// TestFullContextRequestBeyondFormerLimit streams a request larger than the
-// former 50 MiB cutoff through the plain-HTTP path and verifies the upstream
-// receives the complete expected anonymized body, byte for byte, with the
-// body spooled to disk rather than held in memory.
-func TestFullContextRequestBeyondFormerLimit(t *testing.T) {
-	raw, want, err := largeWorkload.digests()
+// TestFullContextSpooledRequest streams a request larger than the in-memory
+// spool through the plain-HTTP path and verifies the upstream receives the
+// complete expected anonymized body byte for byte, and that no spool file is
+// left behind.
+func TestFullContextSpooledRequest(t *testing.T) {
+	raw, want, err := spooledWorkload.digests()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.n <= formerRequestLimit || want.n <= formerRequestLimit {
-		t.Fatalf("workload is %d raw / %d anonymized bytes; it must exceed the former %d-byte limit", raw.n, want.n, formerRequestLimit)
+	if want.n <= requestSpoolMemory {
+		t.Fatalf("workload of %d bytes would not spool to disk", want.n)
 	}
-
 	srv := fullContextProxy(t, nil)
 	up := newRecordingUpstream(t)
-	w := postThroughProxy(t, srv, up.URL, largeWorkload.rawStream(), raw.n)
+	assertFullContextForwarded(t, srv, up, spooledWorkload, raw, want)
+}
+
+// assertFullContextForwarded sends wl through srv's plain-HTTP path and
+// checks the upstream received exactly want.
+func assertFullContextForwarded(t *testing.T, srv *Server, up *recordingUpstream, wl fullContextWorkload, raw, want workloadDigest) {
+	t.Helper()
+	w := postThroughProxy(t, srv, up.URL, wl.rawStream(), raw.n)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
@@ -161,11 +170,18 @@ func filepathGlob(dir string) ([]string, error) {
 	return filepath.Glob(filepath.Join(dir, "*"))
 }
 
-// TestFullContextRequestBeyondFormerLimitMITM sends the same request through
-// the MITM HTTP/2 path (the production path for HTTPS clients) with an
-// unknown body length, and verifies the complete expected body upstream.
-func TestFullContextRequestBeyondFormerLimitMITM(t *testing.T) {
-	_, want, err := largeWorkload.digests()
+// TestFullContextSpooledRequestMITM sends a spooled request of unknown
+// length through the MITM HTTP/2 path, the production path for HTTPS
+// clients, and verifies the complete expected body upstream.
+func TestFullContextSpooledRequestMITM(t *testing.T) {
+	assertFullContextMITM(t, spooledWorkload)
+}
+
+// assertFullContextMITM sends wl as a chunked HTTP/2 request through a MITM
+// tunnel and checks the upstream received exactly the expected body.
+func assertFullContextMITM(t *testing.T, wl fullContextWorkload) {
+	t.Helper()
+	_, want, err := wl.digests()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +213,7 @@ func TestFullContextRequestBeyondFormerLimitMITM(t *testing.T) {
 	tlsClient := mitmTLSClient(t, hw.clientConn, backendHost, certFile, "h2")
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		"https://"+backendHost+"/v1/chat/completions", largeWorkload.rawStream())
+		"https://"+backendHost+"/v1/chat/completions", wl.rawStream())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +226,7 @@ func TestFullContextRequestBeyondFormerLimitMITM(t *testing.T) {
 	assertForwardedExactly(t, got, want)
 }
 
-// TestFullContextConcurrentRequests sends several large requests at once and
+// TestFullContextConcurrentRequests sends several spooled requests at once and
 // verifies each upstream body independently; sessions must not mix tokens,
 // instructions or bytes between requests.
 func TestFullContextConcurrentRequests(t *testing.T) {
@@ -220,7 +236,7 @@ func TestFullContextConcurrentRequests(t *testing.T) {
 	wants := make(map[[32]byte]bool, concurrent)
 	for i := range workloads {
 		workloads[i] = fullContextWorkload{
-			turns: 200 + 37*i, proseBytes: 16 << 10, images: 1, imageBytes: (2 + i) << 20,
+			turns: 60 + 17*i, proseBytes: 8 << 10, images: 1, imageBytes: (1 << 20) + i<<18,
 			instruction: fullContextInstruction,
 		}
 		raw, want, err := workloads[i].digests()

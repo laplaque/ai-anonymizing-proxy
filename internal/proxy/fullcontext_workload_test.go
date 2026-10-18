@@ -6,13 +6,47 @@ import (
 	"crypto/md5" // #nosec G501 -- recomputes the anonymizer's deterministic token format, not for security
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
 	"io"
-	"math/rand/v2"
 	"strings"
 )
+
+// detStream is a reproducible byte stream (SHA-256 in counter mode) for
+// synthetic workload data. Determinism is the point; it is not a source of
+// secrets or randomness.
+type detStream struct {
+	seed    uint64
+	counter uint64
+	block   [sha256.Size]byte
+	pos     int
+}
+
+func newDetStream(seed uint64) *detStream {
+	return &detStream{seed: seed, pos: sha256.Size}
+}
+
+func (d *detStream) byte() byte {
+	if d.pos == sha256.Size {
+		var in [16]byte
+		binary.BigEndian.PutUint64(in[:8], d.seed)
+		binary.BigEndian.PutUint64(in[8:], d.counter)
+		d.counter++
+		d.block = sha256.Sum256(in[:])
+		d.pos = 0
+	}
+	b := d.block[d.pos]
+	d.pos++
+	return b
+}
+
+func (d *detStream) fill(p []byte) {
+	for i := range p {
+		p[i] = d.byte()
+	}
+}
 
 // fullContextWorkload generates a synthetic OpenAI-style chat request of the
 // kind that fills a large context window: a system prompt, long user turns of
@@ -70,7 +104,7 @@ func (d dualWriter) email(e string) {
 // generate writes the workload; see the type documentation.
 func (w fullContextWorkload) generate(raw, expected io.Writer) error {
 	d := dualWriter{raw: bufio.NewWriterSize(raw, 64<<10), exp: bufio.NewWriterSize(expected, 64<<10)}
-	rng := rand.New(rand.NewPCG(152, 2026))
+	rng := newDetStream(152)
 
 	d.same(`{"model":"gpt-x","messages":[{"role":"system","content":"` + fullContextSystemPrompt)
 	_, _ = d.exp.WriteString(`\n\n` + w.instruction) // instruction is plain ASCII: no escaping needed
@@ -81,7 +115,7 @@ func (w fullContextWorkload) generate(raw, expected io.Writer) error {
 		written := 0
 		for k := 0; written < w.proseBytes; k++ {
 			for range 300 {
-				word := proseWords[rng.IntN(len(proseWords))]
+				word := proseWords[int(rng.byte())%len(proseWords)]
 				d.same(word + " ")
 				written += len(word) + 1
 			}
@@ -93,9 +127,7 @@ func (w fullContextWorkload) generate(raw, expected io.Writer) error {
 		if turn < w.images {
 			d.same(`,{"type":"image_url","image_url":{"url":"data:image/png;base64,`)
 			img := make([]byte, w.imageBytes)
-			for i := range img {
-				img[i] = byte(rng.Uint32())
-			}
+			rng.fill(img)
 			d.same(base64.StdEncoding.EncodeToString(img))
 			d.same(`"}}`)
 		}

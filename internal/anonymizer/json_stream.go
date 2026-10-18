@@ -355,7 +355,7 @@ func (p *jsonRewriter) object(ctx valueCtx) (valueInfo, error) {
 			return info, err
 		}
 		p.w.write(raw)
-		if err := p.expect(':'); err != nil {
+		if err = p.expect(':'); err != nil {
 			return info, err
 		}
 		child := valueCtx{anonymize: ctx.anonymize && !skipKeys[key]}
@@ -704,7 +704,8 @@ func (p *jsonRewriter) number() error {
 	}
 	fail := func() error { return &syntaxError{unread: tok} }
 
-	c, ok, err := next() // value peeked a byte, so this cannot fail
+	c, ok, _ := next() // value peeked a byte, so this cannot fail
+	var err error
 	if c == '-' {
 		take(c)
 		if c, ok, err = next(); err != nil {
