@@ -39,17 +39,10 @@ sequenceDiagram
 **ALPN / protocol negotiation:**
 
 The proxy advertises both `h2` and `http/1.1` during the TLS handshake. After the handshake,
-`mitm.HandleConn` serves the connection with one `net/http` `http.Server` that has both
-protocols enabled (`Server.Protocols`). It is fed through a `singleConnListener`, and
-`net/http` dispatches on the negotiated protocol:
+`mitm.HandleConn` checks `NegotiatedProtocol` and routes to the appropriate server:
 
-- `h2` → `net/http`'s built-in HTTP/2 server. `Server.HTTP2` keeps the limits the proxy used
-  with `golang.org/x/net/http2`: 250 concurrent streams, a 1 MiB maximum read frame, 4096-byte
-  header tables and no prohibited cipher suites.
-- `http/1.1` (or empty) → HTTP/1.1.
-
-Both protocols get a 10 s header read timeout and a 90 s idle timeout. `HandleConn` returns
-when the connection closes.
+- `h2` → `golang.org/x/net/http2.Server.ServeConn`
+- `http/1.1` (or empty) → `http.Server` wrapping a `singleConnListener`
 
 ## Connection states
 
