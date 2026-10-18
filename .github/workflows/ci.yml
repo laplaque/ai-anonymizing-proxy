@@ -86,6 +86,7 @@ jobs:
           # than maximum supported version 4") and type-checks nothing. Pin the
           # upstream master pseudo-version that moved to x/tools v0.52.0 until a
           # tagged release includes it; then return to a tagged version.
+          # Tracked in #156.
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20261015133444-707f2271f665
           gosec -exclude=G104,G304,G703,G706 ./...
 
