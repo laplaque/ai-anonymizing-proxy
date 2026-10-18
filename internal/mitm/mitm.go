@@ -26,12 +26,42 @@ var h2Config = http.HTTP2Config{
 	PermitProhibitedCipherSuites: false,
 }
 
+// h2Supported reports whether net/http in this process serves HTTP/2.
+// GODEBUG=http2server=0 (or the nethttpomithttp2 build tag) disables it, and
+// net/http then drops any connection that negotiated "h2", so HandleConn only
+// offers "h2" over ALPN when this is true. It is a var so tests can simulate
+// the disabled case in-process.
+var h2Supported = sync.OnceValue(probeH2Server)
+
+// probeH2Server asks net/http itself rather than parsing GODEBUG: Serve
+// installs the HTTP/2 handler in TLSNextProto before its first Accept, as it
+// does for intercepted connections, unless HTTP/2 is disabled. The listener's
+// only connection is marked taken and released, so Accept reports
+// net.ErrClosed at once and Serve returns without serving anything.
+func probeH2Server() bool {
+	conn, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	ln := newSingleConnListener(conn)
+	ln.accepted = true
+	ln.release()
+
+	cfg := h2Config
+	srv := &http.Server{HTTP2: &cfg, ReadHeaderTimeout: 10 * time.Second}
+	_ = srv.Serve(ln) // net.ErrClosed; Serve closes ln and with it conn
+	_, ok := srv.TLSNextProto["h2"]
+	return ok
+}
+
 // HandleConn performs a TLS handshake on the hijacked client connection,
 // then serves HTTP/1.1 or HTTP/2 requests through the provided handler.
 // The handler receives plaintext HTTP requests that can be inspected and modified.
+// "h2" is offered over ALPN only when net/http can serve it (see h2Supported).
 // It returns once the client connection has been closed.
 func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) {
 	tlsCfg := ca.TLSConfigForHost(host)
+	if !h2Supported() {
+		tlsCfg.NextProtos = []string{"http/1.1"}
+	}
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
