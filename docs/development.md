@@ -75,7 +75,16 @@ make lint
 
 ```bash
 go test -race -count=1 ./...
+go test -count=1 -run 'BeyondFormerLimit' -v ./internal/proxy/   # large-body tests
 ```
+
+The request-size tests that go past the former 50 MiB cutoff
+(`internal/proxy/fullcontext_large_test.go`) are built with `//go:build !race`: the race
+detector slows regex detection about 15×, which would push them past `go test`'s 10-minute
+package timeout. They run uninstrumented in a separate CI step and as part of `make test`;
+the same request paths are exercised under `-race` at smaller sizes. Resource measurements for
+large requests are benchmarks (`BenchmarkFullContext*` in `internal/proxy`); run one scenario per
+process so peak RSS is attributable, as described in `internal/proxy/fullcontext_bench_test.go`.
 
 ## Security scanning
 
@@ -114,7 +123,8 @@ API.
 GitHub Actions runs automatically on push/PR to `main` with four parallel jobs:
 
 1. **Lint** — golangci-lint (govet, staticcheck, errcheck, gosec, revive, noctx, bodyclose, etc.)
-2. **Test** — `go test -race` with coverage reporting
+2. **Test** — `go test -race` with coverage reporting and the delta-coverage gate, then the
+   large-body tests without race instrumentation
 3. **Security** — gosec + govulncheck
 4. **Build** — compiles binary, uploads artifact (depends on all three passing)
 
