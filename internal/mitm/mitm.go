@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -15,7 +14,6 @@ import (
 // HandleConn performs a TLS handshake on the hijacked client connection,
 // then serves HTTP/1.1 or HTTP/2 requests through the provided handler.
 // The handler receives plaintext HTTP requests that can be inspected and modified.
-// It returns once the connection has been closed.
 func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) {
 	tlsCfg := ca.TLSConfigForHost(host)
 
@@ -48,53 +46,33 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 		})
 	default:
 		// HTTP/1.1: serve using a single-connection listener
-		ln := newSingleConnListener(tlsConn)
 		srv := &http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
-			// A hijacked connection is owned by its handler, so only a close
-			// ends the listener; HandleConn must not close a connection still in use.
-			ConnState: func(_ net.Conn, state http.ConnState) {
-				if state == http.StateClosed {
-					ln.connDone()
-				}
-			},
 		}
-		_ = srv.Serve(ln) // returns net.ErrClosed once the connection is finished
+		ln := &singleConnListener{conn: tlsConn}
+		_ = srv.Serve(ln) // always ErrServerClosed for single-conn listener
 	}
 }
 
-// singleConnListener wraps a single net.Conn as a net.Listener for
-// http.Server.Serve. Accept returns the connection once; later calls block
-// until the connection is finished or the listener is closed, then return
-// net.ErrClosed so Serve returns.
+// singleConnListener wraps a single net.Conn as a net.Listener.
+// Accept returns the connection once, then blocks until Close is called.
 type singleConnListener struct {
-	conn     net.Conn
-	accepted bool // only touched by Serve's accept loop
-	done     chan struct{}
-	doneOnce sync.Once
-}
-
-func newSingleConnListener(conn net.Conn) *singleConnListener {
-	return &singleConnListener{conn: conn, done: make(chan struct{})}
+	conn net.Conn
+	done bool
 }
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
-	if !l.accepted {
-		l.accepted = true
-		return l.conn, nil
+	if l.done {
+		// Block forever; Serve() calls Close() when the handler returns,
+		// which terminates the listener and unblocks the server.
+		select {}
 	}
-	<-l.done
-	return nil, net.ErrClosed
-}
-
-// connDone releases a blocked Accept. It is safe to call more than once.
-func (l *singleConnListener) connDone() {
-	l.doneOnce.Do(func() { close(l.done) })
+	l.done = true
+	return l.conn, nil
 }
 
 func (l *singleConnListener) Close() error {
-	l.connDone()
 	return l.conn.Close()
 }
 
