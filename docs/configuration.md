@@ -110,7 +110,7 @@ workload rationale) is gone.
 |---|---|
 | Memory | ≈ 1 MiB spool buffer + 128 KiB I/O buffers + a multiple of the **largest single JSON string value**, which detection needs whole. Measured peak RSS is ≈ 1.6× that string for base64 data and up to ≈ 7.5× for prose that contains PII matches and escapes. It does not grow with the number of strings or the total body size, but a single string is held whole, so one very large string costs memory in proportion to its size (a 128 MiB prose string peaked at 981 MiB). Use `maxRequestBodyBytes` to cap it. |
 | Disk | The anonymized body size, for bodies over 1 MiB, until the request completes. |
-| CPU | Regex detection dominates: about 4.3–4.8 MB/s with the GLOBAL pack and about 1.1–1.2 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core, within 5% of the previous implementation. Concurrent requests use separate cores. |
+| CPU | Regex detection dominates: about 4.3–4.8 MB/s with the GLOBAL pack and about 1.1–1.2 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core, 0–10% slower than the previous implementation in the measurements below. Concurrent requests use separate cores. |
 
 **Failures are reported, never truncated or forwarded partially.**
 
