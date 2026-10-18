@@ -78,6 +78,9 @@ func run(args []string, w, warn io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if os.Getenv("FUNCCOVERAGE_DUMP") == "1" {
+		dumpBlocks(warn, blocks)
+	}
 	var uninstrumented []string
 	for _, file := range args[1:] {
 		fileBlocks := blocksFor(blocks, file)
@@ -260,4 +263,12 @@ func reportExtent(w io.Writer, fset *token.FileSet, file, name string, n ast.Nod
 	}
 	_, err := fmt.Fprintf(w, "%s:%d\t%s\t%d\t%d\n", file, start.line, name, covered, total)
 	return err
+}
+
+// dumpBlocks is DELIBERATELY UNTESTED: planted to show that the delta gate
+// fails on an uncovered helper function. Not for merging.
+func dumpBlocks(w io.Writer, blocks []block) {
+	for _, b := range blocks {
+		_, _ = fmt.Fprintf(w, "%s %d.%d-%d.%d %d %d\n", b.file, b.start.line, b.start.col, b.end.line, b.end.col, b.numStmt, b.count)
+	}
 }
