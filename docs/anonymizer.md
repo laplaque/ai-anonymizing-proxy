@@ -44,9 +44,11 @@ splices in while forwarding: appended to a string `system`, appended as a text b
 `system` array, appended to the first `messages` entry with role `system`, or prepended as a new
 system message — the same rules as before.
 
-Memory per request is the I/O buffers plus the largest single string value, which detection
-needs whole (regex patterns have no fixed maximum match length, so splitting a string could miss
-PII that spans the split). Container nesting is limited to 10 000 levels, the same limit as
+Memory per request is the I/O buffers plus a small multiple of the largest single string value,
+which detection needs whole: regex patterns have no fixed maximum match length, so splitting a
+string could miss PII that spans the split. Measured peak RSS is ≈ 1.6× that string for base64
+data and up to ≈ 7.5× for prose with PII matches; see
+[Request body size and resources](configuration.md#request-body-size-and-resources). Container nesting is limited to 10 000 levels, the same limit as
 `encoding/json`. Input that is not a single valid JSON value is anonymized as plain text from the
 first syntax error onward; for non-JSON bodies (error at the first byte) that is exactly
 `AnonymizeText` of the whole body, as before. The proxy writes the output into a

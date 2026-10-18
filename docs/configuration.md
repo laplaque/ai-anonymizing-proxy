@@ -108,9 +108,9 @@ workload rationale) is gone.
 
 | Resource | Bound |
 |---|---|
-| Memory | ≈ 1 MiB spool buffer + 128 KiB I/O buffers + about 5–6× the **largest single JSON string value** (detection needs each string whole). Independent of total body size. |
+| Memory | ≈ 1 MiB spool buffer + 128 KiB I/O buffers + a multiple of the **largest single JSON string value**, which detection needs whole. Measured peak RSS is ≈ 1.6× that string for base64 data and up to ≈ 7.5× for prose that contains PII matches and escapes. It does not grow with the number of strings or the total body size, but a single string is held whole, so one very large string costs memory in proportion to its size (a 128 MiB prose string peaked at 981 MiB). Use `maxRequestBodyBytes` to cap it. |
 | Disk | The anonymized body size, for bodies over 1 MiB, until the request completes. |
-| CPU | Regex detection dominates: about 4.8 MB/s with the GLOBAL pack and about 1.15 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core. Concurrent requests use separate cores. |
+| CPU | Regex detection dominates: about 4.3–4.8 MB/s with the GLOBAL pack and about 1.1–1.2 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core, within 5% of the previous implementation. Concurrent requests use separate cores. |
 
 **Failures are reported, never truncated or forwarded partially.**
 
@@ -124,25 +124,38 @@ workload rationale) is gone.
 anonymized request size; `0`, the default, means no limit. Use it to bound disk and CPU per request
 on shared hosts; it is never applied implicitly.
 
-**Measured capacity** (synthetic OpenAI-style requests with long prose, tool history and inline
-base64 images of 8 MiB each above 16 MiB; one request at a time unless noted; 4 vCPU Linux,
-go1.27.2; peak RSS above the pre-request baseline). The previous implementation is shown for
-comparison where it accepted the request.
+**Measured capacity.** Synthetic OpenAI-style requests: long prose, tool history and, above 16 MiB,
+inline base64 images of 8 MiB each. One request at a time unless noted; 4 vCPU Linux, go1.27.2,
+binaries compiled like `make build` (no race or coverage instrumentation, which slow detection
+about 13×). Peak RSS is measured above the pre-request baseline. "Previous" is the
+implementation before #152 on the same data.
 
-| Request | Packs | Time | Peak RSS (streaming) | Peak RSS (previous) |
+| Request | Packs | Time | Peak RSS | Peak RSS (previous) |
 |---|---|---|---|---|
-| 4.4 MiB (prose + tools, ≈ 1M tokens) | GLOBAL | 1.1 s | 1.3 MiB | 41 MiB |
-| 17.6 MiB (prose + tools) | GLOBAL | 3.9 s | 1.8 MiB | 180 MiB |
-| 42.4 MiB (with images) | GLOBAL | 9.2 s | 43 MiB | 424 MiB |
-| 67.2 MiB (with images) | GLOBAL | 14.4 s | 48 MiB | rejected (413) |
-| 134 MiB (with images) | GLOBAL | 28.5 s | 47 MiB | rejected (413) |
-| 269 MiB (with images) | GLOBAL | 60 s | 54 MiB | rejected (413) |
-| 67.2 MiB (with images) | default | 61.7 s | 52 MiB | rejected (413) |
-| 8 × 17.6 MiB concurrently | GLOBAL | 9.9 s | 22 MiB | 1345 MiB |
-| 4 × 67.2 MiB concurrently | GLOBAL | 18.5 s | 166 MiB | rejected (413) |
+| 4.4 MiB prose + tools (≈ 1M tokens) | GLOBAL | 1.1 s | 1.1 MiB | 41 MiB |
+| 17.5 MiB prose + tools | GLOBAL | 4.1 s | 2.3 MiB | 187 MiB |
+| 42.3 MiB with images | GLOBAL | 10.4 s | 44 MiB | 415 MiB |
+| 67.1 MiB with images | GLOBAL | 15.3 s | 53 MiB | rejected (413) |
+| 134 MiB with images | GLOBAL | 29.6 s | 43 MiB | rejected (413) |
+| 268 MiB with images | GLOBAL | 60.0 s | 52 MiB | rejected (413) |
+| 17.5 MiB prose + tools | default | 15.7 s | 1.6 MiB | 204 MiB |
+| 42.3 MiB with images | default | 37.9 s | 48 MiB | 402 MiB |
+| 67.1 MiB with images | default | 60.9 s | 56 MiB | rejected (413) |
+| 8 × 17.5 MiB concurrently | GLOBAL | 9.6 s | 22 MiB | 1299 MiB |
+| 4 × 67.1 MiB concurrently | GLOBAL | 18.5 s | 168 MiB | rejected (413) |
+| one 16 MiB prose string with PII | GLOBAL | 4.3 s | 129 MiB | 108 MiB |
+| one 64 MiB prose string with PII | GLOBAL | 14.8 s | 473 MiB | rejected (413) |
+| one 128 MiB prose string with PII | GLOBAL | 28.2 s | 981 MiB | rejected (413) |
+| one 16 MiB base64 string | GLOBAL | 3.3 s | 33 MiB | 62 MiB |
+| one 128 MiB base64 string | GLOBAL | 25.5 s | 201 MiB | rejected (413) |
+
+A single huge prose string costs slightly more than before (129 vs 108 MiB at 16 MiB) because
+its original escaped bytes are kept so that an unchanged string can be forwarded byte for byte.
 
 Reproduce with `go test -run '^$' -bench 'BenchmarkFullContext' -benchtime 1x ./internal/proxy/`
 (one scenario per process for meaningful peak RSS); see `internal/proxy/fullcontext_bench_test.go`.
+The request paths beyond the former 50 MiB limit are verified byte for byte with the default packs
+by `TestFullContextBeyondFormerLimitDefaultPacks`.
 
 **Not covered here.** Compressed request bodies (`Content-Encoding: gzip`, `zstd`, …) are not
 decoded by this path; they are handled as non-JSON text, which is the defect tracked in #153.
