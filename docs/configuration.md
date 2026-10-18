@@ -77,7 +77,7 @@ Environment variables override the corresponding `proxy-config.json` fields.
 | `CA_KEY_FILE`             | `ca-key.pem`                | Path to CA private key for MITM TLS interception                     |
 | `ENABLED_PACKS`           | `GLOBAL,DE,SECRETS`         | Comma-separated list of enabled PII detection packs                  |
 | `PACK_DECAY_RATE`         | `0.05`                      | Positional confidence decay rate per pack (0.0 = no decay)           |
-| `MAX_REQUEST_BODY_BYTES`  | `0`                         | Optional cap on anonymized request bodies; larger → HTTP 413 (0 = no limit) |
+| `MAX_REQUEST_BODY_BYTES`  | `0`                         | Optional cap on request body bytes received from the client; larger → HTTP 413 (0 = no limit; a value that is not an integer stops startup) |
 | `REQUEST_SPOOL_DIR`       | OS temp dir                 | Directory for encrypted spool files of request bodies above 1 MiB    |
 
 > **Important:** `HTTP_PROXY` / `HTTPS_PROXY` environment variables are **not** read by the proxy
@@ -129,8 +129,12 @@ to the client as an upstream error.
 | 507 Insufficient Storage | The proxy could not buffer the body: `requestSpoolDir` is missing, not writable, or full. |
 
 **Optional administrative limit.** `maxRequestBodyBytes` (`MAX_REQUEST_BODY_BYTES`) caps the
-anonymized request size; `0`, the default, means no limit. Use it to bound disk and CPU per request
-on shared hosts; it is never applied implicitly.
+request body as received from the client: it counts input bytes, before anonymization (the
+anonymized output can be slightly larger or smaller). `0`, the default, means no limit; a negative
+value is treated as `0` with a warning. A value that is not an integer byte count (for example
+`50MiB`, a fraction, or a number beyond 2^63−1) is a configuration error and the proxy refuses to
+start, so a mistyped cap never leaves it silently unlimited. Use it to bound memory, disk and CPU
+per request on shared hosts; it is never applied implicitly.
 
 **Measured capacity.** Synthetic OpenAI-style requests: long prose, tool history and, above 16 MiB,
 inline base64 images of 8 MiB each. One request at a time unless noted; 4 vCPU Linux, go1.27.2,

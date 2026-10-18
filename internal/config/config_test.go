@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -321,12 +322,72 @@ func TestLoadEnv_RequestBodyLimits(t *testing.T) {
 	}
 }
 
-func TestLoadEnv_MaxRequestBodyBytesInvalidIgnored(t *testing.T) {
-	t.Setenv("MAX_REQUEST_BODY_BYTES", "50MiB")
+// TestLoadEnv_MaxRequestBodyBytesInvalidIsAnError pins that an explicit cap
+// that does not parse is reported by Err instead of silently leaving the
+// proxy unlimited, while an explicit 0 still means no limit.
+func TestLoadEnv_MaxRequestBodyBytesInvalidIsAnError(t *testing.T) {
+	for _, v := range []string{"50MiB", "99999999999999999999", "1.5e9", " 1048576", "-"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("MAX_REQUEST_BODY_BYTES", v)
+			cfg := defaults()
+			loadEnv(cfg)
+			err := cfg.Err()
+			if err == nil {
+				t.Fatalf("MAX_REQUEST_BODY_BYTES=%q: Err() = nil, want a load error", v)
+			}
+			if !strings.Contains(err.Error(), "MAX_REQUEST_BODY_BYTES") || !strings.Contains(err.Error(), "not a byte count") {
+				t.Errorf("error %q does not name the setting and the problem", err)
+			}
+			if cfg.MaxRequestBodyBytes != 0 {
+				t.Errorf("limit = %d after an invalid value", cfg.MaxRequestBodyBytes)
+			}
+		})
+	}
+
+	t.Setenv("MAX_REQUEST_BODY_BYTES", "0")
 	cfg := defaults()
 	loadEnv(cfg)
-	if cfg.MaxRequestBodyBytes != 0 {
-		t.Errorf("unparseable value should be ignored, got %d", cfg.MaxRequestBodyBytes)
+	if err := cfg.Err(); err != nil || cfg.MaxRequestBodyBytes != 0 {
+		t.Errorf("explicit 0: Err() = %v, limit %d; want nil and 0 (no limit)", err, cfg.MaxRequestBodyBytes)
+	}
+}
+
+// TestLoadFile_MaxRequestBodyBytesInvalidIsAnError pins the same for the
+// config file: encoding/json applies the other fields but reports the
+// wrongly typed or out-of-range cap, which must be a load error.
+func TestLoadFile_MaxRequestBodyBytesInvalidIsAnError(t *testing.T) {
+	for name, body := range map[string]string{
+		"string":   `{"maxRequestBodyBytes":"50MiB","requestSpoolDir":"/srv/spool"}`,
+		"overflow": `{"maxRequestBodyBytes":1e30,"requestSpoolDir":"/srv/spool"}`,
+		"fraction": `{"maxRequestBodyBytes":1.5,"requestSpoolDir":"/srv/spool"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := t.TempDir() + "/proxy-config.json"
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := defaults()
+			loadFile(cfg, path)
+			err := cfg.Err()
+			if err == nil || !strings.Contains(err.Error(), "maxRequestBodyBytes is not a byte count") {
+				t.Fatalf("Err() = %v, want a maxRequestBodyBytes load error", err)
+			}
+			if cfg.RequestSpoolDir != "/srv/spool" {
+				t.Errorf("other fields were not applied: requestSpoolDir = %q", cfg.RequestSpoolDir)
+			}
+		})
+	}
+
+	// A wrongly typed unrelated field keeps the existing warn-and-continue
+	// behavior.
+	path := t.TempDir() + "/proxy-config.json"
+	if err := os.WriteFile(path, []byte(`{"proxyPort":"8080","maxRequestBodyBytes":1048576}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	loadFile(cfg, path)
+	if err := cfg.Err(); err != nil || cfg.MaxRequestBodyBytes != 1<<20 {
+		t.Errorf("unrelated type error: Err() = %v, limit %d; want nil and %d", err, cfg.MaxRequestBodyBytes, 1<<20)
 	}
 }
 
