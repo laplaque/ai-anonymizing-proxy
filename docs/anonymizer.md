@@ -27,6 +27,31 @@ Response body
 The Ollama sidecar is **never on the critical path**. It populates a persistent cache
 asynchronously; the request is always returned immediately with whatever tokens are available.
 
+## Request body processing
+
+`AnonymizeJSONStream` rewrites a request body as a stream: it reads JSON tokens through a 64 KiB
+buffer and writes everything except string values through unchanged — object keys, numbers,
+literals, whitespace and key order keep their original bytes. Each string value is decoded
+exactly as `encoding/json` decodes it (escapes resolved, unpaired surrogates and invalid UTF-8
+become U+FFFD) and passed to `AnonymizeText`; strings it leaves unchanged keep their original
+escaping, changed strings are re-encoded escaping only `"`, `\` and control characters.
+Values under the structural keys `model`, `temperature`, `max_tokens`, `top_p`, `stream` and
+`n` (at any depth, including their whole subtree) are not anonymized.
+
+The PII system instruction depends on whether *any* token was recorded, which is only known at
+the end of the document, so it is returned as a single insertion (offset + bytes) that the proxy
+splices in while forwarding: appended to a string `system`, appended as a text block to a
+`system` array, appended to the first `messages` entry with role `system`, or prepended as a new
+system message — the same rules as before.
+
+Memory per request is the I/O buffers plus the largest single string value, which detection
+needs whole (regex patterns have no fixed maximum match length, so splitting a string could miss
+PII that spans the split). Container nesting is limited to 10 000 levels, the same limit as
+`encoding/json`. Input that is not a single valid JSON value is anonymized as plain text from the
+first syntax error onward; for non-JSON bodies (error at the first byte) that is exactly
+`AnonymizeText` of the whole body, as before. The proxy writes the output into a
+[bounded-memory spool](configuration.md#request-body-size-and-resources), never the raw input.
+
 ---
 
 ## Stage 1 — Regex detection
@@ -125,9 +150,9 @@ sequenceDiagram
     participant A as anonymizer.go
     participant API as LLM API
 
-    P->>A: AnonymizeJSON(body, sessionID)
+    P->>A: AnonymizeJSONStream(body → spool, sessionID)
     Note over A: regex + cache → token map populated
-    A-->>P: anonymized body
+    A-->>P: anonymized body (spooled) + instruction insertion
 
     P->>API: POST (anonymized)
     API-->>P: response

@@ -50,7 +50,9 @@ The file is optional — all fields have built-in defaults. Unknown fields are s
     "/v1/auth", "/api/auth", "/api/login", "/api/token"
   ],
   "enabledPacks": ["GLOBAL", "DE", "SECRETS"],
-  "packDecayRate": 0.05
+  "packDecayRate": 0.05,
+  "maxRequestBodyBytes": 0,
+  "requestSpoolDir": ""
 }
 ```
 
@@ -75,6 +77,8 @@ Environment variables override the corresponding `proxy-config.json` fields.
 | `CA_KEY_FILE`             | `ca-key.pem`                | Path to CA private key for MITM TLS interception                     |
 | `ENABLED_PACKS`           | `GLOBAL,DE,SECRETS`         | Comma-separated list of enabled PII detection packs                  |
 | `PACK_DECAY_RATE`         | `0.05`                      | Positional confidence decay rate per pack (0.0 = no decay)           |
+| `MAX_REQUEST_BODY_BYTES`  | `0`                         | Optional cap on anonymized request bodies; larger → HTTP 413 (0 = no limit) |
+| `REQUEST_SPOOL_DIR`       | OS temp dir                 | Directory for encrypted spool files of request bodies above 1 MiB    |
 
 > **Important:** `HTTP_PROXY` / `HTTPS_PROXY` environment variables are **not** read by the proxy
 > process for its own outbound connections. Use `UPSTREAM_PROXY` (or `upstreamProxy` in

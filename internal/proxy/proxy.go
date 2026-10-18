@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"ai-anonymizing-proxy/internal/anonymizer"
+	"ai-anonymizing-proxy/internal/bodyspool"
 	"ai-anonymizing-proxy/internal/config"
 	"ai-anonymizing-proxy/internal/management"
 	"ai-anonymizing-proxy/internal/metrics"
@@ -303,10 +305,11 @@ func (s *Server) serveMITMRequest(rw http.ResponseWriter, req *http.Request, ctx
 	isAuth := s.isAuthRequest(ctx.domain, req.URL.Path)
 	s.recordMITMMetrics(isAuth)
 
-	sessionID, ok := s.processMITMRequestBody(rw, req, ctx, isAuth)
+	sessionID, release, ok := s.processMITMRequestBody(rw, req, ctx, isAuth)
 	if !ok {
 		return // error already sent to client
 	}
+	defer release()
 	if sessionID != "" {
 		defer s.anon.DeleteSession(sessionID)
 	}
@@ -328,24 +331,26 @@ func (s *Server) recordMITMMetrics(isAuth bool) {
 }
 
 // processMITMRequestBody anonymizes the request body for non-auth requests.
-// Returns (sessionID, true) on success, ("", true) for auth pass-through,
-// or ("", false) on error (error response already sent to client).
-func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) (string, bool) {
+// Returns (sessionID, release, true) on success, ("", release, true) for auth
+// pass-through, or ("", nil, false) on error (error response already sent to
+// client). release frees the buffered body and must be called once the
+// request has been forwarded.
+func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Request, ctx mitmContext, isAuth bool) (string, func(), bool) {
 	if isAuth {
 		log.Printf("[MITM] %s %s %s%s [AUTH][PASS]", ctx.remoteHash, req.Method, ctx.domain, req.URL.Path)
-		return "", true
+		return "", func() {}, true
 	}
 
-	sessionID, err := s.anonymizeRequestBody(req)
+	sessionID, release, err := s.anonymizeRequestBody(req)
 	if err != nil {
 		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
-		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
-		return "", false
+		writeBodyError(rw, err)
+		return "", nil, false
 	}
 
 	log.Printf("[MITM] %s %s %s%s [ANON] sessionID=%s tokens=%d",
 		ctx.remoteHash, req.Method, ctx.domain, req.URL.Path, sessionID, s.anon.SessionTokenCount(sessionID))
-	return sessionID, true
+	return sessionID, release, true
 }
 
 // forwardMITMRequest forwards the request upstream and writes the response.
@@ -447,13 +452,17 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Anonymize body only for AI API requests that are not auth
 	var sessionID string
 	if isAI && !isAuth {
-		var err error
-		sessionID, err = s.anonymizeRequestBody(r)
+		var (
+			release func()
+			err     error
+		)
+		sessionID, release, err = s.anonymizeRequestBody(r)
 		if err != nil {
 			log.Printf("[HTTP] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
-			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			writeBodyError(w, err)
 			return
 		}
+		defer release()
 		if sessionID != "" {
 			defer s.anon.DeleteSession(sessionID)
 		}
@@ -510,7 +519,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, sessionID strin
 	flushingCopy(w, resp.Body)
 }
 
-const maxRequestBody = 50 << 20 // 50 MB
+// requestSpoolMemory is how much of an anonymized request body is kept in
+// memory before the rest is spooled to an encrypted temporary file. It is a
+// memory budget per in-flight request, not a size limit: typical chat
+// requests (well under 1 MiB) never touch disk, while full-context requests
+// cost at most this much buffer memory each, however large they are.
+const requestSpoolMemory = 1 << 20
 
 // randRead fills b with cryptographically secure random bytes. It is a package
 // var so tests can inject a failing reader to exercise the timestamp fallback;
@@ -518,40 +532,135 @@ const maxRequestBody = 50 << 20 // 50 MB
 // return one in-process.
 var randRead = rand.Read
 
-func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
-	if r.Body == nil || r.ContentLength == 0 {
-		return "", nil
-	}
+// errRequestBodyLimit reports a body larger than the operator-configured
+// maxRequestBodyBytes.
+var errRequestBodyLimit = errors.New("request body exceeds maxRequestBodyBytes")
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
-	_ = r.Body.Close() // body already read; close is best-effort
-	if err != nil {
-		if s.m != nil {
-			s.m.ErrorsAnonymize.Add(1)
-		}
-		return "", err
-	}
-	if int64(len(body)) > maxRequestBody {
-		return "", fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
-	}
+// clientBodyError wraps a failure reading the request body from the client.
+type clientBodyError struct{ err error }
 
-	var sessionID string
+func (e *clientBodyError) Error() string { return "read request body: " + e.err.Error() }
+func (e *clientBodyError) Unwrap() error { return e.err }
+
+// limitedBody reads a client request body, counting bytes, enforcing the
+// optional administrative limit (0 = none), and tagging read failures so
+// they can be told apart from spool failures.
+type limitedBody struct {
+	r     io.Reader
+	limit int64
+	n     int64
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.n += int64(n)
+	if b.limit > 0 && b.n > b.limit {
+		return n, errRequestBodyLimit
+	}
+	if err != nil && err != io.EOF {
+		err = &clientBodyError{err: err}
+	}
+	return n, err
+}
+
+// writeBodyError sends the client the status matching a request-body failure
+// from anonymizeRequestBody: 413 for the configured limit, 400 when the
+// client's body could not be read, and 507 when the proxy could not buffer
+// the body (an operational resource failure such as a full spool disk).
+func writeBodyError(w http.ResponseWriter, err error) {
+	var clientErr *clientBodyError
+	switch {
+	case errors.Is(err, errRequestBodyLimit):
+		http.Error(w, "request body exceeds the proxy's configured maxRequestBodyBytes limit", http.StatusRequestEntityTooLarge)
+	case errors.As(err, &clientErr):
+		http.Error(w, "could not read request body", http.StatusBadRequest)
+	default:
+		http.Error(w, "proxy could not buffer the request body for anonymization", http.StatusInsufficientStorage)
+	}
+}
+
+func newSessionID() string {
 	b := make([]byte, 8)
 	if _, err := randRead(b); err != nil {
-		sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
-	} else {
-		sessionID = hex.EncodeToString(b)
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// anonymizeRequestBody streams the request body through the anonymizer into
+// a bounded-memory spool and replaces r.Body with the anonymized result, with
+// ContentLength and GetBody set to match. There is no built-in size limit;
+// the optional maxRequestBodyBytes setting rejects larger bodies explicitly.
+//
+// On success it returns the session ID (empty when there is no body) and a
+// release func that frees the spool; call it once the request has been
+// forwarded. On failure nothing is forwarded: the error is errRequestBodyLimit,
+// a *clientBodyError, or a *bodyspool.StorageError (see writeBodyError).
+func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
+	noop := func() {}
+	if r.Body == nil || r.ContentLength == 0 {
+		return "", noop, nil
+	}
+	limit := s.cfg.MaxRequestBodyBytes
+	if limit > 0 && r.ContentLength > limit {
+		_ = r.Body.Close() // nothing will be read; close is best-effort
+		s.recordAnonError()
+		return "", nil, fmt.Errorf("declared body length %d: %w", r.ContentLength, errRequestBodyLimit)
 	}
 
+	sessionID := newSessionID()
+	spool := bodyspool.New(s.cfg.RequestSpoolDir, requestSpoolMemory)
+	src := &limitedBody{r: r.Body, limit: limit}
+
 	anonStart := time.Now()
-	anonymized := s.anon.AnonymizeJSON(body, sessionID)
+	res, err := s.anon.AnonymizeJSONStream(spool, src, sessionID)
+	_ = r.Body.Close() // body fully consumed or abandoned; close is best-effort
+	if err != nil {
+		_ = spool.Close() // discard the partial body; close is best-effort
+		s.anon.DeleteSession(sessionID)
+		s.recordAnonError()
+		return "", nil, err
+	}
 	if s.m != nil {
 		s.m.RecordAnonLatency(time.Since(anonStart))
 	}
+	log.Printf("[ANON] sessionID=%s body in=%d out=%d bytes spool=%s textFallback=%v",
+		sessionID, src.n, res.TotalBytes(), spoolLocation(spool), res.TextFallback)
 
-	r.Body = io.NopCloser(bytes.NewReader(anonymized))
-	r.ContentLength = int64(len(anonymized))
-	return sessionID, nil
+	body := anonymizedBody{spool: spool, insertion: res.Insertion}
+	r.Body = io.NopCloser(body.reader())
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(body.reader()), nil }
+	r.ContentLength = res.TotalBytes()
+	return sessionID, func() { _ = spool.Close() }, nil // close errors leave nothing to recover
+}
+
+func (s *Server) recordAnonError() {
+	if s.m != nil {
+		s.m.ErrorsAnonymize.Add(1)
+	}
+}
+
+func spoolLocation(sp *bodyspool.Spool) string {
+	if sp.OnDisk() {
+		return "disk"
+	}
+	return "memory"
+}
+
+// anonymizedBody is a spooled anonymized body plus the PII-instruction
+// insertion that completes it.
+type anonymizedBody struct {
+	spool     *bodyspool.Spool
+	insertion *anonymizer.JSONInsertion
+}
+
+// reader returns a new reader over the complete anonymized body.
+func (b anonymizedBody) reader() io.Reader {
+	r := b.spool.Reader()
+	if b.insertion == nil {
+		return r
+	}
+	return io.MultiReader(io.LimitReader(r, b.insertion.Offset), bytes.NewReader(b.insertion.Data), r)
 }
 
 func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, domain string) {

@@ -53,6 +53,19 @@ type Config struct {
 	// Default: 0.05. Set to 0.0 to disable positional decay.
 	PackDecayRate float64 `json:"packDecayRate"`
 
+	// MaxRequestBodyBytes is an optional administrative cap on the size of a
+	// request body the proxy anonymizes; larger requests are rejected with
+	// HTTP 413 before any byte is forwarded. 0 (the default) means no limit:
+	// bodies of any size are streamed through anonymization with bounded
+	// memory and spooled to RequestSpoolDir. Negative values are treated as 0.
+	MaxRequestBodyBytes int64 `json:"maxRequestBodyBytes"`
+
+	// RequestSpoolDir is where anonymized request bodies larger than the
+	// in-memory spool threshold are buffered before forwarding, in
+	// per-request files encrypted with an in-memory key. Empty (the default)
+	// uses the operating system's temporary directory.
+	RequestSpoolDir string `json:"requestSpoolDir"`
+
 	// PIIInstructions maps LLM family prefix (e.g. "claude", "gpt") to the
 	// system instruction injected when PII tokens are present in a request.
 	// Lookup is prefix-based: "claude-sonnet-4-6" matches key "claude".
@@ -77,6 +90,10 @@ func Load() *Config {
 	if cfg.PackDecayRate > 1 {
 		log.Printf("[CONFIG] Warning: packDecayRate %f exceeds 1.0, clamping to 1.0", cfg.PackDecayRate)
 		cfg.PackDecayRate = 1
+	}
+	if cfg.MaxRequestBodyBytes < 0 {
+		log.Printf("[CONFIG] Warning: maxRequestBodyBytes %d is negative, treating it as 0 (no limit)", cfg.MaxRequestBodyBytes)
+		cfg.MaxRequestBodyBytes = 0
 	}
 	return cfg
 }
@@ -231,6 +248,15 @@ func loadEnvIntPositive(name string, dst *int) {
 	}
 }
 
+// loadEnvInt64 sets *dst to the parsed 64-bit integer value of the named env var if valid.
+func loadEnvInt64(name string, dst *int64) {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			*dst = n
+		}
+	}
+}
+
 // loadEnvFloat sets *dst to the parsed float value of the named env var if valid.
 func loadEnvFloat(name string, dst *float64) {
 	if v := os.Getenv(name); v != "" {
@@ -264,4 +290,6 @@ func loadEnv(cfg *Config) {
 	loadEnvString("OLLAMA_CACHE_FILE", &cfg.OllamaCacheFile)
 	loadEnvStringSlice("ENABLED_PACKS", &cfg.EnabledPacks)
 	loadEnvFloat("PACK_DECAY_RATE", &cfg.PackDecayRate)
+	loadEnvInt64("MAX_REQUEST_BODY_BYTES", &cfg.MaxRequestBodyBytes)
+	loadEnvString("REQUEST_SPOOL_DIR", &cfg.RequestSpoolDir)
 }

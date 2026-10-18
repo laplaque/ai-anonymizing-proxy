@@ -182,6 +182,12 @@ func sendThroughTunnel(t *testing.T, tlsClient *tls.Conn, proto, url, body strin
 		return resp
 	}
 
+	return roundTripH2(t, tlsClient, req)
+}
+
+// roundTripH2 sends req over the established HTTP/2 tunnel connection.
+func roundTripH2(t *testing.T, tlsClient *tls.Conn, req *http.Request) *http.Response {
+	t.Helper()
 	var protos http.Protocols
 	protos.SetHTTP2(true)
 	var dialed sync.Once

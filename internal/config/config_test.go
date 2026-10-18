@@ -298,6 +298,58 @@ func TestLoad_PackDecayRateClampAboveOne(t *testing.T) {
 	}
 }
 
+func TestDefaults_RequestBodyLimits(t *testing.T) {
+	cfg := defaults()
+	if cfg.MaxRequestBodyBytes != 0 {
+		t.Errorf("MaxRequestBodyBytes: got %d, want 0 (no limit)", cfg.MaxRequestBodyBytes)
+	}
+	if cfg.RequestSpoolDir != "" {
+		t.Errorf("RequestSpoolDir: got %q, want empty (OS temp dir)", cfg.RequestSpoolDir)
+	}
+}
+
+func TestLoadEnv_RequestBodyLimits(t *testing.T) {
+	t.Setenv("MAX_REQUEST_BODY_BYTES", "268435456")
+	t.Setenv("REQUEST_SPOOL_DIR", "/var/spool/ai-proxy")
+	cfg := defaults()
+	loadEnv(cfg)
+	if cfg.MaxRequestBodyBytes != 256<<20 {
+		t.Errorf("MaxRequestBodyBytes: got %d, want %d", cfg.MaxRequestBodyBytes, 256<<20)
+	}
+	if cfg.RequestSpoolDir != "/var/spool/ai-proxy" {
+		t.Errorf("RequestSpoolDir: got %q", cfg.RequestSpoolDir)
+	}
+}
+
+func TestLoadEnv_MaxRequestBodyBytesInvalidIgnored(t *testing.T) {
+	t.Setenv("MAX_REQUEST_BODY_BYTES", "50MiB")
+	cfg := defaults()
+	loadEnv(cfg)
+	if cfg.MaxRequestBodyBytes != 0 {
+		t.Errorf("unparseable value should be ignored, got %d", cfg.MaxRequestBodyBytes)
+	}
+}
+
+func TestLoad_MaxRequestBodyBytesNegativeMeansNoLimit(t *testing.T) {
+	t.Setenv("MAX_REQUEST_BODY_BYTES", "-1")
+	cfg := Load()
+	if cfg.MaxRequestBodyBytes != 0 {
+		t.Errorf("negative limit should become 0 (no limit), got %d", cfg.MaxRequestBodyBytes)
+	}
+}
+
+func TestLoadFile_RequestBodyLimits(t *testing.T) {
+	path := t.TempDir() + "/proxy-config.json"
+	if err := os.WriteFile(path, []byte(`{"maxRequestBodyBytes":1073741824,"requestSpoolDir":"/srv/spool"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults()
+	loadFile(cfg, path)
+	if cfg.MaxRequestBodyBytes != 1<<30 || cfg.RequestSpoolDir != "/srv/spool" {
+		t.Errorf("got MaxRequestBodyBytes=%d RequestSpoolDir=%q", cfg.MaxRequestBodyBytes, cfg.RequestSpoolDir)
+	}
+}
+
 func TestResolvePIIInstruction_PrefixMatch(t *testing.T) {
 	cfg := defaults()
 	instruction := cfg.ResolvePIIInstruction("claude-sonnet-4-6")
