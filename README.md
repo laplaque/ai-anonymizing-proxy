@@ -157,8 +157,12 @@ curl http://localhost:8081/metrics
   checked at TCP connection time, not DNS resolution time, to prevent DNS rebinding attacks.
 - **Isolated outbound transport.** The proxy transport never reads `HTTP_PROXY` / `HTTPS_PROXY`
   from the environment; upstream proxy chaining is configured explicitly via `UPSTREAM_PROXY`.
-- **Request body limits.** Anonymization reads at most 50 MB per request body. Ollama response
-  reads are capped at 10 MB.
+- **Request body limits.** Anonymization reads at most 50 MB per request body (measured on the
+  wire, before content decoding). Ollama response reads are capped at 10 MB.
+- **Compressed requests.** `gzip`, `deflate` and `zstd` request bodies are decoded, anonymized
+  and re-encoded with the same `Content-Encoding`. Unsupported codings are rejected with 415;
+  malformed compressed data or invalid declared JSON is rejected with 400 and never forwarded.
+  See [docs/architecture.md](docs/architecture.md#request-content-codings).
 - **Error sanitization.** Upstream errors are logged server-side but never exposed to clients
   (all proxy error responses return generic messages).
 - **Management API.** Binds to `127.0.0.1` only. Optionally protected by bearer token auth via
