@@ -1399,9 +1399,8 @@ func TestHandleMITMTunnel(t *testing.T) {
 	req.Host = backendHost
 	req.RemoteAddr = "127.0.0.1:12345"
 
-	// Run handleMITMTunnel in a goroutine (it will hijack and serve).
-	// The goroutine may outlive the test due to singleConnListener blocking on
-	// second Accept(); this is by design in the production code.
+	// Run handleMITMTunnel in a goroutine (it will hijack and serve until the
+	// client closes the tunnel).
 	go srv.handleMITMTunnel(hw, req, backendHost, backendHost)
 
 	// Act as a TLS client on the hijacked connection.
