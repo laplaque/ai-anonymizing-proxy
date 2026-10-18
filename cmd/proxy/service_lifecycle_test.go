@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,4 +209,22 @@ func hasCall(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestDrainServeErr pins both outcomes of the post-Stop drain: a clean exit
+// (nil) logs nothing, while a server failure that raced with the stop request
+// is logged instead of being discarded.
+func TestDrainServeErr(t *testing.T) {
+	clean := make(chan error, 1)
+	clean <- nil
+	if out := captureLog(t, func() { drainServeErr(clean) }); out != "" {
+		t.Errorf("clean exit logged %q, want no output", out)
+	}
+
+	failed := make(chan error, 1)
+	failed <- errors.New("accept tcp: use of closed network connection")
+	out := captureLog(t, func() { drainServeErr(failed) })
+	if !strings.Contains(out, "HTTP server exited during stop: accept tcp: use of closed network connection") {
+		t.Errorf("server failure not logged; got %q", out)
+	}
 }

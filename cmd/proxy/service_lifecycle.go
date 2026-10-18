@@ -73,9 +73,20 @@ func runServiceLifecycle(srv *http.Server, requests <-chan svcCommand, status sv
 					log.Printf("[SERVICE] shutdown: %v", err)
 				}
 				cancel()
-				<-serveErr
+				drainServeErr(serveErr)
 				return 0
 			}
 		}
+	}
+}
+
+// drainServeErr waits for the ListenAndServe goroutine to exit after a Stop
+// command and logs any error it reports. http.ErrServerClosed is already
+// mapped to nil by the goroutine, so a non-nil value here is a genuine server
+// failure that raced with the stop request; the stop is still honored, but the
+// failure must not be discarded silently.
+func drainServeErr(serveErr <-chan error) {
+	if err := <-serveErr; err != nil {
+		log.Printf("[SERVICE] HTTP server exited during stop: %v", err)
 	}
 }
