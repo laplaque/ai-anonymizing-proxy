@@ -53,7 +53,16 @@ checked=0
 while IFS= read -r file; do
   # Match file path precisely using literal match with trailing colon
   # to prevent substring collisions (e.g. proxy.go matching reverse_proxy.go).
+  file_funcs=$(echo "$cover_output" | grep -F "/$file:" || true)
+  # Declaration lines of every function in this file, ascending. A function's
+  # source range runs from its declaration line up to the next one.
+  func_starts=$(echo "$file_funcs" | awk -F: 'NF > 2 {print $2}' | sort -n)
   while IFS= read -r line; do
+    # A changed file with no functions yields one empty line.
+    if [ -z "$line" ]; then
+      continue
+    fi
+
     # Extract coverage percentage (last field, strip %)
     pct=$(echo "$line" | awk '{print $NF}' | tr -d '%')
     func_name=$(echo "$line" | awk '{print $(NF-1)}')
@@ -66,11 +75,27 @@ while IFS= read -r file; do
     # `go tool cover -func` reports 0.0% for functions with zero instrumented
     # statements (e.g. empty interface-compliance methods). That's not a
     # coverage failure — it's a 0-of-0 ratio. Detect by summing numStmts from
-    # all blocks in the raw profile whose start line equals the function's
-    # declaration line. If the sum is 0, the function has nothing to cover.
+    # all blocks in the raw profile that start inside the function's source
+    # range (its declaration line up to, not including, the next function's).
+    # If the sum is 0, the function has nothing to cover.
+    #
+    # The range is needed because block start positions differ by toolchain:
+    # go1.26 starts a function's first block at the opening brace on the
+    # declaration line, go1.27 at the first statement on a later line. Matching
+    # only the declaration line found no block under go1.27, and grep's
+    # no-match exit status then aborted this script silently under pipefail.
     func_start_line=$(echo "$line" | awk -F: '{print $2}')
-    stmt_sum=$(grep -E "/${file}:${func_start_line}\." "$COVERAGE_FILE" \
-      | awk '{sum += $2} END {print sum+0}')
+    next_start_line=$(echo "$func_starts" \
+      | awk -v s="$func_start_line" '$1 > s {print $1; exit}')
+    stmt_sum=$(awk -v f="/${file}:" -v lo="$func_start_line" -v hi="${next_start_line:-0}" '
+      {
+        i = index($1, f)
+        if (i == 0) next
+        split(substr($1, i + length(f)), pos, ".")
+        l = pos[1] + 0
+        if (l >= lo && (hi == 0 || l < hi)) sum += $2
+      }
+      END {print sum+0}' "$COVERAGE_FILE")
     if [ "$stmt_sum" = "0" ]; then
       continue
     fi
@@ -83,7 +108,7 @@ while IFS= read -r file; do
       echo "FAIL: ${line}"
       failed=$((failed + 1))
     fi
-  done < <(echo "$cover_output" | grep -F "/$file:" || true)
+  done <<< "$file_funcs"
 done <<< "$changed_files"
 
 echo ""
