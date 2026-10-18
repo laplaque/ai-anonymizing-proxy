@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -314,7 +315,7 @@ func TestSingleConnListener_AcceptReturnsConn(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	conn, err := l.Accept()
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
@@ -332,7 +333,7 @@ func TestSingleConnListener_CloseClosesConn(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	if err := l.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
@@ -340,6 +341,65 @@ func TestSingleConnListener_CloseClosesConn(t *testing.T) {
 	_, err := server.Read(buf)
 	if err == nil {
 		t.Error("expected error reading from closed conn")
+	}
+}
+
+// After the connection has been handed out, Accept must block until the
+// connection is finished and then report net.ErrClosed, so http.Server.Serve
+// returns instead of parking its accept loop forever.
+func TestSingleConnListener_SecondAcceptWaitsForConnDone(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	l := newSingleConnListener(server)
+	if _, err := l.Accept(); err != nil {
+		t.Fatalf("first Accept: %v", err)
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := l.Accept()
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		t.Fatalf("second Accept returned before the connection finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	l.connDone()
+	l.connDone() // idempotent: http.Server may report StateClosed once, Close may follow
+	select {
+	case err := <-errc:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("second Accept error = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Accept still blocked after connDone")
+	}
+}
+
+func TestSingleConnListener_CloseUnblocksAccept(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	l := newSingleConnListener(server)
+	if _, err := l.Accept(); err != nil {
+		t.Fatalf("first Accept: %v", err)
+	}
+	errc := make(chan error, 1)
+	go func() {
+		_, err := l.Accept()
+		errc <- err
+	}()
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-errc:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Accept after Close = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Accept still blocked after Close")
 	}
 }
 
@@ -354,7 +414,7 @@ func TestSingleConnListener_Addr(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	if l.Addr() == nil {
 		t.Error("Addr() should not be nil")
 	}
@@ -378,7 +438,11 @@ func TestHandleConn_HTTP1(t *testing.T) {
 
 	clientRaw, serverRaw := net.Pipe()
 
-	go HandleConn(serverRaw, "test.example.com", ca, handler)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		HandleConn(serverRaw, "test.example.com", ca, handler)
+	}()
 
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.cert)
@@ -414,6 +478,18 @@ func TestHandleConn_HTTP1(t *testing.T) {
 		// OK
 	case <-time.After(5 * time.Second):
 		t.Fatal("handler was not called")
+	}
+	waitHandleConnReturn(t, returned)
+}
+
+// waitHandleConnReturn requires HandleConn to return once the client has
+// closed the tunnel, so no serving goroutine outlives its connection.
+func waitHandleConnReturn(t *testing.T, returned <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HandleConn did not return after the client closed the connection")
 	}
 }
 
