@@ -26,7 +26,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
-          version: v2.10.1
+          version: v2.15.0
           args: --timeout=5m
 
   test:
@@ -52,6 +52,11 @@ jobs:
 
       - name: Display coverage
         run: go tool cover -func=coverage.out
+
+      # The gate's helper, tools/funccoverage, is part of ./..., so the
+      # coverage run above instruments it and the delta check gates it.
+      - name: Delta coverage script tests
+        run: bash .github/scripts/delta-coverage_test.sh
 
       - name: Delta coverage check
         if: github.event_name == 'pull_request'
@@ -81,7 +86,13 @@ jobs:
 
       - name: Run gosec
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          # gosec v2.29.0 (latest tag) vendors golang.org/x/tools v0.49.0, which
+          # cannot decode Go 1.27 export data ("export data version 5 is greater
+          # than maximum supported version 4") and type-checks nothing. Pin the
+          # upstream master pseudo-version that moved to x/tools v0.52.0 until a
+          # tagged release includes it; then return to a tagged version.
+          # Tracked in #156.
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20261015133444-707f2271f665
           gosec -exclude=G104,G304,G703,G706 ./...
 
       - name: Run govulncheck

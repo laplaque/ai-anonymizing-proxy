@@ -86,7 +86,7 @@ API's reply reaches the client with original values restored.
 
 ## Prerequisites
 
-- **Go 1.26+** — [go.dev/dl](https://go.dev/dl/)
+- **Go 1.27+** — [go.dev/dl](https://go.dev/dl/)
 - **Ollama** (optional, for AI-powered PII detection) — [ollama.com](https://ollama.com)
 
 If Ollama is not running, the proxy falls back to regex-only detection.

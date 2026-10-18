@@ -499,6 +499,123 @@ func TestAnonymizeIPv6(t *testing.T) {
 	}
 }
 
+// nonRetriggerPIITypes is every PII type a token can carry: the types the
+// Ollama prompt asks the model to report (queryOllamaHTTP) and every type
+// registered by a detection pack. TestNonRetriggerPIITypesComplete fails when
+// a registered type is missing, so a new pack type cannot skip the
+// non-retriggering tests below.
+var nonRetriggerPIITypes = []PIIType{
+	// Ollama prompt types.
+	PIIEmail, PIIPhone, PIISSN, PIICreditCard, PIIName, PIIAddress,
+	PIIMedical, PIISalary, PIICompany, PIIJobTitle, PIIAPIKey,
+	// GLOBAL, US.
+	PIIIPAddress,
+	// DE.
+	PIISteuerID, PIISVNR, PIIKFZ,
+	// SECRETS.
+	PIISSHKey, PIIJWT, PIIBearer, PIIDBConn, PIIAWSKey, PIIGHToken,
+	"GLTOKEN", "SLACKTOKEN", "STRIPEKEY", "NPMTOKEN", "PYPITOKEN", "OPENAIKEY",
+	"DOCKERTOKEN", "GOOGLEKEY", "SHOPIFYTOKEN", "SENDGRIDKEY", "GROQKEY",
+	"TWILIOTOKEN", "FBTOKEN", "AMZTOKEN", "CLOUDINARYTOKEN", "PGPKEY",
+	// FR.
+	PIINIR, PIISIRET, PIISIREN,
+	// NL.
+	PIIBSN, PIIKVK,
+	// FINANCE_EU.
+	PIIIBAN, PIISWIFTBIC, PIIVATID,
+	// HEALTHCARE.
+	PIIMRN, PIIICD10, PIIInsuranceID,
+}
+
+// TestNonRetriggerPIITypesComplete asserts that nonRetriggerPIITypes covers
+// every PII type registered by any pack, and lists each type once.
+func TestNonRetriggerPIITypesComplete(t *testing.T) {
+	listed := make(map[PIIType]bool, len(nonRetriggerPIITypes))
+	for _, pt := range nonRetriggerPIITypes {
+		if listed[pt] {
+			t.Errorf("PII type %q listed twice in nonRetriggerPIITypes", pt)
+		}
+		listed[pt] = true
+	}
+	registered := packs.PIITypes()
+	if len(registered) == 0 {
+		t.Fatal("packs.PIITypes() returned no types; pack registration did not run")
+	}
+	for _, name := range registered {
+		if !listed[PIIType(name)] {
+			t.Errorf("registered PII type %q is missing from nonRetriggerPIITypes; add it so its tokens are checked for re-triggering", name)
+		}
+	}
+}
+
+// TestSecretsTokensNonRetriggering drives the 16 SECRETS types that the
+// token-format tests above previously omitted through real detection: each
+// synthetic fixture (shaped like the credential, never a real one) must be
+// replaced by a token of its own type, and anonymizing that output again must
+// change nothing, with the default-style and all-packs configurations.
+func TestSecretsTokensNonRetriggering(t *testing.T) {
+	fixtures := []struct {
+		piiType PIIType
+		value   string
+	}{
+		{"GLTOKEN", "glpat-ABCDEFGHIJKLMNOPQRST"},
+		{"GLTOKEN", "gldt-ABCDEFGHIJKLMNOPQRST"},
+		{"SLACKTOKEN", "xoxb-123456789012-1234567890123-abcDefGhiJkl"},
+		{"STRIPEKEY", "sk_test_ABCDEFghijklmnopqrst"},
+		{"NPMTOKEN", "npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"},
+		{"PYPITOKEN", "pypi-" + strings.Repeat("AbCdEfGhIj", 9)},
+		{"OPENAIKEY", "sk-ABCDEFghijklmnopqrstuvwxyz"},
+		{"DOCKERTOKEN", "dckr_pat_ABCDEFGHIJKLMNOPQRST"},
+		{"GOOGLEKEY", "AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"},
+		{"SHOPIFYTOKEN", "shpat_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"},
+		{"SENDGRIDKEY", "SG.ABCDEFGHIJKLMNOPQRSTUVWX"},
+		{"GROQKEY", "gsk_ABCDEFGHIJKLMNOPQRSTUVWX"},
+		{"TWILIOTOKEN", "AC" + strings.Repeat("0", 32)},
+		{"TWILIOTOKEN", "SK" + strings.Repeat("0", 32)},
+		{"FBTOKEN", "EAACEdEose0cBAabcdef1234567890"},
+		{"AMZTOKEN", "amzn.mws.12345678-1234-1234-1234-123456789012"},
+		{"CLOUDINARYTOKEN", "cloudinary://123456789012345:abcdefGHIJ@cloud_name"},
+		{"PGPKEY", "-----BEGIN PGP PRIVATE KEY BLOCK-----"},
+	}
+	configs := map[string][]string{
+		"default packs": {"SECRETS", "GLOBAL", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
+		"all packs":     {"SECRETS", "GLOBAL", "DE", "FR", "US", "NL", "FINANCE_EU", "HEALTHCARE"},
+	}
+	for name, enabled := range configs {
+		t.Run(name, func(t *testing.T) {
+			a := NewWithCacheAndCapacity(Options{
+				OllamaEndpoint:      "http://localhost:11434",
+				OllamaModel:         "test-model",
+				UseAI:               false,
+				AIThreshold:         0.8,
+				OllamaMaxConcurrent: 1,
+				EnabledPacks:        enabled,
+				PackDecayRate:       0.05,
+			})
+			covered := map[PIIType]bool{}
+			for _, f := range fixtures {
+				input := "credential " + f.value + " end"
+				once := a.AnonymizeText(input, "")
+				if strings.Contains(once, f.value) {
+					t.Errorf("%s fixture %q not anonymized: %q", f.piiType, f.value, once)
+					continue
+				}
+				if !strings.Contains(once, "[PII_"+string(f.piiType)+"_") {
+					t.Errorf("%s fixture %q produced no %s token: %q", f.piiType, f.value, f.piiType, once)
+					continue
+				}
+				if twice := a.AnonymizeText(once, ""); twice != once {
+					t.Errorf("%s token re-triggered detection:\n first:  %q\n second: %q", f.piiType, once, twice)
+				}
+				covered[f.piiType] = true
+			}
+			if len(covered) != 16 {
+				t.Errorf("fixtures exercised %d SECRETS types, want 16: %v", len(covered), covered)
+			}
+		})
+	}
+}
+
 func TestTokenFormatNonRetriggering(t *testing.T) {
 	// Use pack-based loader with default enabled packs (GLOBAL, DE, SECRETS).
 	// This tests the production configuration where US pack (with the broad phone
@@ -512,19 +629,7 @@ func TestTokenFormatNonRetriggering(t *testing.T) {
 		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "FR", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.05,
 	})
-	piiTypes := []PIIType{
-		PIIEmail, PIIPhone, PIISSN, PIICreditCard, PIIIPAddress,
-		PIIAPIKey, PIIName, PIIAddress, PIIMedical, PIISalary,
-		PIICompany, PIIJobTitle,
-		// Pack-added types
-		PIISteuerID, PIISVNR, PIIKFZ,
-		PIISSHKey, PIIJWT, PIIBearer, PIIDBConn, PIIAWSKey, PIIGHToken,
-		PIINIR, PIISIRET, PIISIREN,
-		PIIBSN, PIIKVK,
-		PIIIBAN, PIISWIFTBIC, PIIVATID,
-		PIIMRN, PIIICD10, PIIInsuranceID,
-	}
-	for _, pt := range piiTypes {
+	for _, pt := range nonRetriggerPIITypes {
 		token := a.replacement(pt, "test-value-for-"+string(pt))
 		for _, p := range a.patterns {
 			if p.re.MatchString(token) {
@@ -546,24 +651,13 @@ func TestTokenFormatNonRetriggeringAllPacks(t *testing.T) {
 		EnabledPacks:        []string{"SECRETS", "GLOBAL", "DE", "FR", "US", "NL", "FINANCE_EU", "HEALTHCARE"},
 		PackDecayRate:       0.05,
 	})
-	// Only test PII types whose tokens are guaranteed not to retrigger.
 	// The US phone pattern is deliberately broad (confidence 0.65) and can match
 	// 10-digit sequences in hex hashes. This is mitigated by the low confidence
 	// score triggering AI verification. Document the known false-positive here.
 	knownPhoneRetriggerTypes := map[PIIType]bool{
 		PIIKFZ: true, PIIDBConn: true, // hex hashes happen to contain 10-digit sequences
 	}
-	piiTypes := []PIIType{
-		PIIEmail, PIIPhone, PIISSN, PIICreditCard, PIIIPAddress,
-		PIIAPIKey, PIIName, PIIAddress,
-		PIISteuerID, PIISVNR, PIIKFZ,
-		PIISSHKey, PIIJWT, PIIBearer, PIIDBConn, PIIAWSKey, PIIGHToken,
-		PIINIR, PIISIRET, PIISIREN,
-		PIIBSN, PIIKVK,
-		PIIIBAN, PIISWIFTBIC, PIIVATID,
-		PIIMRN, PIIICD10, PIIInsuranceID,
-	}
-	for _, pt := range piiTypes {
+	for _, pt := range nonRetriggerPIITypes {
 		token := a.replacement(pt, "test-value-for-"+string(pt))
 		for _, p := range a.patterns {
 			if p.re.MatchString(token) {

@@ -44,50 +44,63 @@ echo "Changed source files:"
 echo "$changed_files" | sed 's/^/  /'
 echo ""
 
-# Get function-level coverage
-cover_output=$(go tool cover -func="$COVERAGE_FILE")
+# Per-function coverage from the parsed source. funccoverage assigns a profile
+# block to a function only when the block lies within the function's
+# line/column extent (the rule `go tool cover -func` uses), so blocks of
+# package-level function literals never count toward a neighboring
+# declaration. Fail closed if the helper cannot be built, a file cannot be
+# parsed, or a changed file built on this platform has function bodies or
+# literals but no blocks in the profile (its package was left out of the
+# coverage run). A file with only types, constants or plain variables has no
+# blocks by construction and nothing to check. The helper lives in
+# tools/funccoverage so that ./... covers and gates it too.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER_SRC="$SCRIPT_DIR/../../tools/funccoverage"
+helper_dir="$(mktemp -d)"
+trap 'rm -rf "$helper_dir"' EXIT
+if ! (cd "$HELPER_SRC" && go build -o "$helper_dir/funccoverage" .); then
+  echo "ERROR: failed to build $HELPER_SRC" >&2
+  exit 1
+fi
+mapfile -t changed_list <<< "$changed_files"
+if ! func_rows=$("$helper_dir/funccoverage" "$COVERAGE_FILE" "${changed_list[@]}"); then
+  echo "ERROR: funccoverage failed for the changed files." >&2
+  exit 1
+fi
 
 failed=0
 checked=0
+skipped=0
 
-while IFS= read -r file; do
-  # Match file path precisely using literal match with trailing colon
-  # to prevent substring collisions (e.g. proxy.go matching reverse_proxy.go).
-  while IFS= read -r line; do
-    # Extract coverage percentage (last field, strip %)
-    pct=$(echo "$line" | awk '{print $NF}' | tr -d '%')
-    func_name=$(echo "$line" | awk '{print $(NF-1)}')
+# Each row: <file>:<line> TAB <name> TAB <covered stmts> TAB <total stmts>.
+while IFS=$'\t' read -r location func_name covered total; do
+  if [ -z "$location" ]; then
+    continue
+  fi
 
-    # Skip the total line
-    if [ "$func_name" = "(statements)" ]; then
-      continue
-    fi
+  # A function whose extent holds no profile block has no statements (an
+  # empty body, such as an interface-compliance method), so it has nothing
+  # to cover: 0 of 0 is not a failure. The only other source of 0 is a file
+  # that build constraints exclude on this platform, which funccoverage
+  # names in a warning; any other uninstrumented file with executable code
+  # already failed above.
+  if [ "$total" -eq 0 ]; then
+    skipped=$((skipped + 1))
+    continue
+  fi
 
-    # `go tool cover -func` reports 0.0% for functions with zero instrumented
-    # statements (e.g. empty interface-compliance methods). That's not a
-    # coverage failure — it's a 0-of-0 ratio. Detect by summing numStmts from
-    # all blocks in the raw profile whose start line equals the function's
-    # declaration line. If the sum is 0, the function has nothing to cover.
-    func_start_line=$(echo "$line" | awk -F: '{print $2}')
-    stmt_sum=$(grep -E "/${file}:${func_start_line}\." "$COVERAGE_FILE" \
-      | awk '{sum += $2} END {print sum+0}')
-    if [ "$stmt_sum" = "0" ]; then
-      continue
-    fi
+  checked=$((checked + 1))
 
-    checked=$((checked + 1))
-
-    # Compare using awk for float comparison
-    below=$(awk "BEGIN {print ($pct < $THRESHOLD) ? 1 : 0}")
-    if [ "$below" -eq 1 ]; then
-      echo "FAIL: ${line}"
-      failed=$((failed + 1))
-    fi
-  done < <(echo "$cover_output" | grep -F "/$file:" || true)
-done <<< "$changed_files"
+  pct=$(awk -v c="$covered" -v t="$total" 'BEGIN {printf "%.1f", 100 * c / t}')
+  below=$(awk -v c="$covered" -v t="$total" -v th="$THRESHOLD" 'BEGIN {print (100 * c / t < th) ? 1 : 0}')
+  if [ "$below" -eq 1 ]; then
+    echo "FAIL: ${location}: ${func_name} ${pct}% (${covered}/${total} statements)"
+    failed=$((failed + 1))
+  fi
+done <<< "$func_rows"
 
 echo ""
-echo "Checked ${checked} functions in ${changed_files_count} changed files."
+echo "Checked ${checked} functions in ${changed_files_count} changed files (${skipped} without statements skipped)."
 
 if [ "$failed" -gt 0 ]; then
   echo "ERROR: ${failed} function(s) below ${THRESHOLD}% coverage threshold."
