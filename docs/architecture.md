@@ -124,6 +124,43 @@ sequenceDiagram
     P->>A: DeleteSession(sessionID)
 ```
 
+### Request content codings
+
+Both the MITM and plain-HTTP paths pass request bodies through
+`anonymizeRequestBody`, which handles `Content-Encoding` before the anonymizer
+sees the body (issue #153). Some clients (for example OpenCode) send
+`Content-Encoding: zstd` request bodies.
+
+```mermaid
+flowchart TD
+    IN([Wire body ≤ 50 MiB]) --> CE{Content-Encoding\nsupported?}
+    CE -->|No| E415[415 + Accept-Encoding\nnot forwarded]
+    CE -->|Yes| DEC[Decode codings\nlast-applied first]
+    DEC -->|malformed / truncated /\ntrailing data| E400[400\nnot forwarded]
+    DEC --> JSON{Declared JSON?}
+    JSON -->|Yes, invalid| E400
+    JSON -->|Valid, or not declared| ANON[AnonymizeJSON\ndecoded body]
+    ANON --> ENC[Re-encode with the\nsame coding chain]
+    ENC --> OUT([Body, GetBody,\nContent-Length, Content-Encoding\nupdated together])
+```
+
+- **Supported codings:** `gzip` (and its `x-gzip` alias), `deflate` (the zlib format,
+  RFC 9110 §8.4.1.2), `zstd`, and `identity`. Chains such as `gzip, zstd` are decoded in
+  reverse order and re-encoded in the original order. Any other coding (`br`, `compress`, …)
+  is rejected with `415 Unsupported Media Type` and an `Accept-Encoding: gzip, deflate, zstd`
+  header.
+- **Rejections:** malformed, truncated, or trailing-garbage compressed data, and bodies whose
+  `Content-Type` is `application/json` or `*+json` but that do not parse after decoding,
+  are rejected with `400`. Rejected bodies never reach the text anonymizer or the upstream.
+- **Framing:** the forwarded request always has an explicit `Content-Length` that matches the
+  transmitted bytes. `GetBody` replays the anonymized bytes, so a transport retry cannot
+  resend the original body.
+- **Resource controls:** the existing 50 MiB limit applies to the wire body. The decoded body
+  is not capped separately; request size policy is tracked in issue #152. zstd frames are
+  decoded synchronously (one goroutine) with low-memory buffers and a window of at most
+  8 MiB, the interoperable limit for the HTTP `zstd` coding (RFC 9659). Larger windows are
+  rejected with `400`. The anonymized body is re-encoded with an 8 MiB window.
+
 ## Anonymization pipeline
 
 ```mermaid

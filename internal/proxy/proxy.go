@@ -21,6 +21,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +30,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -339,7 +342,7 @@ func (s *Server) processMITMRequestBody(rw http.ResponseWriter, req *http.Reques
 	sessionID, err := s.anonymizeRequestBody(req)
 	if err != nil {
 		log.Printf("[MITM] %s Anonymization error for %s: %v", ctx.remoteHash, ctx.domain, err)
-		http.Error(rw, "payload too large", http.StatusRequestEntityTooLarge)
+		writeRequestBodyError(rw, err)
 		return "", false
 	}
 
@@ -451,7 +454,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID, err = s.anonymizeRequestBody(r)
 		if err != nil {
 			log.Printf("[HTTP] %s Anonymization error for %s: %v", hashRemoteAddr(r.RemoteAddr), domain, err)
-			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			writeRequestBodyError(w, err)
 			return
 		}
 		if sessionID != "" {
@@ -518,6 +521,14 @@ const maxRequestBody = 50 << 20 // 50 MB
 // return one in-process.
 var randRead = rand.Read
 
+// anonymizeRequestBody replaces r's body with its anonymized form and returns
+// the session ID holding the token mappings. Content codings are removed before
+// anonymization and re-applied afterwards (issue #153); bodies with unsupported
+// or malformed codings, or declared JSON that does not parse, are rejected with
+// a *requestBodyError and must not be forwarded.
+//
+// maxRequestBody bounds the wire body only. The decoded body is not capped
+// separately; request size policy is tracked in issue #152.
 func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	if r.Body == nil || r.ContentLength == 0 {
 		return "", nil
@@ -534,6 +545,18 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	if int64(len(body)) > maxRequestBody {
 		return "", fmt.Errorf("request body exceeds %d bytes", maxRequestBody)
 	}
+	if len(body) == 0 {
+		setRequestBody(r, nil)
+		return "", nil
+	}
+
+	codings, decoded, err := decodeRequestBody(r.Header, body)
+	if err != nil {
+		if s.m != nil {
+			s.m.ErrorsAnonymize.Add(1)
+		}
+		return "", err
+	}
 
 	var sessionID string
 	b := make([]byte, 8)
@@ -544,14 +567,59 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, error) {
 	}
 
 	anonStart := time.Now()
-	anonymized := s.anon.AnonymizeJSON(body, sessionID)
+	anonymized := s.anon.AnonymizeJSON(decoded, sessionID)
 	if s.m != nil {
 		s.m.RecordAnonLatency(time.Since(anonStart))
 	}
 
-	r.Body = io.NopCloser(bytes.NewReader(anonymized))
-	r.ContentLength = int64(len(anonymized))
+	var encoded bytes.Buffer
+	if err := encodeBody(&encoded, anonymized, codings); err != nil {
+		s.anon.DeleteSession(sessionID)
+		if s.m != nil {
+			s.m.ErrorsAnonymize.Add(1)
+		}
+		return "", &requestBodyError{status: http.StatusInternalServerError, msg: "request encoding failed", err: err}
+	}
+
+	if len(codings) > 0 {
+		r.Header.Set(headerContentEncoding, codingNames(codings))
+	}
+	setRequestBody(r, encoded.Bytes())
 	return sessionID, nil
+}
+
+// decodeRequestBody parses the request's Content-Encoding, removes the
+// codings from body and validates declared JSON.
+func decodeRequestBody(h http.Header, body []byte) ([]*contentCoding, []byte, error) {
+	codings, err := parseContentEncoding(h.Values(headerContentEncoding))
+	if err != nil {
+		return nil, nil, err
+	}
+	decoded, err := decodeBody(body, codings)
+	if err != nil {
+		return nil, nil, err
+	}
+	if isDeclaredJSON(h.Get("Content-Type")) && !json.Valid(decoded) {
+		return nil, nil, badRequestBody(errors.New("body declared as JSON is not valid JSON"))
+	}
+	return codings, decoded, nil
+}
+
+// setRequestBody installs body as the bytes to transmit and keeps every
+// representation of it consistent: Body, the GetBody replay used by the
+// transport on retries and redirects (which would otherwise resend the
+// original, un-anonymized bytes), and explicit Content-Length framing.
+func setRequestBody(r *http.Request, body []byte) {
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	r.TransferEncoding = nil
+	if len(body) == 0 {
+		r.Body = http.NoBody
+		r.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 }
 
 func (s *Server) deanonymizeResponseBody(resp *http.Response, sessionID string, domain string) {
