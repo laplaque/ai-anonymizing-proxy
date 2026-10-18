@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 // HandleConn performs a TLS handshake on the hijacked client connection,
@@ -26,41 +24,38 @@ func HandleConn(clientConn net.Conn, host string, ca *CA, handler http.Handler) 
 	}
 	defer func() { _ = tlsConn.Close() }() // best-effort close on TLS connection
 
-	// Determine which protocol was negotiated
-	proto := tlsConn.ConnectionState().NegotiatedProtocol
+	ln := newSingleConnListener(tlsConn)
+	srv := newMITMServer(handler, ln)
+	_ = srv.Serve(ln) // returns net.ErrClosed once the connection is finished
+}
 
-	switch proto {
-	case "h2":
-		// Serve HTTP/2 directly on the TLS connection using a configured h2 server.
-		// ServeConn errors are logged — previously they were silently discarded,
-		// which caused ECONNRESET on the client with nothing in the proxy error log.
-		h2srv := &http2.Server{
-			MaxHandlers:                  0, // unlimited
+// newMITMServer returns the server for one intercepted connection. net/http
+// serves whichever protocol was negotiated via ALPN (TLSConfigForHost offers
+// h2 and http/1.1); HTTP/2 uses net/http's built-in implementation, which
+// replaces the deprecated golang.org/x/net/http2.Server with the same limits.
+func newMITMServer(handler http.Handler, ln *singleConnListener) *http.Server {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		Protocols:         protocols,
+		HTTP2: &http.HTTP2Config{
 			MaxConcurrentStreams:         250,
 			MaxDecoderHeaderTableSize:    4096,
 			MaxEncoderHeaderTableSize:    4096,
 			MaxReadFrameSize:             1 << 20, // 1 MiB
 			PermitProhibitedCipherSuites: false,
-			IdleTimeout:                  90 * time.Second,
-		}
-		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
-			Handler: handler,
-		})
-	default:
-		// HTTP/1.1: serve using a single-connection listener
-		ln := newSingleConnListener(tlsConn)
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 10 * time.Second,
-			// A hijacked connection is owned by its handler, so only a close
-			// ends the listener; HandleConn must not close a connection still in use.
-			ConnState: func(_ net.Conn, state http.ConnState) {
-				if state == http.StateClosed {
-					ln.connDone()
-				}
-			},
-		}
-		_ = srv.Serve(ln) // returns net.ErrClosed once the connection is finished
+		},
+		// A hijacked connection is owned by its handler, so only a close ends
+		// the listener; HandleConn must not close a connection still in use.
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				ln.connDone()
+			}
+		},
 	}
 }
 

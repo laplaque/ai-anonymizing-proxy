@@ -304,8 +304,10 @@ flowchart LR
     SIGN --> STORE[Store in cache\nmax 10 000 entries\nfull clear on overflow]
     STORE --> TLSCFG[tls.Config.GetCertificate]
     TLSCFG --> ALPN{ALPN negotiated?}
-    ALPN -->|h2| H2[http2.Server.ServeConn]
-    ALPN -->|http/1.1| H1[http.Server\nsingleConnListener]
+    ALPN -->|h2| H2[net/http HTTP/2\nhttp.Server.HTTP2]
+    ALPN -->|http/1.1| H1[net/http HTTP/1.1]
+    H2 --> SRV[one http.Server per tunnel\nsingleConnListener]
+    H1 --> SRV
 ```
 
 ## Domain registry and persistence

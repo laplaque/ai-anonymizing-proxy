@@ -2,10 +2,13 @@ package mitm
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -13,8 +16,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 // tempCA generates a CA into a temp dir and returns (certFile, keyFile).
@@ -617,7 +618,11 @@ func TestHandleConn_H2(t *testing.T) {
 
 	clientRaw, serverRaw := net.Pipe()
 
-	go HandleConn(serverRaw, "h2test.example.com", ca, handler)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		HandleConn(serverRaw, "h2test.example.com", ca, handler)
+	}()
 
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.cert)
@@ -636,27 +641,95 @@ func TestHandleConn_H2(t *testing.T) {
 		t.Fatalf("expected h2, got %q", proto)
 	}
 
-	// Make a proper HTTP/2 request using http2.ClientConn
-	h2Transport := &http2.Transport{
-		TLSClientConfig: tlsCfg,
-	}
-	h2Conn, h2Err := h2Transport.NewClientConn(tlsClient)
-	if h2Err != nil {
-		t.Fatalf("h2 client conn: %v", h2Err)
+	// HTTP/2-only net/http client that uses the already-negotiated TLS conn.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	h2Transport := &http.Transport{
+		Protocols: protocols,
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return tlsClient, nil
+		},
 	}
 
 	req, _ := http.NewRequestWithContext(t.Context(), "GET", "https://h2test.example.com/test", nil)
-	resp, respErr := h2Conn.RoundTrip(req)
+	resp, respErr := h2Transport.RoundTrip(req)
 	if respErr != nil {
 		t.Fatalf("h2 RoundTrip: %v", respErr)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK || resp.ProtoMajor != 2 || string(body) != "hello h2" {
+		t.Errorf("expected HTTP/2 200 %q, got %s %d %q", "hello h2", resp.Proto, resp.StatusCode, body)
+	}
+
+	h2Transport.CloseIdleConnections()
+	_ = tlsClient.Close()
+	waitHandleConnReturn(t, returned)
+}
+
+// TestHandleConn_H2Settings pins the HTTP/2 server limits carried over from
+// the former x/net/http2.Server configuration by reading the server's
+// initial SETTINGS frame (RFC 9113 §6.5) off the wire.
+func TestHandleConn_H2Settings(t *testing.T) {
+	certFile, keyFile := tempCA(t)
+	ca, err := LoadCA(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("LoadCA: %v", err)
+	}
+
+	clientRaw, serverRaw := net.Pipe()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		HandleConn(serverRaw, "h2settings.example.com", ca, http.NotFoundHandler())
+	}()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.cert)
+	tlsClient := tls.Client(clientRaw, &tls.Config{ServerName: "h2settings.example.com", RootCAs: roots, NextProtos: []string{"h2"}})
+	if hsErr := tlsClient.HandshakeContext(t.Context()); hsErr != nil {
+		t.Fatalf("TLS handshake: %v", hsErr)
+	}
+	// Client connection preface: magic + empty SETTINGS frame.
+	preface := append([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), 0, 0, 0, 0x4, 0, 0, 0, 0, 0)
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := tlsClient.Write(preface)
+		writeErr <- err
+	}()
+
+	var hdr [9]byte
+	if _, err := io.ReadFull(tlsClient, hdr[:]); err != nil {
+		t.Fatalf("read SETTINGS header: %v", err)
+	}
+	if hdr[3] != 0x4 {
+		t.Fatalf("first server frame type = %#x, want SETTINGS (0x4)", hdr[3])
+	}
+	payload := make([]byte, int(hdr[0])<<16|int(hdr[1])<<8|int(hdr[2]))
+	if _, err := io.ReadFull(tlsClient, payload); err != nil {
+		t.Fatalf("read SETTINGS payload: %v", err)
+	}
+	settings := map[uint16]uint32{}
+	for i := 0; i+6 <= len(payload); i += 6 {
+		settings[binary.BigEndian.Uint16(payload[i:])] = binary.BigEndian.Uint32(payload[i+2:])
+	}
+	const (
+		settingsMaxConcurrentStreams = 0x3
+		settingsMaxFrameSize         = 0x5
+	)
+	if got := settings[settingsMaxConcurrentStreams]; got != 250 {
+		t.Errorf("SETTINGS_MAX_CONCURRENT_STREAMS = %d, want 250 (all settings: %v)", got, settings)
+	}
+	if got := settings[settingsMaxFrameSize]; got != 1<<20 {
+		t.Errorf("SETTINGS_MAX_FRAME_SIZE = %d, want %d (all settings: %v)", got, 1<<20, settings)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatalf("write preface: %v", err)
 	}
 
 	_ = tlsClient.Close()
+	waitHandleConnReturn(t, returned)
 }
 
 func TestCertFor_ExpiredCert(t *testing.T) {
