@@ -12,8 +12,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 // tempCA generates a CA into a temp dir and returns (certFile, keyFile).
@@ -314,7 +312,7 @@ func TestSingleConnListener_AcceptReturnsConn(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	conn, err := l.Accept()
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
@@ -332,7 +330,7 @@ func TestSingleConnListener_CloseClosesConn(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	if err := l.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
@@ -354,7 +352,7 @@ func TestSingleConnListener_Addr(t *testing.T) {
 		}
 	}()
 
-	l := &singleConnListener{conn: server}
+	l := newSingleConnListener(server)
 	if l.Addr() == nil {
 		t.Error("Addr() should not be nil")
 	}
@@ -560,22 +558,20 @@ func TestHandleConn_H2(t *testing.T) {
 		t.Fatalf("expected h2, got %q", proto)
 	}
 
-	// Make a proper HTTP/2 request using http2.ClientConn
-	h2Transport := &http2.Transport{
-		TLSClientConfig: tlsCfg,
-	}
-	h2Conn, h2Err := h2Transport.NewClientConn(tlsClient)
-	if h2Err != nil {
-		t.Fatalf("h2 client conn: %v", h2Err)
-	}
+	// Make a proper HTTP/2 request over the established connection.
+	h2Transport := h2ClientFor(tlsClient)
+	defer h2Transport.CloseIdleConnections()
 
 	req, _ := http.NewRequestWithContext(t.Context(), "GET", "https://h2test.example.com/test", nil)
-	resp, respErr := h2Conn.RoundTrip(req)
+	resp, respErr := h2Transport.RoundTrip(req)
 	if respErr != nil {
 		t.Fatalf("h2 RoundTrip: %v", respErr)
 	}
 	_ = resp.Body.Close()
 
+	if resp.ProtoMajor != 2 {
+		t.Errorf("expected HTTP/2 response, got %s", resp.Proto)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
