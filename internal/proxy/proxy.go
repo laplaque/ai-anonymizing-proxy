@@ -222,7 +222,12 @@ func New(cfg *config.Config, domains *management.DomainRegistry, m *metrics.Metr
 
 // Close releases resources held by the proxy server, including the persistent
 // Ollama cache. Must be called on shutdown.
+// It also retries spool-file removals that failed earlier and logs any that
+// still fail, so they are not silently left behind at shutdown.
 func (s *Server) Close() error {
+	if n := retrySpoolRemovals(); n > 0 {
+		log.Printf("[ANON] %d request-body spool file(s) could not be removed; see earlier spool cleanup errors", n)
+	}
 	return s.anon.Close()
 }
 
@@ -642,7 +647,7 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 	}
 	_ = r.Body.Close() // body fully consumed or abandoned; close is best-effort
 	if err != nil {
-		_ = spool.Close() // discard the partial body; close is best-effort
+		s.closeSpool(spool, sessionID) // discard the partial body
 		s.anon.DeleteSession(sessionID)
 		s.recordAnonError()
 		return "", nil, err
@@ -657,7 +662,24 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 	r.Body = io.NopCloser(body.reader())
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(body.reader()), nil }
 	r.ContentLength = body.size()
-	return sessionID, func() { _ = spool.Close() }, nil // close errors leave nothing to recover
+	return sessionID, func() { s.closeSpool(spool, sessionID) }, nil
+}
+
+// retrySpoolRemovals is bodyspool.RetryRemovals; a var so tests can simulate
+// removals that keep failing.
+var retrySpoolRemovals = bodyspool.RetryRemovals
+
+// closeSpool releases a request-body spool. A failure cannot change the
+// response any more, but it can leave an encrypted spool file on disk, so it
+// is logged (the error names the file and whether it is queued for retry)
+// and counted in errors.spoolCleanup instead of being dropped.
+func (s *Server) closeSpool(spool io.Closer, sessionID string) {
+	if err := spool.Close(); err != nil {
+		log.Printf("[ANON] sessionID=%s spool cleanup failed: %v", sessionID, err)
+		if s.m != nil {
+			s.m.ErrorsSpoolCleanup.Add(1)
+		}
+	}
 }
 
 // declaresJSON reports whether a Content-Type header names a JSON media type:

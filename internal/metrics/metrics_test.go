@@ -49,6 +49,7 @@ func TestErrorCounters(t *testing.T) {
 	m := New()
 	m.ErrorsUpstream.Add(3)
 	m.ErrorsAnonymize.Add(2)
+	m.ErrorsSpoolCleanup.Add(1)
 
 	s := m.Snapshot()
 	if s.Errors.Upstream != 3 {
@@ -56,6 +57,9 @@ func TestErrorCounters(t *testing.T) {
 	}
 	if s.Errors.Anonymize != 2 {
 		t.Errorf("Anonymize errors: got %d, want 2", s.Errors.Anonymize)
+	}
+	if s.Errors.SpoolCleanup != 1 {
+		t.Errorf("SpoolCleanup errors: got %d, want 1", s.Errors.SpoolCleanup)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -220,7 +221,119 @@ func TestSpoolReadAndCloseFailures(t *testing.T) {
 	if _, err := s.Write([]byte("body")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Close(); !errors.As(err, &se) || se.Op != "close spool file" {
+	if err := s.Close(); !errors.As(err, &se) || !strings.HasPrefix(se.Op, "remove spool file ") {
 		t.Fatalf("Close with failing remove: err = %v", err)
+	}
+	removeFile = orig
+	resetPending(t)
+}
+
+// resetPending clears the package's removal retry queue for a test.
+func resetPending(t *testing.T) {
+	t.Helper()
+	pending.Lock()
+	pending.paths = nil
+	pending.Unlock()
+}
+
+// denyRemoval makes removeFile fail until the returned func restores it.
+func denyRemoval(t *testing.T) (restore func()) {
+	t.Helper()
+	orig := removeFile
+	removeFile = func(string) error { return errors.New("permission denied") }
+	restore = func() { removeFile = orig }
+	t.Cleanup(restore)
+	t.Cleanup(func() { resetPending(t) })
+	return restore
+}
+
+// spillToDisk returns a spool whose body is on disk, and the file's path.
+func spillToDisk(t *testing.T, dir string) (*Spool, string) {
+	t.Helper()
+	s := New(dir, 0)
+	if _, err := s.Write([]byte("ciphertext body")); err != nil {
+		t.Fatal(err)
+	}
+	if s.f == nil {
+		t.Fatal("body did not spill to disk")
+	}
+	return s, s.f.Name()
+}
+
+// TestSpoolCloseRetainsFailedRemoval is the review reproduction: with unlink
+// failing at creation and at the first Close, the file must not be
+// forgotten. A second Close, once removal works again, removes it.
+func TestSpoolCloseRetainsFailedRemoval(t *testing.T) {
+	restore := denyRemoval(t)
+	s, path := spillToDisk(t, t.TempDir())
+	err := s.Close()
+	var se *StorageError
+	if !errors.As(err, &se) || !strings.Contains(se.Op, "queued for retry") {
+		t.Fatalf("first Close: err = %v, want a queued remove StorageError", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("spool file should still exist after the failed removal: %v", statErr)
+	}
+	restore()
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("spool file still present after the retried Close: %v", statErr)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("Close after a successful removal: %v", err)
+	}
+}
+
+// TestRetryRemovals verifies a failed removal is retried by RetryRemovals and
+// by the next spool that spills to disk, and that an already-removed file
+// counts as removed.
+func TestRetryRemovals(t *testing.T) {
+	dir := t.TempDir()
+	restore := denyRemoval(t)
+	first, firstPath := spillToDisk(t, dir)
+	second, secondPath := spillToDisk(t, dir)
+	_ = first.Close()  // queued
+	_ = second.Close() // queued
+	if n := RetryRemovals(); n != 2 {
+		t.Fatalf("RetryRemovals while removal still fails = %d, want 2", n)
+	}
+	restore()
+	if err := os.Remove(secondPath); err != nil { // removed out of band
+		t.Fatal(err)
+	}
+	next, _ := spillToDisk(t, dir) // spilling retries the queue first
+	defer func() { _ = next.Close() }()
+	if _, err := os.Stat(firstPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("queued spool file not removed by the next spill: %v", err)
+	}
+	if n := RetryRemovals(); n != 0 {
+		t.Errorf("RetryRemovals after recovery = %d, want 0", n)
+	}
+}
+
+// TestRetryQueueIsBounded verifies the queue does not grow past its bound and
+// that a removal that cannot be queued says so.
+func TestRetryQueueIsBounded(t *testing.T) {
+	orig := maxPendingRemovals
+	t.Cleanup(func() { maxPendingRemovals = orig })
+	maxPendingRemovals = 1
+	denyRemoval(t)
+	dir := t.TempDir()
+	first, _ := spillToDisk(t, dir)
+	second, _ := spillToDisk(t, dir)
+	_ = first.Close()
+	_ = first.Close() // the same path is not queued twice
+	err := second.Close()
+	var se *StorageError
+	if !errors.As(err, &se) || !strings.Contains(se.Op, "retry queue full") {
+		t.Fatalf("Close past the bound: err = %v, want a queue-full StorageError", err)
+	}
+	pending.Lock()
+	n := len(pending.paths)
+	pending.Unlock()
+	if n != 1 {
+		t.Errorf("queue holds %d paths, want 1", n)
 	}
 }

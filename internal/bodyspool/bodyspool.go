@@ -6,7 +6,9 @@
 // spooled bodies are unreadable on disk and become unrecoverable once the
 // process forgets the key. Where the platform allows it, the file is unlinked
 // as soon as it is created, so nothing is left behind even if the process is
-// killed; otherwise Close removes it.
+// killed; otherwise Close removes it. A removal that fails is not forgotten:
+// Close keeps the path and reports the error, and the path is queued for
+// RetryRemovals, which later spools also run before creating their file.
 //
 // A Spool is written by one goroutine, then read any number of times, from
 // any number of goroutines, through independent readers.
@@ -17,8 +19,12 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
+	"slices"
+	"sync"
 )
 
 // StorageError reports that the spool could not store or read back body
@@ -40,6 +46,48 @@ var (
 	createTemp = os.CreateTemp
 	removeFile = os.Remove
 )
+
+// maxPendingRemovals bounds how many spool files whose removal failed are
+// remembered for retry, so a persistently failing directory cannot grow the
+// queue without limit. It is a var so tests can lower it.
+var maxPendingRemovals = 1024
+
+// pending holds spool file paths whose removal failed.
+var pending struct {
+	sync.Mutex
+	paths []string
+}
+
+// queueRemoval remembers path for RetryRemovals. It reports false when the
+// queue is full and path could not be remembered.
+func queueRemoval(path string) bool {
+	pending.Lock()
+	defer pending.Unlock()
+	if slices.Contains(pending.paths, path) {
+		return true
+	}
+	if len(pending.paths) >= maxPendingRemovals {
+		return false
+	}
+	pending.paths = append(pending.paths, path)
+	return true
+}
+
+// RetryRemovals tries again to remove spool files whose earlier removal
+// failed, and returns how many still could not be removed. A file that no
+// longer exists counts as removed.
+func RetryRemovals() int {
+	pending.Lock()
+	defer pending.Unlock()
+	kept := pending.paths[:0]
+	for _, path := range pending.paths {
+		if err := removeFile(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			kept = append(kept, path)
+		}
+	}
+	pending.paths = kept
+	return len(kept)
+}
 
 // Spool accumulates a body; see the package documentation.
 type Spool struct {
@@ -87,8 +135,10 @@ func (s *Spool) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// spill moves the in-memory bytes to a new encrypted temporary file.
+// spill moves the in-memory bytes to a new encrypted temporary file. It
+// first retries removals that failed for earlier spools.
 func (s *Spool) spill() error {
+	RetryRemovals()
 	f, err := createTemp(s.dir, "ai-proxy-body-*")
 	if err != nil {
 		return &StorageError{Op: "create spool file", Err: err}
@@ -164,22 +214,30 @@ func (r storageReader) Read(p []byte) (int, error) {
 }
 
 // Close releases the spool's memory and removes its file. Readers must not
-// be used afterwards. Close is idempotent.
+// be used afterwards. If removing the file fails, Close returns a
+// *StorageError, keeps the path so that calling Close again retries the
+// removal, and queues it for RetryRemovals; the error says when the queue is
+// full and the file will not be retried automatically. Close is otherwise
+// idempotent.
 func (s *Spool) Close() error {
 	s.mem = nil
-	if s.f == nil {
-		return nil
-	}
-	err := s.f.Close()
-	s.f = nil
-	if s.path != "" {
-		if rmErr := removeFile(s.path); rmErr != nil && err == nil {
-			err = rmErr
+	var errs []error
+	if s.f != nil {
+		if err := s.f.Close(); err != nil {
+			errs = append(errs, &StorageError{Op: "close spool file", Err: err})
 		}
-		s.path = ""
+		s.f = nil
 	}
-	if err != nil {
-		return &StorageError{Op: "close spool file", Err: err}
+	if s.path != "" {
+		if err := removeFile(s.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			op := "remove spool file " + s.path + " (queued for retry)"
+			if !queueRemoval(s.path) {
+				op = "remove spool file " + s.path + " (retry queue full; remove it manually)"
+			}
+			errs = append(errs, &StorageError{Op: op, Err: err})
+		} else {
+			s.path = ""
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

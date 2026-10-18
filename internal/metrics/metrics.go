@@ -48,6 +48,9 @@ type Metrics struct {
 	// Error counters
 	ErrorsUpstream  atomic.Int64
 	ErrorsAnonymize atomic.Int64
+	// ErrorsSpoolCleanup counts request-body spool files that could not be
+	// closed or removed after use; each may be leaving ciphertext on disk.
+	ErrorsSpoolCleanup atomic.Int64
 
 	// PII token volume
 	TokensReplaced     atomic.Int64
@@ -150,8 +153,9 @@ func (m *Metrics) Snapshot() Snapshot {
 			Auth:        m.RequestsAuth.Load(),
 		},
 		Errors: ErrorSnapshot{
-			Upstream:  m.ErrorsUpstream.Load(),
-			Anonymize: m.ErrorsAnonymize.Load(),
+			Upstream:     m.ErrorsUpstream.Load(),
+			Anonymize:    m.ErrorsAnonymize.Load(),
+			SpoolCleanup: m.ErrorsSpoolCleanup.Load(),
 		},
 		PIITokens: PIISnapshot{
 			Replaced:         m.TokensReplaced.Load(),
@@ -191,8 +195,9 @@ type RequestSnapshot struct {
 
 // ErrorSnapshot holds error counters.
 type ErrorSnapshot struct {
-	Upstream  int64 `json:"upstream"`
-	Anonymize int64 `json:"anonymize"`
+	Upstream     int64 `json:"upstream"`
+	Anonymize    int64 `json:"anonymize"`
+	SpoolCleanup int64 `json:"spoolCleanup"`
 }
 
 // PIISnapshot holds PII token volume and cache effectiveness counters.

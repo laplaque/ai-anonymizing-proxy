@@ -103,8 +103,10 @@ workload rationale) is gone.
 2. The **anonymized** output goes to a spool: the first 1 MiB stays in memory; larger bodies move
    to a temporary file in `requestSpoolDir`, encrypted with AES-256-CTR under a per-request key
    that exists only in process memory. The file is unlinked as soon as it is created on Linux and
-   macOS (removed after forwarding on Windows). The raw, un-anonymized body is never written to
-   disk.
+   macOS (removed after forwarding on Windows). If a removal fails, the proxy logs the path,
+   counts it in the `errors.spoolCleanup` metric, and retries it before later spool files are
+   created and at shutdown; a file it still cannot remove stays named in the log. The raw,
+   un-anonymized body is never written to disk.
 3. The body is forwarded with an exact `Content-Length` (and a replayable body for transport
    retries), then the spool is released.
 
