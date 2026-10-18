@@ -93,9 +93,13 @@ workload rationale) is gone.
 
 **Processing model.**
 
-1. The client body is read through a 64 KiB buffer and rewritten JSON token by JSON token
-   (see [Request body processing](anonymizer.md#request-body-processing)). Every string value is
-   still anonymized; nothing is skipped because of size.
+1. A body whose `Content-Type` declares JSON (`application/json` or `+json`, as the AI APIs
+   use) is read through a 64 KiB buffer and rewritten JSON token by JSON token (see
+   [Request body processing](anonymizer.md#request-body-processing)). Every string value is still
+   anonymized; nothing is skipped because of size. If it is not valid JSON it is rejected (400).
+   Any other body is read whole into memory and anonymized as before streaming: as JSON when it
+   is valid JSON, otherwise as one piece of text. Its memory is therefore proportional to its
+   size, as it was for every body before #152.
 2. The **anonymized** output goes to a spool: the first 1 MiB stays in memory; larger bodies move
    to a temporary file in `requestSpoolDir`, encrypted with AES-256-CTR under a per-request key
    that exists only in process memory. The file is unlinked as soon as it is created on Linux and
@@ -112,12 +116,16 @@ workload rationale) is gone.
 | Disk | The anonymized body size, for bodies over 1 MiB, until the request completes. |
 | CPU | Regex detection dominates: about 4.3–4.8 MB/s with the GLOBAL pack and about 1.1–1.2 MB/s with the default packs (SECRETS, GLOBAL, DE) per request on one core, 0–10% slower than the previous implementation in the measurements below. Concurrent requests use separate cores. |
 
-**Failures are reported, never truncated or forwarded partially.**
+**Failures before forwarding are reported, never truncated: nothing reaches the upstream.** The
+whole body is read and anonymized before the upstream request starts. A failure while the
+anonymized body is being sent upstream (for example, the upstream connection drops) can still
+leave the upstream with part of the anonymized body, as with any proxied upload; it is reported
+to the client as an upstream error.
 
 | Status | Cause |
 |---|---|
 | 413 Request Entity Too Large | The body exceeds the operator-set `maxRequestBodyBytes` (checked against `Content-Length` before reading, and while streaming bodies of unknown length). |
-| 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload). |
+| 400 Bad Request | The client's body could not be read (for example, the client disconnected mid-upload), or it is declared as JSON but is not valid JSON. |
 | 507 Insufficient Storage | The proxy could not buffer the body: `requestSpoolDir` is missing, not writable, or full. |
 
 **Optional administrative limit.** `maxRequestBodyBytes` (`MAX_REQUEST_BODY_BYTES`) caps the
@@ -158,7 +166,8 @@ The request paths beyond the former 50 MiB limit are verified byte for byte with
 by `TestFullContextBeyondFormerLimitDefaultPacks`.
 
 **Not covered here.** Compressed request bodies (`Content-Encoding: gzip`, `zstd`, …) are not
-decoded by this path; they are handled as non-JSON text, which is the defect tracked in #153.
+decoded by this path (#153): declared as JSON, they are not valid JSON and are rejected with 400;
+otherwise they are anonymized as text, which can corrupt them.
 Verifying compressed full-context requests end to end depends on that fix. Inline base64
 inputs (images, files) are anonymized like any other string; with the default packs they pass
 through unchanged, but some optional packs (e.g. FINANCE_EU, US, NL) can match short spans inside

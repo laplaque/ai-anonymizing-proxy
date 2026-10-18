@@ -375,6 +375,7 @@ func TestFullContextGetBodyReplaysCompleteBody(t *testing.T) {
 		}
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://localhost/v1", wl.rawStream())
 		req.ContentLength = raw.n
+		req.Header.Set("Content-Type", "application/json") // the streamed path, which splices the insertion
 		_, release, err := srv.anonymizeRequestBody(req)
 		if err != nil {
 			t.Fatal(err)

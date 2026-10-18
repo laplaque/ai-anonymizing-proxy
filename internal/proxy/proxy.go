@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -536,6 +537,13 @@ var randRead = rand.Read
 // maxRequestBodyBytes.
 var errRequestBodyLimit = errors.New("request body exceeds maxRequestBodyBytes")
 
+// errInvalidJSONBody reports a body whose Content-Type declares JSON but which
+// is not valid JSON. Such a body is rejected rather than forwarded: it is
+// anonymized as a stream, and once a syntax error shows the stream's output
+// is not a JSON rewrite, the input before the error is no longer available
+// to anonymize as text.
+var errInvalidJSONBody = errors.New("request body declared as JSON is not valid JSON")
+
 // clientBodyError wraps a failure reading the request body from the client.
 type clientBodyError struct{ err error }
 
@@ -565,8 +573,9 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 
 // writeBodyError sends the client the status matching a request-body failure
 // from anonymizeRequestBody: 413 for the configured limit, 400 when the
-// client's body could not be read, and 507 when the proxy could not buffer
-// the body (an operational resource failure such as a full spool disk).
+// client's body could not be read or is declared JSON but invalid, and 507
+// when the proxy could not buffer the body (an operational resource failure
+// such as a full spool disk).
 func writeBodyError(w http.ResponseWriter, err error) {
 	var clientErr *clientBodyError
 	switch {
@@ -574,6 +583,8 @@ func writeBodyError(w http.ResponseWriter, err error) {
 		http.Error(w, "request body exceeds the proxy's configured maxRequestBodyBytes limit", http.StatusRequestEntityTooLarge)
 	case errors.As(err, &clientErr):
 		http.Error(w, "could not read request body", http.StatusBadRequest)
+	case errors.Is(err, errInvalidJSONBody):
+		http.Error(w, "request body is declared as JSON (Content-Type) but is not valid JSON; nothing was forwarded", http.StatusBadRequest)
 	default:
 		http.Error(w, "proxy could not buffer the request body for anonymization", http.StatusInsufficientStorage)
 	}
@@ -587,15 +598,23 @@ func newSessionID() string {
 	return hex.EncodeToString(b)
 }
 
-// anonymizeRequestBody streams the request body through the anonymizer into
-// a bounded-memory spool and replaces r.Body with the anonymized result, with
-// ContentLength and GetBody set to match. There is no built-in size limit;
-// the optional maxRequestBodyBytes setting rejects larger bodies explicitly.
+// anonymizeRequestBody anonymizes the request body into a bounded-memory
+// spool and replaces r.Body with the anonymized result, with ContentLength
+// and GetBody set to match. There is no built-in size limit; the optional
+// maxRequestBodyBytes setting rejects bodies with more input bytes than that
+// explicitly.
+//
+// A body whose Content-Type declares JSON (the LLM APIs this proxy serves) is
+// anonymized as a stream, so memory does not grow with its size; if it is not
+// valid JSON it is rejected with errInvalidJSONBody. Any other body is read
+// whole and anonymized like the pre-streaming proxy did: as JSON if it is
+// valid JSON, otherwise as one piece of text.
 //
 // On success it returns the session ID (empty when there is no body) and a
 // release func that frees the spool; call it once the request has been
 // forwarded. On failure nothing is forwarded: the error is errRequestBodyLimit,
-// a *clientBodyError, or a *bodyspool.StorageError (see writeBodyError).
+// errInvalidJSONBody, a *clientBodyError, or a *bodyspool.StorageError (see
+// writeBodyError).
 func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 	noop := func() {}
 	if r.Body == nil || r.ContentLength == 0 {
@@ -611,9 +630,16 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 	sessionID := newSessionID()
 	spool := bodyspool.New(s.cfg.RequestSpoolDir, requestSpoolMemory)
 	src := &limitedBody{r: r.Body, limit: limit}
+	streamed := declaresJSON(r.Header.Get("Content-Type"))
 
 	anonStart := time.Now()
-	res, err := s.anon.AnonymizeJSONStream(spool, src, sessionID)
+	var insertion *anonymizer.JSONInsertion
+	var err error
+	if streamed {
+		insertion, err = s.streamJSONBody(spool, src, sessionID)
+	} else {
+		err = s.anonymizeWholeBody(spool, src, sessionID)
+	}
 	_ = r.Body.Close() // body fully consumed or abandoned; close is best-effort
 	if err != nil {
 		_ = spool.Close() // discard the partial body; close is best-effort
@@ -624,14 +650,47 @@ func (s *Server) anonymizeRequestBody(r *http.Request) (string, func(), error) {
 	if s.m != nil {
 		s.m.RecordAnonLatency(time.Since(anonStart))
 	}
-	log.Printf("[ANON] sessionID=%s body in=%d out=%d bytes spool=%s textFallback=%v",
-		sessionID, src.n, res.TotalBytes(), spoolLocation(spool), res.TextFallback)
 
-	body := anonymizedBody{spool: spool, insertion: res.Insertion}
+	body := anonymizedBody{spool: spool, insertion: insertion}
+	log.Printf("[ANON] sessionID=%s body in=%d out=%d bytes spool=%s streamed=%v",
+		sessionID, src.n, body.size(), spoolLocation(spool), streamed)
 	r.Body = io.NopCloser(body.reader())
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(body.reader()), nil }
-	r.ContentLength = res.TotalBytes()
+	r.ContentLength = body.size()
 	return sessionID, func() { _ = spool.Close() }, nil // close errors leave nothing to recover
+}
+
+// declaresJSON reports whether a Content-Type header names a JSON media type:
+// application/json or any type with a +json structured-syntax suffix.
+func declaresJSON(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+// streamJSONBody anonymizes a declared-JSON body from src into spool as a
+// stream. An invalid document is reported as errInvalidJSONBody; the partial
+// output is then discarded by the caller.
+func (s *Server) streamJSONBody(spool *bodyspool.Spool, src io.Reader, sessionID string) (*anonymizer.JSONInsertion, error) {
+	res, err := s.anon.AnonymizeJSONStream(spool, src, sessionID)
+	if errors.Is(err, anonymizer.ErrInvalidJSON) {
+		return nil, errInvalidJSONBody
+	}
+	return res.Insertion, err
+}
+
+// anonymizeWholeBody reads all of src, anonymizes it with AnonymizeJSON (a
+// JSON rewrite for valid JSON, whole-text anonymization otherwise) and writes
+// the result to spool. Memory holds the input and the output.
+func (s *Server) anonymizeWholeBody(spool *bodyspool.Spool, src io.Reader, sessionID string) error {
+	in, err := io.ReadAll(src)
+	if err != nil {
+		return err
+	}
+	_, err = spool.Write(s.anon.AnonymizeJSON(in, sessionID))
+	return err
 }
 
 func (s *Server) recordAnonError() {
@@ -652,6 +711,14 @@ func spoolLocation(sp *bodyspool.Spool) string {
 type anonymizedBody struct {
 	spool     *bodyspool.Spool
 	insertion *anonymizer.JSONInsertion
+}
+
+// size returns the length of the complete anonymized body.
+func (b anonymizedBody) size() int64 {
+	if b.insertion == nil {
+		return b.spool.Size()
+	}
+	return b.spool.Size() + int64(len(b.insertion.Data))
 }
 
 // reader returns a new reader over the complete anonymized body.

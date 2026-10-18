@@ -49,10 +49,18 @@ which detection needs whole: regex patterns have no fixed maximum match length, 
 string could miss PII that spans the split. Measured peak RSS is ≈ 1.6× that string for base64
 data and up to ≈ 7.5× for prose with PII matches; see
 [Request body size and resources](configuration.md#request-body-size-and-resources). Container nesting is limited to 10 000 levels, the same limit as
-`encoding/json`. Input that is not a single valid JSON value is anonymized as plain text from the
-first syntax error onward; for non-JSON bodies (error at the first byte) that is exactly
-`AnonymizeText` of the whole body, as before. The proxy writes the output into a
+`encoding/json`. The proxy writes the output into a
 [bounded-memory spool](configuration.md#request-body-size-and-resources), never the raw input.
+
+The stream is used only for bodies whose `Content-Type` declares JSON (`application/json` or a
+`+json` type), which is what the supported AI APIs send. If such a body turns out not to be valid
+JSON, the stream stops at the syntax error and the request is **rejected with 400**; nothing is
+forwarded. Anonymizing only the input after the error would not be safe: the rewritten prefix was
+emitted before the error was known, and PII that spans the error position (`123@example.com`,
+whose `123` the parser already copied as a number) or that sits where valid JSON would not be
+anonymized (an object key, the value of `model`) would reach the upstream. Any other body is read
+whole and anonymized exactly as before streaming: rewritten as JSON if it is valid JSON, otherwise
+passed to `AnonymizeText` in one piece. Whitespace-only bodies are forwarded unchanged.
 
 ---
 

@@ -128,11 +128,13 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    IN([Request body stream]) --> PARSE{Next JSON token\nvalid?}
+    IN([Request body]) --> CT{Content-Type\ndeclares JSON?}
+    CT -->|Yes| PARSE{Next JSON token\nvalid?}
     PARSE -->|Yes| WALK[Stream tokens through;\nrewrite each string value]
-    PARSE -->|No: syntax error| PLAIN[Treat the remainder\nas plain text]
+    PARSE -->|No: syntax error| REJ([Reject with 400;\nnothing forwarded])
+    CT -->|No| WHOLE[Read the whole body:\nJSON rewrite if valid JSON,\nelse one piece of text]
     WALK --> RX
-    PLAIN --> RX
+    WHOLE --> RX
 
     RX[Pack-based regex pass\npatterns loaded from enabled packs\nwith confidence scores] --> MATCH{Any match?}
 

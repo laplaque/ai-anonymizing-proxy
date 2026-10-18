@@ -116,11 +116,8 @@ func TestAnonymizeJSONStreamMatchesLegacy(t *testing.T) {
 				t.Fatalf("corpus entry is not valid JSON: %s", body)
 			}
 			streamA, legacyA := newStreamTestAnonymizer(), newStreamTestAnonymizer()
-			got, res := streamJSON(t, streamA, body, "sess")
+			got, _ := streamJSON(t, streamA, body, "sess")
 			want := legacyAnonymizeJSON(legacyA, []byte(body), "sess")
-			if res.TextFallback {
-				t.Fatal("valid JSON took the text fallback")
-			}
 			assertSameJSON(t, got, want)
 
 			gotTokens, wantTokens := sessionMap(streamA, "sess"), sessionMap(legacyA, "sess")
@@ -163,7 +160,7 @@ func TestAnonymizeJSONStreamPreservesBytes(t *testing.T) {
 	body := "{ \"z\": 12345678901234567890, \"a\" : [1.0, 1E2, -0],\n" +
 		"  \"html\": \"<b>&</b> \\u00e9 \\/ \\u2028\", \"skip\": {\"model\": \"x\"} }"
 	got, res := streamJSON(t, a, body, "")
-	if res.Insertion != nil || res.TextFallback {
+	if res.Insertion != nil {
 		t.Fatalf("unexpected result %+v", res)
 	}
 	if string(got) != body {
@@ -217,78 +214,107 @@ func TestAnonymizeJSONStreamInsertionPlacement(t *testing.T) {
 	}
 }
 
-// TestAnonymizeJSONStreamTextFallback covers inputs that are not a single
-// valid JSON value. A body invalid at its first byte is anonymized exactly as
-// AnonymizeText of the whole body (the legacy behavior); otherwise the valid
-// prefix keeps its JSON rewrite and the rest is anonymized as text. No
-// fallback injects the instruction.
-func TestAnonymizeJSONStreamTextFallback(t *testing.T) {
-	a := newStreamTestAnonymizer()
-	tok := a.replacement(PIIEmail, "victor@example.com")
-	cases := []struct{ name, in, want string }{
-		{"not json", "not json victor@example.com", "not json " + tok},
-		{"empty", "", ""},
-		{"whitespace only", " \n", " \n"},
-		{"binary", "\x1f\x8b\x08victor@example.com", "\x1f\x8b\x08" + tok},
-		{"trailing data", `{"a":"victor@example.com"} {"b":"victor@example.com"}`,
-			`{"a":"` + tok + `"} {"b":"` + tok + `"}`},
-		{"truncated string", `{"a":"victor@example.com`, `{"a":"` + tok},
-		{"truncated object", `{"a":"victor@example.com",`, `{"a":"` + tok + `",`},
-		{"control char in string", "{\"a\":\"x\x01victor@example.com\"}", "{\"a\":\"x\x01" + tok + "\"}"},
-		{"bad escape", `{"a":"\q victor@example.com"}`, `{"a":"\q ` + tok + `"}`},
-		{"truncated escape", `{"a":"\`, `{"a":"\`},
-		{"truncated unicode escape", `{"a":"\u00`, `{"a":"\u00`},
-		{"bad unicode escape", `{"a":"\u00zz victor@example.com"}`, `{"a":"\u00zz ` + tok + `"}`},
-		{"missing colon", `{"a" "victor@example.com"}`, `{"a" "` + tok + `"}`},
-		{"missing comma", `{"a":1 "b":"victor@example.com"}`, `{"a":1 "b":"` + tok + `"}`},
-		{"trailing comma", `{"a":1,}`, `{"a":1,}`},
-		{"unquoted key", `{a:1}`, `{a:1}`},
-		{"array missing comma", `["a" "victor@example.com"]`, `["a" "` + tok + `"]`},
-		{"bad literal", `{"a":tru}`, `{"a":tru}`},
-		{"truncated literal", `[nul`, `[nul`},
-		{"bad value start", `{"a":+1}`, `{"a":+1}`},
-		{"minus only", `[-]`, `[-]`},
-		{"leading zero", `[01]`, `[01]`},
-		{"bare fraction", `[1.]`, `[1.]`},
-		{"bare exponent", `[1e]`, `[1e]`},
-		{"truncated number", `[1.`, `[1.`},
-		{"unterminated array", `["victor@example.com"`, `["` + tok + `"`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, res := streamJSON(t, a, tc.in, "sess-fb")
-			if !res.TextFallback {
-				t.Fatal("expected TextFallback")
+// streamErr runs AnonymizeJSONStream on body and returns only its error.
+func streamErr(a *Anonymizer, body, id string) error {
+	_, err := a.AnonymizeJSONStream(io.Discard, strings.NewReader(body), id)
+	return err
+}
+
+// invalidJSONCases are inputs that are not a single valid JSON value. The
+// first four are the review reproductions of PII that a remainder-only text
+// fallback leaked: the parser had already emitted a prefix ("123", "true",
+// a skip-key value, an object key) before the syntax error, so anonymizing
+// only what followed missed the address. All personal data is synthetic.
+var invalidJSONCases = map[string]string{
+	"number before address":     `123@example.com`,
+	"literal before address":    `true@example.com`,
+	"address in skip-key value": `{"model":"alice@example.com",}`,
+	"address in object key":     `{"alice@example.com":0,}`,
+	"not json":                  "not json victor@example.com",
+	"binary":                    "\x1f\x8b\x08victor@example.com",
+	"trailing data":             `{"a":"victor@example.com"} {"b":"victor@example.com"}`,
+	"truncated string":          `{"a":"victor@example.com`,
+	"truncated object":          `{"a":"victor@example.com",`,
+	"control char in string":    "{\"a\":\"x\x01victor@example.com\"}",
+	"bad escape":                `{"a":"\q victor@example.com"}`,
+	"truncated escape":          `{"a":"\`,
+	"truncated unicode escape":  `{"a":"\u00`,
+	"bad unicode escape":        `{"a":"\u00zz victor@example.com"}`,
+	"missing colon":             `{"a" "victor@example.com"}`,
+	"missing comma":             `{"a":1 "b":"victor@example.com"}`,
+	"trailing comma":            `{"a":1,}`,
+	"unquoted key":              `{a:1}`,
+	"array missing comma":       `["a" "victor@example.com"]`,
+	"bad literal":               `{"a":tru}`,
+	"truncated literal":         `[nul`,
+	"bad value start":           `{"a":+1}`,
+	"minus only":                `[-]`,
+	"leading zero":              `[01]`,
+	"bare fraction":             `[1.]`,
+	"bare exponent":             `[1e]`,
+	"truncated number":          `[1.`,
+	"unterminated array":        `["victor@example.com"`,
+}
+
+// TestAnonymizeJSONStreamRejectsInvalidJSON pins that the stream never emits
+// a partial rewrite as if it were complete: every input that is not a single
+// valid JSON value is reported as ErrInvalidJSON. AnonymizeJSON, which holds
+// the whole input, anonymizes such input exactly as the pre-streaming
+// implementation did (AnonymizeText of the whole body), so no synthetic
+// address survives and the token map matches.
+func TestAnonymizeJSONStreamRejectsInvalidJSON(t *testing.T) {
+	for name, in := range invalidJSONCases {
+		t.Run(name, func(t *testing.T) {
+			a, legacyA := newStreamTestAnonymizer(), newStreamTestAnonymizer()
+			if err := streamErr(a, in, "sess-inv"); !errors.Is(err, ErrInvalidJSON) {
+				t.Fatalf("stream error = %v, want ErrInvalidJSON", err)
 			}
-			if res.Insertion != nil {
-				t.Error("text fallback must not inject the instruction")
+			got := string(a.AnonymizeJSON([]byte(in), "sess-inv"))
+			want := string(legacyAnonymizeJSON(legacyA, []byte(in), "sess-inv"))
+			if got != want {
+				t.Errorf("AnonymizeJSON differs from the legacy whole-body text path:\n got %q\nwant %q", got, want)
 			}
-			if string(got) != tc.want {
-				t.Errorf("\n got %q\nwant %q", got, tc.want)
+			if strings.Contains(got, "@example.com") {
+				t.Errorf("raw synthetic address survived: %q", got)
+			}
+			if gs, ls := sessionMap(a, "sess-inv"), sessionMap(legacyA, "sess-inv"); !reflect.DeepEqual(gs, ls) {
+				t.Errorf("token maps differ:\n got %v\nwant %v", gs, ls)
 			}
 		})
 	}
 }
 
+// TestAnonymizeJSONStreamWhitespaceOnly pins that empty and whitespace-only
+// bodies, which hold no PII, are copied unchanged rather than rejected.
+func TestAnonymizeJSONStreamWhitespaceOnly(t *testing.T) {
+	a := newStreamTestAnonymizer()
+	for _, in := range []string{"", " \n\t\r"} {
+		got, res := streamJSON(t, a, in, "")
+		if string(got) != in || res.Insertion != nil {
+			t.Errorf("whitespace-only input %q: got %q, insertion %v", in, got, res.Insertion)
+		}
+	}
+}
+
 // TestAnonymizeJSONStreamNestingLimit verifies documents at the nesting limit
-// are rewritten as JSON and deeper ones fall back to text without recursion
-// past the limit.
+// are rewritten as JSON and deeper ones are rejected without recursion past
+// the limit, as json.Valid rejects them.
 func TestAnonymizeJSONStreamNestingLimit(t *testing.T) {
 	a := newStreamTestAnonymizer()
 	atLimit := strings.Repeat("[", maxJSONNestingDepth) + `"x"` + strings.Repeat("]", maxJSONNestingDepth)
-	got, res := streamJSON(t, a, atLimit, "")
-	if res.TextFallback || string(got) != atLimit {
-		t.Errorf("document at the nesting limit: fallback=%v, unchanged=%v", res.TextFallback, string(got) == atLimit)
+	if got, _ := streamJSON(t, a, atLimit, ""); string(got) != atLimit {
+		t.Error("document at the nesting limit changed")
 	}
 
 	tooDeep := strings.Repeat("[", maxJSONNestingDepth+1) + strings.Repeat("]", maxJSONNestingDepth+1)
-	got, res = streamJSON(t, a, tooDeep, "")
-	if !res.TextFallback || string(got) != tooDeep {
-		t.Errorf("document past the nesting limit: fallback=%v, unchanged=%v", res.TextFallback, string(got) == tooDeep)
-	}
 	tooDeepObj := strings.Repeat(`{"a":`, maxJSONNestingDepth+1)
-	if _, res = streamJSON(t, a, tooDeepObj, ""); !res.TextFallback {
-		t.Error("objects past the nesting limit did not fall back")
+	for name, in := range map[string]string{"arrays": tooDeep, "objects": tooDeepObj} {
+		if json.Valid([]byte(in)) {
+			t.Fatalf("%s past the nesting limit are valid for encoding/json", name)
+		}
+		if err := streamErr(a, in, ""); !errors.Is(err, ErrInvalidJSON) {
+			t.Errorf("%s past the nesting limit: stream error = %v, want ErrInvalidJSON", name, err)
+		}
 	}
 }
 
@@ -312,8 +338,8 @@ func TestAnonymizeJSONStreamUTF8(t *testing.T) {
 	}
 
 	truncatedRune := "[\"\xe2\x82"
-	if got, res := streamJSON(t, a, truncatedRune, ""); !res.TextFallback || string(got) != truncatedRune {
-		t.Errorf("truncated rune at EOF: fallback=%v got %q", res.TextFallback, got)
+	if err := streamErr(a, truncatedRune, ""); !errors.Is(err, ErrInvalidJSON) {
+		t.Errorf("truncated rune at EOF: stream error = %v, want ErrInvalidJSON", err)
 	}
 
 	// Place a 3-byte rune, an escape, a surrogate pair and an email across
@@ -352,17 +378,31 @@ func (r *failingReader) Read(p []byte) (int, error) {
 }
 
 // TestAnonymizeJSONStreamReadErrors injects a reader failure at every byte
-// offset of representative documents (valid, and invalid ones that reach the
-// text fallback) and requires the failure to be reported, never swallowed
-// into a truncated "successful" body.
+// offset of representative documents and requires the failure to be
+// reported, never swallowed into a truncated "successful" body. For an
+// invalid document, a failure before the syntax error is a read error, and
+// the stream reads nothing past the error, so a later failure is never
+// reached and the result is ErrInvalidJSON.
 func TestAnonymizeJSONStreamReadErrors(t *testing.T) {
+	invalid := `{"a":"\q victor@example.com"}`
+	syntaxAt := strings.Index(invalid, "q") // the stream reads up to the bad escape byte
+	for failAt := range len(invalid) {
+		_, err := newStreamTestAnonymizer().AnonymizeJSONStream(io.Discard, &failingReader{data: []byte(invalid), failAt: failAt}, "s")
+		want := errInjected
+		if failAt > syntaxAt {
+			want = ErrInvalidJSON
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("invalid doc fail at %d: err = %v, want %v", failAt, err, want)
+		}
+	}
+
 	docs := []string{
 		streamCorpus["tool history"],
 		streamCorpus["escapes and unicode"],
 		streamCorpus["lone surrogates"],
 		streamCorpus["big numbers"],
 		"{\"a\":[true,false,null,-1.5e-3],\"b\":\"\xe2\x82\xac\"} ",
-		`{"a":"\q victor@example.com"}`,
 	}
 	for _, doc := range docs {
 		for failAt := range len(doc) {
@@ -408,10 +448,11 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 // TestAnonymizeJSONStreamWriteErrors verifies output failures are reported
-// for both the JSON rewrite and the text fallback, and that a failed write
-// stops consumption of a large body instead of reading it to the end.
+// for both a JSON rewrite and a copied whitespace-only body, and that a
+// failed write stops consumption of a large body instead of reading it to
+// the end.
 func TestAnonymizeJSONStreamWriteErrors(t *testing.T) {
-	small := []string{streamCorpus["tool history"], "not json at all xavier@example.com"}
+	small := []string{streamCorpus["tool history"], " \n\t "}
 	for _, doc := range small {
 		w := &failingWriter{limit: 0}
 		_, err := newStreamTestAnonymizer().AnonymizeJSONStream(w, strings.NewReader(doc), "s")
@@ -433,8 +474,8 @@ func TestAnonymizeJSONStreamWriteErrors(t *testing.T) {
 }
 
 // TestAnonymizeJSONStreamWriteErrorBeforeSyntaxError verifies a write failure
-// is reported, without reading the rest of the body into the text fallback,
-// when it precedes a syntax error.
+// that precedes a syntax error is reported as such, without reading on to
+// the syntax error.
 func TestAnonymizeJSONStreamWriteErrorBeforeSyntaxError(t *testing.T) {
 	body := "[" + strings.Repeat(`"element",`, 400_000) + `"end"] trailing ` + strings.Repeat("x", 1<<20)
 	cr := &countingReader{r: strings.NewReader(body)}
@@ -466,8 +507,8 @@ func TestOffsetWriterRecordsErrors(t *testing.T) {
 	if !errors.Is(w.err, errInjected) {
 		t.Fatalf("writeByte: err = %v", w.err)
 	}
-	if (&syntaxError{}).Error() != "anonymizer: invalid JSON" {
-		t.Error("syntaxError message changed")
+	if (&syntaxError{}).Error() != ErrInvalidJSON.Error() {
+		t.Error("syntaxError message differs from ErrInvalidJSON")
 	}
 }
 
@@ -492,14 +533,34 @@ func FuzzAnonymizeJSONStream(f *testing.F) {
 	}
 	f.Add([]byte(`not json zoe@example.com`))
 	f.Add([]byte(`{"a":"\ud800\udc00","b":[1,2,{"c":null}]}`))
+	for _, body := range invalidJSONCases {
+		f.Add([]byte(body))
+	}
 	f.Fuzz(func(t *testing.T, body []byte) {
 		streamA, legacyA := newStreamTestAnonymizer(), newStreamTestAnonymizer()
-		got := streamA.AnonymizeJSON(body, "f")
 		valid := json.Valid(body)
-		if json.Valid(got) != valid && valid {
+		// The stream accepts exactly what json.Valid accepts, plus
+		// whitespace-only input, which it copies.
+		blank := len(bytes.TrimLeft(body, " \t\r\n")) == 0
+		if err := streamErr(newStreamTestAnonymizer(), string(body), "f"); (err == nil) != (valid || blank) {
+			t.Fatalf("stream error %v disagrees with json.Valid=%v for %q", err, valid, body)
+		}
+		got := streamA.AnonymizeJSON(body, "f")
+		if !valid {
+			// Invalid input must be anonymized exactly as the legacy
+			// whole-body text path did, never as a partial rewrite.
+			if want := legacyAnonymizeJSON(legacyA, body, "f"); !bytes.Equal(got, want) {
+				t.Fatalf("invalid input differs from legacy for %q:\nstream %q\nlegacy %q", body, got, want)
+			}
+			if gs, ls := sessionMap(streamA, "f"), sessionMap(legacyA, "f"); !reflect.DeepEqual(gs, ls) {
+				t.Fatalf("token maps differ for invalid %q", body)
+			}
+			return
+		}
+		if !json.Valid(got) {
 			t.Fatalf("valid input produced invalid output:\n in %q\nout %q", body, got)
 		}
-		if !valid || hasDuplicateKeys(body) {
+		if hasDuplicateKeys(body) {
 			return
 		}
 		want := legacyAnonymizeJSON(legacyA, body, "f")

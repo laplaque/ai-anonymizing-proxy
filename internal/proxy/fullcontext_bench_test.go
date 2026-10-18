@@ -153,6 +153,7 @@ func BenchmarkFullContext(b *testing.B) {
 					req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 						"http://"+host+"/v1/chat/completions", wl.rawStream())
 					req.Host, req.URL.Host, req.ContentLength = host, host, raw.n
+					req.Header.Set("Content-Type", "application/json")
 					w := httptest.NewRecorder()
 					srv.ServeHTTP(w, req)
 					sampler.finish(b)
@@ -194,6 +195,7 @@ func BenchmarkFullContextSingleString(b *testing.B) {
 					req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 						"http://"+host+"/v1/chat/completions", wl.rawStream())
 					req.Host, req.URL.Host, req.ContentLength = host, host, raw.n
+					req.Header.Set("Content-Type", "application/json")
 					w := httptest.NewRecorder()
 					srv.ServeHTTP(w, req)
 					sampler.finish(b)
@@ -231,6 +233,7 @@ func BenchmarkFullContextConcurrent(b *testing.B) {
 						req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 							"http://"+host+"/v1/chat/completions", wl.rawStream())
 						req.Host, req.URL.Host, req.ContentLength = host, host, raw.n
+						req.Header.Set("Content-Type", "application/json")
 						w := httptest.NewRecorder()
 						srv.ServeHTTP(w, req)
 						codes[i] = w.Code

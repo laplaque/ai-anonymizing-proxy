@@ -438,14 +438,20 @@ func (a *Anonymizer) resolvePIIInstruction(model string) string {
 	return defaultPIIInstruction
 }
 
-// AnonymizeJSON anonymizes an in-memory request body. It is
-// AnonymizeJSONStream applied to body, with the PII system instruction (if
-// any) spliced in; see AnonymizeJSONStream for the rules. Non-JSON bodies are
-// anonymized as plain text.
+// AnonymizeJSON anonymizes a whole in-memory request body. A body that is a
+// single valid JSON value is rewritten by AnonymizeJSONStream, with the PII
+// system instruction (if any) spliced in; see AnonymizeJSONStream for the
+// rules. Any other body is anonymized as plain text in one piece, so PII is
+// detected wherever it sits in the input.
 func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
+	if !json.Valid(body) {
+		return []byte(a.AnonymizeText(string(body), requestID))
+	}
 	var out bytes.Buffer
 	out.Grow(len(body))
-	// bytes.Reader and bytes.Buffer never fail, so neither can the stream.
+	// The stream accepts exactly the documents json.Valid accepts (pinned by
+	// FuzzAnonymizeJSONStream), and bytes.Reader and bytes.Buffer never fail,
+	// so the stream cannot fail here.
 	res, _ := a.AnonymizeJSONStream(&out, bytes.NewReader(body), requestID)
 	if res.Insertion == nil {
 		return out.Bytes()

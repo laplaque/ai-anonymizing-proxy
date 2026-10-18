@@ -14,8 +14,7 @@ import (
 // rewriter is recursive, so the bound keeps adversarial input such as a body
 // of '[' bytes from exhausting the goroutine stack. It equals encoding/json's
 // own limit, so every document the former json.Unmarshal-based path accepted
-// is still accepted; deeper input takes the plain-text fallback exactly as a
-// json.Unmarshal failure did.
+// is still accepted, and deeper input is invalid for both.
 const maxJSONNestingDepth = 10000
 
 // streamBufferSize is the read and write buffer size of the streaming
@@ -37,10 +36,15 @@ type JSONStreamResult struct {
 	// Insertion, when non-nil, is the PII system instruction that must be
 	// spliced into the written bytes to complete the anonymized body.
 	Insertion *JSONInsertion
-	// TextFallback reports that the input was not a single valid JSON value,
-	// so the input from the first syntax error onward was anonymized as text.
-	TextFallback bool
 }
+
+// ErrInvalidJSON is returned by AnonymizeJSONStream when the input is not a
+// single valid JSON value. By then dst may hold a rewritten prefix, which the
+// caller must discard: the prefix was emitted before the input was known to
+// be invalid, and anonymizing only what follows the syntax error would miss
+// PII that spans it, so no text fallback is attempted here. Callers that hold
+// the whole input use AnonymizeJSON, which anonymizes invalid input as text.
+var ErrInvalidJSON = errors.New("anonymizer: request body is not valid JSON")
 
 // TotalBytes returns the length of the complete anonymized body, including
 // the insertion.
@@ -65,13 +69,12 @@ func (r JSONStreamResult) TotalBytes() int64 {
 // once the whole document has been read.
 //
 // Memory is bounded by the I/O buffers plus the largest single string value,
-// which detection needs whole. Input that is not a single valid JSON value is
-// anonymized as plain text from the first syntax error onward; when the error
-// is at the first byte (non-JSON bodies) this is exactly AnonymizeText of the
-// whole body, and the remainder after an error is buffered in full.
+// which detection needs whole. Input consisting only of whitespace is copied
+// unchanged. Any other input that is not a single valid JSON value makes it
+// return ErrInvalidJSON, and the bytes written to dst must then be discarded.
 //
-// The returned error is non-nil only when reading src or writing dst fails;
-// it wraps the underlying error.
+// Otherwise the returned error is non-nil only when reading src or writing
+// dst fails; it wraps the underlying error.
 func (a *Anonymizer) AnonymizeJSONStream(dst io.Writer, src io.Reader, requestID string) (JSONStreamResult, error) {
 	bw := bufio.NewWriterSize(dst, streamBufferSize)
 	p := &jsonRewriter{
@@ -124,13 +127,10 @@ func (o *offsetWriter) writeByte(c byte) {
 }
 
 // syntaxError reports that the input is not valid JSON at the current read
-// position. unread holds bytes already consumed from the input but not yet
-// written, which the text fallback must still anonymize.
-type syntaxError struct {
-	unread []byte
-}
+// position. run reports it to callers as ErrInvalidJSON.
+type syntaxError struct{}
 
-func (e *syntaxError) Error() string { return "anonymizer: invalid JSON" }
+func (e *syntaxError) Error() string { return ErrInvalidJSON.Error() }
 
 // readError wraps a failure of the underlying body reader.
 type readError struct{ err error }
@@ -200,15 +200,19 @@ func (p *jsonRewriter) run() (JSONStreamResult, error) {
 	}
 	var se *syntaxError
 	if errors.As(err, &se) {
-		return p.textFallback(se.unread)
+		return JSONStreamResult{}, ErrInvalidJSON
 	}
 	// A write failure after the last value surfaces from the caller's Flush.
 	return res, err
 }
 
-// document rewrites one top-level JSON value followed only by whitespace.
+// document rewrites one top-level JSON value followed only by whitespace, or
+// copies input that is only whitespace.
 func (p *jsonRewriter) document() (JSONStreamResult, error) {
 	first, err := p.peekNonWS()
+	if errors.Is(err, errUnexpectedEOF) {
+		return JSONStreamResult{BytesWritten: p.w.n}, nil // nothing to anonymize
+	}
 	if err != nil {
 		return JSONStreamResult{}, err
 	}
@@ -232,19 +236,8 @@ func (p *jsonRewriter) document() (JSONStreamResult, error) {
 	return res, nil
 }
 
-// textFallback anonymizes the unwritten remainder of the input as plain text.
-func (p *jsonRewriter) textFallback(unread []byte) (JSONStreamResult, error) {
-	rest, err := io.ReadAll(p.r)
-	if err != nil {
-		return JSONStreamResult{}, &readError{err: err}
-	}
-	text := string(unread) + string(rest)
-	p.w.writeString(p.a.AnonymizeText(text, p.id))
-	return JSONStreamResult{BytesWritten: p.w.n, TextFallback: true}, nil
-}
-
 // errUnexpectedEOF signals end of input where a value or delimiter is
-// required. It is a syntaxError so the text fallback handles it.
+// required. It is a syntaxError: such input is not valid JSON.
 var errUnexpectedEOF = &syntaxError{}
 
 // inputErr maps io.EOF to errUnexpectedEOF and other reader failures to
@@ -492,10 +485,6 @@ func (p *jsonRewriter) scanString(keepRaw bool) (string, []byte, error) {
 			raw = append(raw, b.String()...)
 		}
 	}
-	unread := func() []byte {
-		activateRaw()
-		return raw
-	}
 	if keepRaw {
 		activateRaw()
 	}
@@ -503,7 +492,7 @@ func (p *jsonRewriter) scanString(keepRaw bool) (string, []byte, error) {
 	for {
 		buf, err := p.r.Peek(1)
 		if err != nil {
-			return "", nil, p.tokenErr(err, unread())
+			return "", nil, p.tokenErr(err)
 		}
 		if n := p.r.Buffered(); n > 1 {
 			buf, _ = p.r.Peek(n) // all buffered bytes; cannot fail
@@ -536,7 +525,7 @@ func (p *jsonRewriter) scanString(keepRaw bool) (string, []byte, error) {
 				return "", nil, err
 			}
 		case c < 0x20:
-			return "", nil, &syntaxError{unread: unread()}
+			return "", nil, &syntaxError{}
 		default:
 			if err := p.utf8Rune(&b, &raw, activateRaw); err != nil {
 				return "", nil, err
@@ -545,11 +534,11 @@ func (p *jsonRewriter) scanString(keepRaw bool) (string, []byte, error) {
 	}
 }
 
-// tokenErr converts an input error inside a token, attaching the token's raw
-// bytes so the text fallback still sees them.
-func (p *jsonRewriter) tokenErr(err error, unread []byte) error {
+// tokenErr converts an input error inside a token: end of input is a syntax
+// error, anything else a read failure.
+func (p *jsonRewriter) tokenErr(err error) error {
 	if errors.Is(err, io.EOF) {
-		return &syntaxError{unread: unread}
+		return &syntaxError{}
 	}
 	return &readError{err: err}
 }
@@ -580,7 +569,7 @@ func (p *jsonRewriter) escape(b *strings.Builder, raw *[]byte) error {
 	if err != nil {
 		*raw = append(*raw, esc...)
 		_, _ = p.r.Discard(len(esc))
-		return p.tokenErr(err, *raw)
+		return p.tokenErr(err)
 	}
 	var decoded byte
 	switch esc[1] {
@@ -599,7 +588,7 @@ func (p *jsonRewriter) escape(b *strings.Builder, raw *[]byte) error {
 	case 'u':
 		return p.unicodeEscape(b, raw)
 	default:
-		return &syntaxError{unread: *raw}
+		return &syntaxError{}
 	}
 	b.WriteByte(decoded)
 	*raw = append(*raw, esc...)
@@ -643,11 +632,11 @@ func (p *jsonRewriter) hex4(raw *[]byte) (rune, bool, error) {
 	if err != nil {
 		*raw = append(*raw, esc...)
 		_, _ = p.r.Discard(len(esc))
-		return 0, false, p.tokenErr(err, *raw)
+		return 0, false, p.tokenErr(err)
 	}
 	r, ok := parseHex4(esc[2:])
 	if !ok {
-		return 0, false, &syntaxError{unread: *raw}
+		return 0, false, &syntaxError{}
 	}
 	*raw = append(*raw, esc...)
 	_, _ = p.r.Discard(6)
@@ -702,7 +691,7 @@ func (p *jsonRewriter) number() error {
 			n++
 		}
 	}
-	fail := func() error { return &syntaxError{unread: tok} }
+	fail := func() error { return &syntaxError{} }
 
 	c, ok, _ := next() // value peeked a byte, so this cannot fail
 	var err error
@@ -765,7 +754,6 @@ func (p *jsonRewriter) literal(lit string) error {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return &readError{err: err}
 	}
-	// Leave the malformed bytes unread; the text fallback consumes them.
 	return &syntaxError{}
 }
 
