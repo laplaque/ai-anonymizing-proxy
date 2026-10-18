@@ -48,13 +48,16 @@ echo ""
 # block to a function only when the block lies within the function's
 # line/column extent (the rule `go tool cover -func` uses), so blocks of
 # package-level function literals never count toward a neighboring
-# declaration. Fail closed if the helper cannot be built or a file cannot be
-# parsed.
+# declaration. Fail closed if the helper cannot be built, a file cannot be
+# parsed, or a changed file built on this platform has no blocks in the
+# profile (its package was left out of the coverage run). The helper lives in
+# tools/funccoverage so that ./... covers and gates it too.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER_SRC="$SCRIPT_DIR/../../tools/funccoverage"
 helper_dir="$(mktemp -d)"
 trap 'rm -rf "$helper_dir"' EXIT
-if ! (cd "$SCRIPT_DIR/funccoverage" && go build -o "$helper_dir/funccoverage" .); then
-  echo "ERROR: failed to build $SCRIPT_DIR/funccoverage" >&2
+if ! (cd "$HELPER_SRC" && go build -o "$helper_dir/funccoverage" .); then
+  echo "ERROR: failed to build $HELPER_SRC" >&2
   exit 1
 fi
 mapfile -t changed_list <<< "$changed_files"
@@ -75,8 +78,9 @@ while IFS=$'\t' read -r location func_name covered total; do
 
   # A function whose extent holds no profile block has no statements (an
   # empty body, such as an interface-compliance method), so it has nothing
-  # to cover: 0 of 0 is not a failure. funccoverage warns on stderr about
-  # changed files the profile does not instrument at all.
+  # to cover: 0 of 0 is not a failure. The only other source of 0 is a file
+  # that build constraints exclude on this platform, which funccoverage
+  # names in a warning; any other uninstrumented file already failed above.
   if [ "$total" -eq 0 ]; then
     skipped=$((skipped + 1))
     continue

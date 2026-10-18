@@ -53,13 +53,10 @@ jobs:
       - name: Display coverage
         run: go tool cover -func=coverage.out
 
+      # The gate's helper, tools/funccoverage, is part of ./..., so the
+      # coverage run above instruments it and the delta check gates it.
       - name: Delta coverage script tests
-        run: |
-          # ./... skips dot-directories, so the helper is vetted and tested
-          # explicitly; delta-coverage_test.sh runs the gate end to end.
-          go vet ./.github/scripts/funccoverage/
-          go test -race -count=1 ./.github/scripts/funccoverage/
-          bash .github/scripts/delta-coverage_test.sh
+        run: bash .github/scripts/delta-coverage_test.sh
 
       - name: Delta coverage check
         if: github.event_name == 'pull_request'

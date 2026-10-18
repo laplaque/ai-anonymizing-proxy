@@ -241,6 +241,44 @@ EOF
 run_case "uncovered nested closure is rejected" 1 "$dir" \
   "FAIL: lib/lib.go:5: Adder 50.0% (1/2 statements)" "!FAIL: lib/lib.go:3"
 
+# 7. Control: a changed file built on this platform but left out of the
+# coverage run (here under a dot-directory, which ./... skips) must fail
+# rather than pass as a file with nothing to cover.
+dir="$(new_repo uninstrumented-file)"
+mkdir -p "$dir/.hidden"
+cat > "$dir/.hidden/tool.go" <<'EOF'
+package hidden
+
+func Tool(n int) int { return n + 1 }
+EOF
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cat > "$dir/lib/lib.go" <<'EOF'
+package lib
+
+func Covered(n int) int { return n + 1 }
+EOF
+run_case "uninstrumented changed file is rejected" 1 "$dir" \
+  "funccoverage: no blocks in the coverage profile for .hidden/tool.go" "ERROR: funccoverage failed" "!SUCCESS"
+
+# 8. A changed file that build constraints exclude on this platform is
+# reported and skipped: no run here could have instrumented it.
+dir="$(new_repo build-excluded-file)"
+cp "$work/uncovered-function/lib/lib_test.go" "$dir/lib/lib_test.go"
+cat > "$dir/lib/lib.go" <<'EOF'
+package lib
+
+func Covered(n int) int { return n + 1 }
+EOF
+cat > "$dir/lib/excluded.go" <<'EOF'
+//go:build funccoverage_never
+
+package lib
+
+func Excluded(n int) int { return n * 2 }
+EOF
+run_case "build-excluded changed file is skipped with a warning" 0 "$dir" \
+  "funccoverage: warning: lib/excluded.go is excluded by build constraints" "Checked 1 functions" "SUCCESS"
+
 echo ""
 echo "${passed} passed, ${failed} failed"
 [ "$failed" -eq 0 ]

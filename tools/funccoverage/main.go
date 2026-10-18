@@ -1,5 +1,7 @@
 // Command funccoverage reports per-function statement coverage for selected
-// source files, for delta-coverage.sh.
+// source files, for .github/scripts/delta-coverage.sh. It lives under tools/
+// rather than next to the script so that ./... — and with it lint, gosec and
+// the coverage profile the delta gate reads — includes it.
 //
 // Usage: funccoverage <coverage-profile> <file>...
 //
@@ -19,12 +21,16 @@
 // "func literal", so their statements are checked rather than dropped or
 // attributed to a neighboring declaration.
 //
-// A file with no blocks in the profile was not built by the test run (for
-// example, it is excluded by build constraints or lives outside the
-// packages tested); funccoverage still lists its functions, with 0 total
-// statements, and prints a warning naming the file to stderr.
+// A file with no blocks in the profile was not instrumented by the test run.
+// If build constraints exclude it on this platform (a _windows.go file on a
+// Linux runner, say), funccoverage lists its functions with 0 total
+// statements and prints a warning naming the file to stderr: nothing here
+// could have covered it. Otherwise its package was left out of the coverage
+// run, which is an error: an uninstrumented file must not pass as one with
+// nothing to cover.
 //
-// It exits non-zero if the profile or any file cannot be read or parsed.
+// It exits non-zero if the profile or any file cannot be read or parsed, or
+// if a file built on this platform has no blocks in the profile.
 package main
 
 import (
@@ -32,10 +38,12 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -70,14 +78,28 @@ func run(args []string, w, warn io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var uninstrumented []string
 	for _, file := range args[1:] {
 		fileBlocks := blocksFor(blocks, file)
 		if len(fileBlocks) == 0 {
-			_, _ = fmt.Fprintf(warn, "funccoverage: warning: %s has no blocks in the coverage profile\n", file)
+			built, err := build.Default.MatchFile(filepath.Dir(file), filepath.Base(file))
+			if err != nil {
+				return err
+			}
+			if built {
+				uninstrumented = append(uninstrumented, file)
+			} else {
+				_, _ = fmt.Fprintf(warn, "funccoverage: warning: %s is excluded by build constraints on %s/%s; not checked\n",
+					file, build.Default.GOOS, build.Default.GOARCH)
+			}
 		}
 		if err := reportFile(w, file, fileBlocks); err != nil {
 			return err
 		}
+	}
+	if len(uninstrumented) > 0 {
+		return fmt.Errorf("no blocks in the coverage profile for %s, although built on %s/%s: include their packages in the coverage run",
+			strings.Join(uninstrumented, ", "), build.Default.GOOS, build.Default.GOARCH)
 	}
 	return nil
 }
@@ -103,9 +125,6 @@ func readProfile(path string) ([]block, error) {
 			if !strings.HasPrefix(text, "mode: ") {
 				return nil, fmt.Errorf("%s: missing mode line", path)
 			}
-			continue
-		}
-		if text == "" {
 			continue
 		}
 		b, err := parseBlock(text)
