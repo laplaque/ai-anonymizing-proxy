@@ -69,6 +69,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if err := cfg.Err(); err != nil {
+		log.Fatalf("[CONFIG] Fatal: %v", err)
+	}
 
 	if len(cfg.EnabledPacks) == 0 {
 		log.Fatalf("[PROXY] Fatal: no PII detection packs enabled. Configure enabledPacks in proxy-config.json or set ENABLED_PACKS env var.")

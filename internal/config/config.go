@@ -5,7 +5,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -53,11 +56,37 @@ type Config struct {
 	// Default: 0.05. Set to 0.0 to disable positional decay.
 	PackDecayRate float64 `json:"packDecayRate"`
 
+	// MaxRequestBodyBytes is an optional administrative cap on the size of a
+	// request body the proxy anonymizes; larger requests are rejected with
+	// HTTP 413 before any byte is forwarded. 0 (the default) means no limit:
+	// bodies of any size are streamed through anonymization with bounded
+	// memory and spooled to RequestSpoolDir. Negative values are treated as 0.
+	// A value that is not a valid byte count is a load error (see Err), so a
+	// mistyped cap never leaves the proxy silently unlimited.
+	MaxRequestBodyBytes int64 `json:"maxRequestBodyBytes"`
+
+	// RequestSpoolDir is where anonymized request bodies larger than the
+	// in-memory spool threshold are buffered before forwarding, in
+	// per-request files encrypted with an in-memory key. Empty (the default)
+	// uses the operating system's temporary directory.
+	RequestSpoolDir string `json:"requestSpoolDir"`
+
 	// PIIInstructions maps LLM family prefix (e.g. "claude", "gpt") to the
 	// system instruction injected when PII tokens are present in a request.
 	// Lookup is prefix-based: "claude-sonnet-4-6" matches key "claude".
 	// The special key "default" is used when no prefix matches.
 	PIIInstructions map[string]string `json:"piiInstructions"`
+
+	// loadErrs records settings that were given explicitly but are invalid
+	// in a way that must stop the proxy rather than fall back to a default.
+	loadErrs []error
+}
+
+// Err reports settings that were set explicitly but could not be applied, and
+// that the proxy must not start without, such as an unparsable
+// maxRequestBodyBytes. It returns nil when there are none.
+func (c *Config) Err() error {
+	return errors.Join(c.loadErrs...)
 }
 
 // Load returns config with defaults overridden by proxy-config.json,
@@ -77,6 +106,10 @@ func Load() *Config {
 	if cfg.PackDecayRate > 1 {
 		log.Printf("[CONFIG] Warning: packDecayRate %f exceeds 1.0, clamping to 1.0", cfg.PackDecayRate)
 		cfg.PackDecayRate = 1
+	}
+	if cfg.MaxRequestBodyBytes < 0 {
+		log.Printf("[CONFIG] Warning: maxRequestBodyBytes %d is negative, treating it as 0 (no limit)", cfg.MaxRequestBodyBytes)
+		cfg.MaxRequestBodyBytes = 0
 	}
 	return cfg
 }
@@ -201,6 +234,13 @@ func loadFile(cfg *Config, path string) {
 	}
 	if err := json.Unmarshal(data, cfg); err != nil {
 		log.Printf("[CONFIG] Warning: could not parse %s: %v", path, err)
+		// encoding/json applies the other fields and reports a wrongly typed
+		// or out-of-range one; for the request-body cap that would mean
+		// running without the limit the operator configured.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && typeErr.Field == "maxRequestBodyBytes" {
+			cfg.loadErrs = append(cfg.loadErrs, fmt.Errorf("%s: maxRequestBodyBytes is not a byte count (an integer from 0, meaning no limit, to %d): %w", path, int64(math.MaxInt64), err))
+		}
 	} else {
 		log.Printf("[CONFIG] Loaded %s", path)
 	}
@@ -229,6 +269,24 @@ func loadEnvIntPositive(name string, dst *int) {
 			*dst = n
 		}
 	}
+}
+
+// loadEnvByteCount sets *dst to the named env var parsed as a base-10 byte
+// count. Unlike the other loaders it does not ignore a value that does not
+// parse (such as "50MiB" or an overflowing integer): that is recorded in
+// cfg.loadErrs, because silently keeping the default would disable a limit
+// the operator asked for.
+func loadEnvByteCount(cfg *Config, name string, dst *int64) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		cfg.loadErrs = append(cfg.loadErrs, fmt.Errorf("%s=%q is not a byte count (an integer from 0, meaning no limit, to %d): %w", name, v, int64(math.MaxInt64), err))
+		return
+	}
+	*dst = n
 }
 
 // loadEnvFloat sets *dst to the parsed float value of the named env var if valid.
@@ -264,4 +322,6 @@ func loadEnv(cfg *Config) {
 	loadEnvString("OLLAMA_CACHE_FILE", &cfg.OllamaCacheFile)
 	loadEnvStringSlice("ENABLED_PACKS", &cfg.EnabledPacks)
 	loadEnvFloat("PACK_DECAY_RATE", &cfg.PackDecayRate)
+	loadEnvByteCount(cfg, "MAX_REQUEST_BODY_BYTES", &cfg.MaxRequestBodyBytes)
+	loadEnvString("REQUEST_SPOOL_DIR", &cfg.RequestSpoolDir)
 }

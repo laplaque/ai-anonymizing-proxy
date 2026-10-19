@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -355,11 +356,12 @@ func TestProcessMITMRequestBody_AuthPassthrough(t *testing.T) {
 	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
 
 	// Call with isAuth=true
-	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, true)
+	sessionID, release, ok := srv.processMITMRequestBody(rw, req, ctx, true)
 
 	if !ok {
 		t.Errorf("expected ok=true for auth passthrough, got false")
 	}
+	release() // must be safe to call for pass-through
 	if sessionID != "" {
 		t.Errorf("expected empty sessionID for auth passthrough, got %q", sessionID)
 	}
@@ -385,16 +387,17 @@ func TestProcessMITMRequestBody_AnonymizationError(t *testing.T) {
 	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
 
 	// Call with isAuth=false to trigger anonymization
-	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, false)
+	sessionID, release, ok := srv.processMITMRequestBody(rw, req, ctx, false)
 
 	if ok {
 		t.Errorf("expected ok=false for anonymization error, got true")
 	}
-	if sessionID != "" {
-		t.Errorf("expected empty sessionID on error, got %q", sessionID)
+	if sessionID != "" || release != nil {
+		t.Errorf("expected empty sessionID and no release on error, got %q", sessionID)
 	}
-	if rw.code != http.StatusRequestEntityTooLarge {
-		t.Errorf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rw.code)
+	// A client read failure is a bad request, not an oversized payload.
+	if rw.code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rw.code)
 	}
 }
 
@@ -419,11 +422,12 @@ func TestProcessMITMRequestBody_SuccessfulAnonymization(t *testing.T) {
 	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "test123"}
 
 	// Call with isAuth=false to trigger anonymization
-	sessionID, ok := srv.processMITMRequestBody(rw, req, ctx, false)
+	sessionID, release, ok := srv.processMITMRequestBody(rw, req, ctx, false)
 
 	if !ok {
-		t.Errorf("expected ok=true for successful anonymization, got false")
+		t.Fatalf("expected ok=true for successful anonymization, got false")
 	}
+	defer release()
 	if sessionID == "" {
 		t.Errorf("expected non-empty sessionID for successful anonymization")
 	}
@@ -994,10 +998,11 @@ func TestServeHTTP_CONNECT_PrivateHost(t *testing.T) {
 func TestAnonymizeRequestBody_NilBody(t *testing.T) {
 	srv := newTestProxyServer(t)
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
-	sessionID, err := srv.anonymizeRequestBody(req)
+	sessionID, release, err := srv.anonymizeRequestBody(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer release()
 	if sessionID != "" {
 		t.Errorf("expected empty sessionID for nil body, got %q", sessionID)
 	}
@@ -1008,10 +1013,11 @@ func TestAnonymizeRequestBody_ZeroContentLength(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com",
 		strings.NewReader(""))
 	req.ContentLength = 0
-	sessionID, err := srv.anonymizeRequestBody(req)
+	sessionID, release, err := srv.anonymizeRequestBody(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer release()
 	if sessionID != "" {
 		t.Errorf("expected empty sessionID for zero content length, got %q", sessionID)
 	}
@@ -1023,10 +1029,11 @@ func TestAnonymizeRequestBody_ValidBody(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com",
 		strings.NewReader(body))
 	req.ContentLength = int64(len(body))
-	sessionID, err := srv.anonymizeRequestBody(req)
+	sessionID, release, err := srv.anonymizeRequestBody(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer release()
 	if sessionID == "" {
 		t.Error("expected non-empty sessionID")
 	}
@@ -1042,9 +1049,10 @@ func TestAnonymizeRequestBody_ReadError(t *testing.T) {
 	srv := newTestProxyServer(t)
 	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com", errorReader{})
 	req.ContentLength = 100
-	_, err := srv.anonymizeRequestBody(req)
-	if err == nil {
-		t.Error("expected error for read error")
+	_, _, err := srv.anonymizeRequestBody(req)
+	var clientErr *clientBodyError
+	if !errors.As(err, &clientErr) {
+		t.Errorf("expected a client body read error, got %v", err)
 	}
 }
 
@@ -1262,8 +1270,9 @@ func TestHandleHTTP_AIAnonymizationError(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleHTTP(w, req)
 
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("expected 413, got %d", w.Code)
+	// A client read failure is a bad request, not an oversized payload.
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 

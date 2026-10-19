@@ -1,7 +1,6 @@
 package anonymizer
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -37,24 +36,5 @@ func TestLoadPacksUnknownPackWarning(t *testing.T) {
 	result := a.AnonymizeText("Contact alice@example.com", "sess-loadpacks")
 	if result == "Contact alice@example.com" {
 		t.Error("anonymization failed with a mix of unknown and real packs")
-	}
-}
-
-// TestAnonymizeJSONMarshalErrorFallback covers the marshal-error fallback in
-// AnonymizeJSON via the jsonMarshal seam. When marshaling fails, AnonymizeJSON
-// must return the original body bytes unchanged.
-func TestAnonymizeJSONMarshalErrorFallback(t *testing.T) {
-	orig := jsonMarshal
-	defer func() { jsonMarshal = orig }()
-	jsonMarshal = func(any) ([]byte, error) { return nil, errors.New("boom") }
-
-	a := newTestAnonymizer()
-	defer func() { _ = a.Close() }() // test cleanup
-
-	body := []byte(`{"messages":[{"role":"user","content":"hi alice@example.com"}]}`)
-	got := a.AnonymizeJSON(body, "req-1")
-
-	if string(got) != string(body) {
-		t.Errorf("expected original body on marshal error, got: %q", got)
 	}
 }

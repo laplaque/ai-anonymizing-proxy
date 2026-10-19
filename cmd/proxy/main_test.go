@@ -306,6 +306,22 @@ func TestMain_HelperProcess_ZeroPacks_Fatal(t *testing.T) {
 	}
 }
 
+// TestMain_HelperProcess_InvalidBodyLimit_Fatal verifies the proxy refuses to
+// start when MAX_REQUEST_BODY_BYTES is set but is not a byte count, instead
+// of running without the limit the operator configured.
+func TestMain_HelperProcess_InvalidBodyLimit_Fatal(t *testing.T) {
+	cmd := helperCmd(t)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(cmd.Env, "MAX_REQUEST_BODY_BYTES=50MiB")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for an invalid body limit, got success\n%s", out)
+	}
+	if !strings.Contains(string(out), "[CONFIG] Fatal") || !strings.Contains(string(out), `MAX_REQUEST_BODY_BYTES="50MiB" is not a byte count`) {
+		t.Errorf("expected config error in output, got:\n%s", out)
+	}
+}
+
 // TestMain_HelperProcess_GenerateCA re-execs this test binary with
 // --generate-ca and asserts the cert+key pair are written to the given paths.
 // Exercises main()'s flag-parsing dispatch and the success branch of the

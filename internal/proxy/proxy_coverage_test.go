@@ -153,21 +153,50 @@ func (infiniteReader) Read(p []byte) (int, error) {
 
 func (infiniteReader) Close() error { return nil }
 
-func TestAnonymizeRequestBody_BodyTooLarge(t *testing.T) {
+// TestAnonymizeRequestBody_AdminLimitStreamed verifies the optional
+// maxRequestBodyBytes limit rejects a body of unknown length once more than
+// the limit has been read, and that no session survives the failure.
+func TestAnonymizeRequestBody_AdminLimitStreamed(t *testing.T) {
 	srv := newTestProxyServer(t)
+	srv.cfg.MaxRequestBodyBytes = 1 << 20
 	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com", nil)
 	req.Body = infiniteReader{}
-	req.ContentLength = maxRequestBody + 10
+	req.ContentLength = -1 // chunked: the limit must be enforced while streaming
 
-	sessionID, err := srv.anonymizeRequestBody(req)
-	if err == nil {
-		t.Fatal("expected error for body exceeding limit")
+	sessionID, release, err := srv.anonymizeRequestBody(req)
+	if !errors.Is(err, errRequestBodyLimit) {
+		t.Fatalf("expected errRequestBodyLimit, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("expected 'exceeds' error, got %v", err)
+	if sessionID != "" || release != nil {
+		t.Fatalf("expected no session or release on error, got %q", sessionID)
 	}
-	if sessionID != "" {
-		t.Fatalf("expected empty sessionID, got %q", sessionID)
+	if got := srv.m.Snapshot().Errors.Anonymize; got != 1 {
+		t.Errorf("ErrorsAnonymize = %d, want 1", got)
+	}
+}
+
+// unreadableBody fails the test if the proxy reads it.
+type unreadableBody struct{ t *testing.T }
+
+func (b unreadableBody) Read([]byte) (int, error) {
+	b.t.Error("body was read although its declared length exceeds the limit")
+	return 0, io.EOF
+}
+
+func (unreadableBody) Close() error { return nil }
+
+// TestAnonymizeRequestBody_AdminLimitDeclared verifies a declared
+// Content-Length above the limit is rejected before any byte is read.
+func TestAnonymizeRequestBody_AdminLimitDeclared(t *testing.T) {
+	srv := newTestProxyServer(t)
+	srv.cfg.MaxRequestBodyBytes = 1024
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "http://example.com", nil)
+	req.Body = unreadableBody{t}
+	req.ContentLength = 1025
+
+	_, _, err := srv.anonymizeRequestBody(req)
+	if !errors.Is(err, errRequestBodyLimit) {
+		t.Fatalf("expected errRequestBodyLimit, got %v", err)
 	}
 }
 
@@ -183,10 +212,11 @@ func TestAnonymizeRequestBody_RandFallback(t *testing.T) {
 		strings.NewReader(body))
 	req.ContentLength = int64(len(body))
 
-	sessionID, err := srv.anonymizeRequestBody(req)
+	sessionID, release, err := srv.anonymizeRequestBody(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer release()
 	if sessionID == "" {
 		t.Fatal("expected non-empty timestamp-fallback sessionID")
 	}
@@ -392,15 +422,16 @@ func (h *pipeHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.conn, rw, nil
 }
 
-// serveMITMRequest !ok branch: oversized body -> processMITMRequestBody returns
-// ("", false) -> 413 and no forwarding.
+// serveMITMRequest !ok branch: a body over the configured maxRequestBodyBytes
+// -> processMITMRequestBody returns ("", nil, false) -> 413 and no forwarding.
 func TestServeMITMRequest_ProcessBodyError(t *testing.T) {
 	srv := newTestProxyServer(t)
+	srv.cfg.MaxRequestBodyBytes = 4096
 
 	req := httptest.NewRequestWithContext(context.Background(), "POST",
 		"https://api.example.com/v1/chat", nil)
 	req.Body = infiniteReader{}
-	req.ContentLength = maxRequestBody + 10
+	req.ContentLength = -1
 
 	rw := newResponseRecorder()
 	ctx := mitmContext{host: "api.example.com:443", domain: "api.example.com", remoteHash: "abcd1234"}

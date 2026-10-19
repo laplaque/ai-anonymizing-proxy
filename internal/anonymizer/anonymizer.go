@@ -82,11 +82,6 @@ const (
 // sseDataPrefix is the Server-Sent Events data field prefix ("data: ").
 const sseDataPrefix = "data: "
 
-// jsonMarshal is a seam over json.Marshal so tests can exercise the
-// AnonymizeJSON marshal-error fallback. A successful marshal of already-parsed
-// JSON never fails in practice, leaving that branch otherwise unreachable.
-var jsonMarshal = json.Marshal
-
 // pattern pairs a compiled regex with its PII type and a base confidence score.
 // Confidence reflects how specifically the regex identifies the target PII type:
 // high scores mean low false-positive risk; low scores indicate ambiguous patterns
@@ -303,6 +298,12 @@ func (a *Anonymizer) AnonymizeText(text, sessionID string) string {
 
 	result := text
 	for _, p := range a.patterns {
+		// ReplaceAllStringFunc copies its input even when nothing matches.
+		// Skipping non-matching patterns produces the same result without
+		// those copies, which dominate allocation for large string values.
+		if !p.re.MatchString(result) {
+			continue
+		}
 		result = p.re.ReplaceAllStringFunc(result, func(match string) string {
 			// If the pattern has a validator, skip non-matching values.
 			if p.validate != nil && !p.validate(match) {
@@ -363,6 +364,9 @@ func (a *Anonymizer) dispatchOllamaAsync(original string) {
 		a.inflightMu.Unlock()
 		return // already in progress
 	}
+	// Clone so the in-flight entry and the background query do not keep the
+	// whole request string that original was sliced from alive.
+	original = strings.Clone(original)
 	a.inflight[original] = true
 	a.inflightMu.Unlock()
 
@@ -434,123 +438,30 @@ func (a *Anonymizer) resolvePIIInstruction(model string) string {
 	return defaultPIIInstruction
 }
 
-// AnonymizeJSON parses the body as JSON, walks the string values, and
-// anonymizes them. Non-JSON bodies are treated as plain text.
-// When PII tokens are inserted, a system instruction is injected into the
-// request to prevent the LLM from substituting plausible-looking fake values
-// in place of the tokens.
+// AnonymizeJSON anonymizes a whole in-memory request body. A body that is a
+// single valid JSON value is rewritten by AnonymizeJSONStream, with the PII
+// system instruction (if any) spliced in; see AnonymizeJSONStream for the
+// rules. Any other body is anonymized as plain text in one piece, so PII is
+// detected wherever it sits in the input.
 func (a *Anonymizer) AnonymizeJSON(body []byte, requestID string) []byte {
-	var doc any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		// Not JSON — treat as plain text
+	if !json.Valid(body) {
 		return []byte(a.AnonymizeText(string(body), requestID))
 	}
-	// Extract model name before walking (walkValue may modify the map).
-	model := ""
-	if m, ok := doc.(map[string]any); ok {
-		if v, ok := m["model"].(string); ok {
-			model = v
-		}
+	var out bytes.Buffer
+	out.Grow(len(body))
+	// The stream accepts exactly the documents json.Valid accepts (pinned by
+	// FuzzAnonymizeJSONStream), and bytes.Reader and bytes.Buffer never fail,
+	// so the stream cannot fail here.
+	res, _ := a.AnonymizeJSONStream(&out, bytes.NewReader(body), requestID)
+	if res.Insertion == nil {
+		return out.Bytes()
 	}
-
-	anonymized := a.walkValue(doc, requestID)
-
-	// If any tokens were recorded for this request, inject a system instruction
-	// so the LLM knows to reproduce tokens verbatim.
-	if m, ok := anonymized.(map[string]any); ok && requestID != "" {
-		a.sessionMu.RLock()
-		tokenCount := len(a.sessions[requestID])
-		a.sessionMu.RUnlock()
-		if tokenCount > 0 {
-			a.injectPIIInstruction(m, a.resolvePIIInstruction(model))
-		}
-	}
-
-	out, err := jsonMarshal(anonymized)
-	if err != nil {
-		return body // fallback: return original
-	}
-	return out
-}
-
-// injectPIIInstruction appends the given instruction to the request's system
-// prompt. It handles two API shapes:
-//
-//   - Anthropic messages API: top-level "system" field (string or content-block array)
-//   - OpenAI-compatible API:  first "messages" entry with role "system"
-//
-// If neither shape is found, the function is a no-op — non-chat endpoints
-// (embeddings, completions) don't carry a system prompt to inject into.
-func (a *Anonymizer) injectPIIInstruction(doc map[string]any, instruction string) {
-	if instruction == "" {
-		return
-	}
-	// Anthropic API: system is a top-level string or [{type:"text",text:"..."}]
-	if sys, ok := doc["system"]; ok {
-		switch s := sys.(type) {
-		case string:
-			if s == "" {
-				doc["system"] = instruction
-			} else {
-				doc["system"] = s + "\n\n" + instruction
-			}
-			return
-		case []any:
-			doc["system"] = append(s, map[string]any{
-				"type": "text",
-				"text": instruction,
-			})
-			return
-		}
-	}
-
-	// OpenAI-compatible API: look for a system role message
-	if msgs, ok := doc["messages"].([]any); ok {
-		for _, m := range msgs {
-			if msg, ok := m.(map[string]any); ok && msg["role"] == "system" {
-				if content, ok := msg["content"].(string); ok {
-					if content == "" {
-						msg["content"] = instruction
-					} else {
-						msg["content"] = content + "\n\n" + instruction
-					}
-				}
-				return
-			}
-		}
-		// No system message — prepend one
-		systemMsg := map[string]any{
-			"role":    "system",
-			"content": instruction,
-		}
-		doc["messages"] = append([]any{systemMsg}, msgs...)
-	}
-}
-
-// walkValue recursively anonymizes string leaves in a JSON-decoded value.
-func (a *Anonymizer) walkValue(v any, requestID string) any {
-	switch val := v.(type) {
-	case string:
-		return a.AnonymizeText(val, requestID)
-	case []any:
-		for i, item := range val {
-			val[i] = a.walkValue(item, requestID)
-		}
-		return val
-	case map[string]any:
-		// Skip fields that are structural, not user content
-		skip := map[string]bool{
-			"model": true, "temperature": true, "max_tokens": true,
-			"top_p": true, "stream": true, "n": true,
-		}
-		for k, item := range val {
-			if !skip[k] {
-				val[k] = a.walkValue(item, requestID)
-			}
-		}
-		return val
-	}
-	return v
+	written := out.Bytes()
+	off := res.Insertion.Offset
+	result := make([]byte, 0, len(written)+len(res.Insertion.Data))
+	result = append(result, written[:off]...)
+	result = append(result, res.Insertion.Data...)
+	return append(result, written[off:]...)
 }
 
 // replacement generates a deterministic anonymised token for a detected value.
@@ -590,10 +501,17 @@ func (a *Anonymizer) recordMapping(sessionID, token, original string) {
 		return
 	}
 	a.sessionMu.Lock()
-	if a.sessions[sessionID] == nil {
-		a.sessions[sessionID] = make(map[string]string)
+	m := a.sessions[sessionID]
+	if m == nil {
+		m = make(map[string]string)
+		a.sessions[sessionID] = m
 	}
-	a.sessions[sessionID][token] = original
+	if prev, ok := m[token]; !ok || prev != original {
+		// Clone: original is a substring of the (possibly multi-megabyte)
+		// string being anonymized, and storing the substring would keep that
+		// whole string alive until the session is deleted.
+		m[token] = strings.Clone(original)
+	}
 	a.sessionMu.Unlock()
 	if a.m != nil {
 		a.m.TokensReplaced.Add(1)

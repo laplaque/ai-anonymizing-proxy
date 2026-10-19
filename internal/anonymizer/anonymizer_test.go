@@ -802,80 +802,82 @@ func TestAnonymizeTextEmpty(t *testing.T) {
 	}
 }
 
-// TestInjectPIIInstructionEmptyInstruction covers the empty-instruction guard.
-func TestInjectPIIInstructionEmptyInstruction(t *testing.T) {
+// TestAnonymizeJSONEmptyInstructionNotInjected verifies that a configured
+// empty instruction suppresses injection even when tokens were recorded.
+func TestAnonymizeJSONEmptyInstructionNotInjected(t *testing.T) {
 	a := newTestAnonymizer()
-	doc := map[string]any{"system": "original prompt"}
-	a.injectPIIInstruction(doc, "")
+	a.SetPIIInstructions(map[string]string{"default": ""})
+	body := []byte(`{"system":"original prompt","messages":[{"role":"user","content":"mail alice@example.com"}]}`)
+	doc := decodeObject(t, a.AnonymizeJSON(body, "sess-empty-instr"))
 	if doc["system"] != "original prompt" {
-		t.Errorf("empty instruction modified doc: %v", doc["system"])
+		t.Errorf("empty instruction modified system: %v", doc["system"])
 	}
 }
 
-// TestInjectPIIInstructionEmptySystemString covers the empty system string path.
-func TestInjectPIIInstructionEmptySystemString(t *testing.T) {
+// TestAnonymizeJSONEmptySystemString verifies an empty "system" string is
+// replaced by the instruction (no leading blank line).
+func TestAnonymizeJSONEmptySystemString(t *testing.T) {
 	a := newTestAnonymizer()
-	doc := map[string]any{
-		"system":   "",
-		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	}
-	a.injectPIIInstruction(doc, "injected")
+	a.SetPIIInstructions(map[string]string{"default": "injected"})
+	body := []byte(`{"system":"","messages":[{"role":"user","content":"mail alice@example.com"}]}`)
+	doc := decodeObject(t, a.AnonymizeJSON(body, "sess-empty-sys"))
 	if doc["system"] != "injected" {
 		t.Errorf("expected 'injected', got %v", doc["system"])
 	}
 }
 
-// TestInjectPIIInstructionOpenAIEmptyContent covers the OpenAI empty system content path.
-func TestInjectPIIInstructionOpenAIEmptyContent(t *testing.T) {
+// TestAnonymizeJSONOpenAIEmptySystemContent verifies an empty system message
+// content is replaced by the instruction.
+func TestAnonymizeJSONOpenAIEmptySystemContent(t *testing.T) {
 	a := newTestAnonymizer()
-	doc := map[string]any{
-		"messages": []any{
-			map[string]any{"role": "system", "content": ""},
-			map[string]any{"role": "user", "content": "hi"},
-		},
-	}
-	a.injectPIIInstruction(doc, "injected")
+	a.SetPIIInstructions(map[string]string{"default": "injected"})
+	body := []byte(`{"messages":[{"role":"system","content":""},{"role":"user","content":"mail alice@example.com"}]}`)
+	doc := decodeObject(t, a.AnonymizeJSON(body, "sess-empty-content"))
 	msgs, ok := doc["messages"].([]any)
-	if !ok {
-		t.Fatal("messages is not []any")
+	if !ok || len(msgs) != 2 {
+		t.Fatalf("messages = %v, want 2 entries", doc["messages"])
 	}
 	sysMsg, ok := msgs[0].(map[string]any)
 	if !ok {
-		t.Fatal("first message is not map[string]any")
+		t.Fatal("first message is not an object")
 	}
 	if sysMsg["content"] != "injected" {
 		t.Errorf("expected 'injected', got %v", sysMsg["content"])
 	}
 }
 
-// TestInjectPIIInstructionOpenAINoSystemMessage covers prepending a system message
-// when none exists in the messages array.
-func TestInjectPIIInstructionOpenAINoSystemMessage(t *testing.T) {
+// TestAnonymizeJSONOpenAINoSystemMessage verifies a system message is
+// prepended when the messages array has none.
+func TestAnonymizeJSONOpenAINoSystemMessage(t *testing.T) {
 	a := newTestAnonymizer()
-	doc := map[string]any{
-		"messages": []any{
-			map[string]any{"role": "user", "content": "hello"},
-		},
-	}
-	a.injectPIIInstruction(doc, "injected")
+	a.SetPIIInstructions(map[string]string{"default": "injected"})
+	body := []byte(`{"messages":[{"role":"user","content":"hello alice@example.com"}]}`)
+	doc := decodeObject(t, a.AnonymizeJSON(body, "sess-prepend"))
 	msgs, ok := doc["messages"].([]any)
-	if !ok {
-		t.Fatal("messages is not []any")
-	}
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	if !ok || len(msgs) != 2 {
+		t.Fatalf("messages = %v, want 2 entries", doc["messages"])
 	}
 	first, ok := msgs[0].(map[string]any)
 	if !ok {
-		t.Fatal("first message is not map[string]any")
+		t.Fatal("first message is not an object")
 	}
 	if first["role"] != "system" || first["content"] != "injected" {
 		t.Errorf("system message not prepended: %v", first)
 	}
 }
 
-// TestWalkValuePrimitiveTypes covers the default case in walkValue for
-// non-string/non-container JSON types (numbers, booleans, nil).
+// decodeObject unmarshals a JSON object, failing the test on invalid output.
+func decodeObject(t *testing.T, out []byte) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out, err)
+	}
+	return doc
+}
+
+// TestWalkValuePrimitiveTypes verifies non-string JSON values (numbers,
+// booleans, null) in skipped fields pass through unchanged.
 func TestWalkValuePrimitiveTypes(t *testing.T) {
 	a := newTestAnonymizer()
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Email alice@example.com"}],"temperature":0.7,"stream":true,"max_tokens":100}`)
@@ -1329,19 +1331,6 @@ func TestNewWithCacheAndCapacityMaxConcurrentClamp(t *testing.T) {
 	}
 }
 
-// TestAnonymizeJSONMarshalFallback covers the json.Marshal error fallback in AnonymizeJSON.
-// This is triggered when walkValue produces a value that can't be marshaled back to JSON.
-// In practice this is near-impossible with json.Unmarshal output, but we test the guard.
-func TestAnonymizeJSONMarshalFallback(t *testing.T) {
-	a := newTestAnonymizer()
-	// Valid JSON that anonymizes cleanly — just ensure the path works.
-	body := []byte(`{"content":"test@example.com"}`)
-	out := a.AnonymizeJSON(body, "sess-marshal")
-	if len(out) == 0 {
-		t.Error("expected non-empty output")
-	}
-}
-
 // TestStreamingDeanonymizeWithMetrics covers the m != nil path in StreamingDeanonymize.
 func TestStreamingDeanonymizeWithMetrics(t *testing.T) {
 	m := metrics.New()
@@ -1467,12 +1456,11 @@ func TestDispatchOllamaAsyncWithMockServer(t *testing.T) {
 	}
 }
 
-// TestWalkValueDefaultReturn covers the default return in walkValue for
-// non-string/non-container types (numbers, booleans, nil) that appear in
-// non-skipped JSON fields.
+// TestWalkValueDefaultReturn verifies non-string JSON values (numbers,
+// booleans, null) in non-skipped fields pass through unchanged.
 func TestWalkValueDefaultReturn(t *testing.T) {
 	a := newTestAnonymizer()
-	// "count" is not in the skip list, so its float64 value goes through walkValue's default case.
+	// "count" is not in the skip list, so it is rewritten like any other value.
 	body := []byte(`{"messages":[{"role":"user","content":"alice@example.com"}],"count":42,"enabled":true,"extra":null}`)
 	out := a.AnonymizeJSON(body, "sess-default-return")
 
@@ -1492,7 +1480,7 @@ func TestWalkValueDefaultReturn(t *testing.T) {
 	}
 }
 
-// TestWalkValueNestedArray covers the recursive array traversal in walkValue.
+// TestWalkValueNestedArray verifies strings in nested arrays are anonymized.
 func TestWalkValueNestedArray(t *testing.T) {
 	a := newTestAnonymizer()
 	body := []byte(`{"messages":[{"role":"user","content":["text with alice@example.com","more text"]}]}`)

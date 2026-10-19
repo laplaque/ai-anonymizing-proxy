@@ -68,8 +68,8 @@ sequenceDiagram
     loop each request over the tunnel
         C->>P: POST /v1/messages (plaintext to proxy)
         P->>P: isAuthRequest? → No
-        P->>A: AnonymizeJSON(body, sessionID)
-        A-->>P: anonymized body + token map stored
+        P->>A: AnonymizeJSONStream(client body → spool, sessionID)
+        A-->>P: anonymized body in spool + token map stored
         P->>API: POST /v1/messages (anonymized, real TLS)
         API-->>P: response
         alt SSE / text/event-stream
@@ -114,9 +114,9 @@ sequenceDiagram
 
     C->>P: POST http://api.openai.com/v1/chat (plain HTTP)
     P->>P: isAuthRequest? → No
-    P->>A: AnonymizeJSON(body, sessionID)
-    A-->>P: anonymized body
-    P->>API: POST (anonymized)
+    P->>A: AnonymizeJSONStream(client body → spool, sessionID)
+    A-->>P: anonymized body in spool + instruction insertion
+    P->>API: POST (anonymized, exact Content-Length)
     API-->>P: response
     P->>A: DeanonymizeText(response, sessionID)
     A-->>P: restored response
@@ -128,11 +128,13 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    IN([Request body]) --> PARSE{Valid JSON?}
-    PARSE -->|Yes| WALK[Walk string leaves\nrecursively]
-    PARSE -->|No| PLAIN[Treat as plain text]
+    IN([Request body]) --> CT{Content-Type\ndeclares JSON?}
+    CT -->|Yes| PARSE{Next JSON token\nvalid?}
+    PARSE -->|Yes| WALK[Stream tokens through;\nrewrite each string value]
+    PARSE -->|No: syntax error| REJ([Reject with 400;\nnothing forwarded])
+    CT -->|No| WHOLE[Read the whole body:\nJSON rewrite if valid JSON,\nelse one piece of text]
     WALK --> RX
-    PLAIN --> RX
+    WHOLE --> RX
 
     RX[Pack-based regex pass\npatterns loaded from enabled packs\nwith confidence scores] --> MATCH{Any match?}
 

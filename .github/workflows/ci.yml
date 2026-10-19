@@ -50,6 +50,12 @@ jobs:
       - name: Run tests with coverage
         run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
 
+      # Requests beyond the former 50 MiB cutoff (#152). These tests are built
+      # with !race because the race detector slows regex detection about 15x;
+      # they run here uninstrumented so every PR still exercises them.
+      - name: Run large-body tests (beyond the former 50 MiB limit)
+        run: go test -count=1 -run 'BeyondFormerLimit' -v ./internal/proxy/
+
       - name: Display coverage
         run: go tool cover -func=coverage.out
 

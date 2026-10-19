@@ -27,6 +27,43 @@ Response body
 The Ollama sidecar is **never on the critical path**. It populates a persistent cache
 asynchronously; the request is always returned immediately with whatever tokens are available.
 
+## Request body processing
+
+`AnonymizeJSONStream` rewrites a request body as a stream: it reads JSON tokens through a 64 KiB
+buffer and writes everything except string values through unchanged — object keys, numbers,
+literals, whitespace and key order keep their original bytes. Each string value is decoded
+exactly as `encoding/json` decodes it (escapes resolved, unpaired surrogates and invalid UTF-8
+become U+FFFD) and passed to `AnonymizeText`; strings it leaves unchanged keep their original
+escaping, changed strings are re-encoded escaping only `"`, `\` and control characters.
+Values under the structural keys `model`, `temperature`, `max_tokens`, `top_p`, `stream` and
+`n` (at any depth, including their whole subtree) are not anonymized.
+
+The PII system instruction depends on whether *any* token was recorded, which is only known at
+the end of the document, so it is returned as a single insertion (offset + bytes) that the proxy
+splices in while forwarding: appended to a string `system`, appended as a text block to a
+`system` array, appended to the first `messages` entry with role `system`, or prepended as a new
+system message — the same rules as before.
+
+Memory per request is the I/O buffers plus a small multiple of the largest single string value,
+which detection needs whole: regex patterns have no fixed maximum match length, so splitting a
+string could miss PII that spans the split. Measured peak RSS is ≈ 1.6× that string for base64
+data and up to ≈ 8.5× for prose with PII matches. Separately, every distinct detected value and
+its token stay in the session map until the response is de-anonymized, about 110–140 bytes each;
+see
+[Request body size and resources](configuration.md#request-body-size-and-resources). Container nesting is limited to 10 000 levels, the same limit as
+`encoding/json`. The proxy writes the output into a
+[bounded-memory spool](configuration.md#request-body-size-and-resources), never the raw input.
+
+The stream is used only for bodies whose `Content-Type` declares JSON (`application/json` or a
+`+json` type), which is what the supported AI APIs send. If such a body turns out not to be valid
+JSON, the stream stops at the syntax error and the request is **rejected with 400**; nothing is
+forwarded. Anonymizing only the input after the error would not be safe: the rewritten prefix was
+emitted before the error was known, and PII that spans the error position (`123@example.com`,
+whose `123` the parser already copied as a number) or that sits where valid JSON would not be
+anonymized (an object key, the value of `model`) would reach the upstream. Any other body is read
+whole and anonymized exactly as before streaming: rewritten as JSON if it is valid JSON, otherwise
+passed to `AnonymizeText` in one piece. Whitespace-only bodies are forwarded unchanged.
+
 ---
 
 ## Stage 1 — Regex detection
@@ -125,9 +162,9 @@ sequenceDiagram
     participant A as anonymizer.go
     participant API as LLM API
 
-    P->>A: AnonymizeJSON(body, sessionID)
+    P->>A: AnonymizeJSONStream(body → spool, sessionID)
     Note over A: regex + cache → token map populated
-    A-->>P: anonymized body
+    A-->>P: anonymized body (spooled) + instruction insertion
 
     P->>API: POST (anonymized)
     API-->>P: response

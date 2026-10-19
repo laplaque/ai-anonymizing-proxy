@@ -79,7 +79,8 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/metrics
   },
   "errors": {
     "upstream": 1,
-    "anonymize": 0
+    "anonymize": 0,
+    "spoolCleanup": 0
   },
   "piiTokens": {
     "replaced": 314,
@@ -117,7 +118,9 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/metrics
 `cacheHits` and `cacheMisses` are keyed by PII type and only include types with non-zero
 counts. `cacheFallbacks` counts requests where a low-confidence match had no cache entry and
 a deterministic fallback token was applied immediately. `ollamaErrors` counts both semaphore-
-full drops and failed Ollama queries.
+full drops and failed Ollama queries. `errors.spoolCleanup` counts request-body spool files that
+could not be closed or removed after use (each is logged with its path and queued for retry); a
+rising value means encrypted spool files may be accumulating in `requestSpoolDir`.
 
 ---
 
